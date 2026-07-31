@@ -17,7 +17,7 @@ Repo is submittable as-is from a clean checkout.
 - [x] `README.md`: overview, install/build/test, CLI + GUI usage, architecture, known limitations
 - [x] `LICENSE` (MIT — matches `package.json`)
 - [x] Verify clean-checkout flow: `npm ci && npm run build && npm test` passes
-- [ ] Commit (or leave staged) per phase
+- [x] Commit (or leave staged) per phase
 
 ## Phase 1 — Diagnostics & No Silent Data Loss
 
@@ -66,7 +66,7 @@ Behavior matches DM semantics for the supported subset.
 - [x] Unit tests for every Phase 1/3 parser construct (lexer, parser, emitter golden strings)
 - [x] Integration test: small realistic SS13-style module (types, procs with if/else/for/switch/spawn/sleep/`world <<`/`new`/`del`, one DMI, one DMM) → full transpile → assert artifacts; dotnet build if available
 - [x] `npm test` green, `npm run build` clean
-- [ ] README/PLAN final pass; per-phase git commits; final submission checklist
+- [x] README/PLAN final pass; per-phase git commits; final submission checklist
 
 ---
 
