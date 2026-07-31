@@ -1,0 +1,36 @@
+{
+  "name": "dm2ss14",
+  "version": "1.0.0",
+  "description": "Automated SS13 DM to SS14 RobustToolbox C# Transpiler & Solution Generator",
+  "main": "dist/index.js",
+  "bin": {
+    "dm2ss14": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "test": "node dist/tests/runTests.js"
+  },
+  "keywords": [
+    "ss13",
+    "ss14",
+    "byond",
+    "dream-maker",
+    "robusttoolbox",
+    "transpiler",
+    "converter"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0"
+  }
+}
