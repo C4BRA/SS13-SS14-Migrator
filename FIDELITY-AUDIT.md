@@ -135,6 +135,40 @@ with `SS14_ENGINE_DIR` set to a pinned RobustToolbox (`engine.pin`, commit `9cef
 - Regression guards: `src/tests/runtimeTemplate.test.ts` pins the runtime-template
   backtick structure (a stray backtick in a C# comment silently breaks the TS build).
 
+### 3c. Builtin expansion + /proc fallback — VERIFIED (2026-08)
+
+Batch: map ~43 additional builtins + resolve bare global proc calls in the runtime.
+
+- **Builtins mapped** (with engine-free semantics): `isnull`/`isnum`/`istext`,
+  `isturf`/`isobj`/`ismob`/`isarea`/`ismovable`/`isloc`/`isitem`/`iscarbon`/`isliving`
+  (via `DMIsType`), `CRASH` (throws), `nameof` (last path segment), `typesof` (union of
+  registered descendants), `initial` (first-assigned var value), `call()` proc refs +
+  `f(...)` invocation, `turn` (45° clockwise rotation), `get_step`/`get_dist`/`get_dir`/
+  `get_turf`/`range`/`view`/`oview`/`block` (by DM x/y/z vars over the live-datum
+  registry), `splittext`/`jointext`/`params2list`/`text2path`/`rgb`/`fexists`/`isnan`/
+  `isinf`/`json_decode`; recognized stubs: `animate`/`image`/`flick`/`sound`/`matrix`/
+  `browse`/`call_ext`/`__detect_rust_g`.
+- **`/proc` fallback**: `CallProc`/`CallParentProc`/`CanCallProc` now fall back to the
+  `/proc` registry entry, so bare calls to global procs resolve at runtime instead of
+  returning Null (36,789 sites on tgstation).
+- **Fresh audit across all 4 corpora** (unknown builtin call sites):
+
+  | corpus | before | after | drop |
+  |---|---|---|---|
+  | tgstation | 41,288 | 3,637 | −91% |
+  | paradise | 17,346 | 2,127 | −88% |
+  | tgmc | 14,541 | 1,639 | −89% |
+  | beestation | 26,185 | 2,725 | −90% |
+
+- Semantic probes **24 → 40/40** (16 new: /proc fallback, predicates, nameof, typesof,
+  initial, call-refs, turn, position builtins, text/list builtins, json_decode, range).
+- Compile proof **re-verified at 44,826 procs → 0 C# errors** with the new runtime
+  (dotnet build green, 12 min).
+- Audit harness hardened: `dotnet build` runs single-process
+  (`-m:1 -nodeReuse:false --disable-build-servers`) with **live-streamed output** and a
+  SIGKILL timeout — previously a stuck MSBuild build server could block the harness
+  beyond its timeout, and buffered output made healthy builds look hung.
+
 ---
 
 ## 4. Ranked fix backlog

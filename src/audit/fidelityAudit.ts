@@ -16,7 +16,7 @@ import { CSharpEmitter } from '../transpiler/csharpEmitter.js';
 import { SS14Template } from '../project/ss14Template.js';
 import { DMRuntimeCS } from '../runtimeTemplate/dmRuntimeCS.js';
 import { MAPPED_BUILTINS } from '../transpiler/builtinMappings.js';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 
 interface LossCounters {
   // Source-level (raw regex heuristics)
@@ -400,7 +400,7 @@ function printResult(r: CodebaseResult): void {
   line('path-const reads /path.x', c.numPathConstPropRead, 'GLOB.x style, dead literal');
   line('builtin prop reads', c.numBrokenPropRead, 'len/type/loc/x/y/z/dir...');
   line('unknown builtin calls', c.numUnknownBuiltin, '-> CallProc -> Null');
-  line('bare calls to global procs', c.numBareGlobalProcCalls, 'registered under /proc, never found');
+  line('bare calls to global procs', c.numBareGlobalProcCalls, 'resolved at runtime via /proc fallback');
   console.log(`TOTAL LOSS SITES (approx): ${c.totalLossSites}`);
 
   if (c.unknownBuiltins.size > 0) {
@@ -419,7 +419,7 @@ function printResult(r: CodebaseResult): void {
   }
 }
 
-function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number): void {
+async function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number): Promise<void> {
   console.log(`\n[${r.name}] Building representative proc sample (max ${maxProcs} procs) ...`);
   if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
@@ -484,37 +484,45 @@ function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number): voi
 
   console.log(`[${r.name}] Running dotnet build ...`);
   const engineDir = process.env.SS14_ENGINE_DIR || path.join(outDir, '..', 'RobustToolbox');
-  try {
-    const out = execSync(`dotnet build Content.sln --nologo -v q -p:EngineDir="${engineDir}" 2>&1`, {
-      cwd: outDir,
-      timeout: 30 * 60 * 1000,
-      maxBuffer: 256 * 1024 * 1024
-    }).toString();
-    console.log(out);
-  } catch (e: any) {
-    if (e.killed || e.signal) {
-      console.log(`[${r.name}] dotnet build TIMED OUT after ${30 * 60}s (killed=${e.killed}, signal=${e.signal}); generated code did not finish compiling`);
-      console.log('    (raised --build-max-procs or lowered the audit timeout; this is NOT a compile failure)');
-      return;
-    }
-    const text = (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '');
-    const errLines = text.split('\n').filter((l: string) => l.includes('error CS'));
-    const byCode = new Map<string, number>();
-    for (const l of errLines) {
-      const m = l.match(/error (CS\d+)/);
-      if (m) byCode.set(m[1], (byCode.get(m[1]) ?? 0) + 1);
-    }
-    const sorted = [...byCode.entries()].sort((a, b) => b[1] - a[1]);
-    console.log(`[${r.name}] BUILD FAILED with ${errLines.length} C# errors`);
-    for (const [code, n] of sorted.slice(0, 15)) {
-      console.log(`  ${String(n).padStart(7)}  ${code}`);
-    }
-    const samples = errLines.slice(0, 5).map((l: string) => l.trim());
-    for (const s of samples) console.log(`    e.g. ${s}`);
+  // Live-streamed build: buffered execSync output makes a healthy 12-15 min
+  // build look identical to a hang. Spawn with piped output that echoes as it
+  // arrives, and SIGKILL (single-process MSBuild via -m:1) if it exceeds the
+  // 30-minute budget so a genuinely stuck build cannot block forever.
+  const cmd = `dotnet build Content.sln --nologo -v q -m:1 -nodeReuse:false --disable-build-servers -p:EngineDir="${engineDir}"`;
+  const child = spawn(cmd, { cwd: outDir, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', (d) => { process.stdout.write(d); output += d.toString(); });
+  child.stderr.on('data', (d) => { process.stderr.write(d); output += d.toString(); });
+  const timer = setTimeout(() => {
+    console.log(`[${r.name}] dotnet build exceeded ${30} min — killing (SIGKILL; this is a timeout, NOT a compile failure)`);
+    child.kill('SIGKILL');
+  }, 30 * 60 * 1000);
+  const buildFailed: boolean = await new Promise((resolve) => {
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve(code !== 0);
+    });
+  });
+  if (!buildFailed) {
+    console.log(`[${r.name}] BUILD SUCCESS`);
+    return;
   }
+  const errLines = output.split('\n').filter((l: string) => l.includes('error CS'));
+  const byCode = new Map<string, number>();
+  for (const l of errLines) {
+    const m = l.match(/error (CS\d+)/);
+    if (m) byCode.set(m[1], (byCode.get(m[1]) ?? 0) + 1);
+  }
+  const sorted = [...byCode.entries()].sort((a, b) => b[1] - a[1]);
+  console.log(`[${r.name}] BUILD FAILED with ${errLines.length} C# errors`);
+  for (const [code, n] of sorted.slice(0, 15)) {
+    console.log(`  ${String(n).padStart(7)}  ${code}`);
+  }
+  const samples = errLines.slice(0, 5).map((l: string) => l.trim());
+  for (const s of samples) console.log(`    e.g. ${s}`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dir = args[0];
   if (!dir) {
@@ -553,8 +561,11 @@ function main(): void {
   }
 
   if (buildDir) {
-    runBuildProof(result, buildDir, maxProcs);
+    await runBuildProof(result, buildDir, maxProcs);
   }
 }
 
-main();
+main().catch(err => {
+  console.error('Audit error:', err);
+  process.exit(1);
+});

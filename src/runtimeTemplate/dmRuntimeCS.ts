@@ -310,8 +310,16 @@ namespace SS13.DM.Runtime
             return Variables.TryGetValue(name, out var val) ? val : DMValue.Null;
         }
 
+        /// <summary>
+        /// First value ever assigned to each var — the engine-free stand-in for
+        /// DM initial() (which reads the value assigned in the var declaration
+        /// before any runtime mutation).
+        /// </summary>
+        public Dictionary<string, DMValue> InitialValues { get; } = new();
+
         public DMValue SetVar(string name, DMValue val)
         {
+            if (!InitialValues.ContainsKey(name)) InitialValues[name] = val;
             Variables[name] = val;
             return val;
         }
@@ -331,7 +339,8 @@ namespace SS13.DM.Runtime
         public async Task<DMValue> CallProc(string procName, params DMValue[] args)
         {
             if (ProcRegistry.TryGet(DMTypePath, procName, out var handler)
-                || ProcRegistry.TryGetInherited(DMTypePath, procName, out handler))
+                || ProcRegistry.TryGetInherited(DMTypePath, procName, out handler)
+                || ProcRegistry.TryGet("/proc", procName, out handler))
             {
                 return await InvokeWithUsr(handler, args);
             }
@@ -345,7 +354,8 @@ namespace SS13.DM.Runtime
         /// </summary>
         public async Task<DMValue> CallParentProc(string procName, params DMValue[] args)
         {
-            if (ProcRegistry.TryGetInherited(DMTypePath, procName, out var handler))
+            if (ProcRegistry.TryGetInherited(DMTypePath, procName, out var handler)
+                || ProcRegistry.TryGet("/proc", procName, out handler))
             {
                 return await InvokeWithUsr(handler, args);
             }
@@ -371,7 +381,8 @@ namespace SS13.DM.Runtime
         public bool CanCallProc(string procName)
         {
             return ProcRegistry.TryGet(DMTypePath, procName, out _)
-                || ProcRegistry.TryGetInherited(DMTypePath, procName, out _);
+                || ProcRegistry.TryGetInherited(DMTypePath, procName, out _)
+                || ProcRegistry.TryGet("/proc", procName, out _);
         }
     }
 
@@ -383,9 +394,16 @@ namespace SS13.DM.Runtime
     {
         private static readonly Dictionary<(string TypePath, string Name), Func<DMRuntime, DMValue[], Task<DMValue>>> Procs = new();
 
+        /// <summary>
+        /// Every type path that has at least one registered proc — used by
+        /// typesof() to enumerate the type tree known to the runtime.
+        /// </summary>
+        public static readonly HashSet<string> RegisteredPaths = new();
+
         public static void Register(string typePath, string procName, Func<DMRuntime, DMValue[], Task<DMValue>> handler)
         {
             Procs[(typePath, procName)] = handler;
+            RegisteredPaths.Add(typePath);
         }
 
         public static bool TryGet(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
@@ -453,6 +471,8 @@ namespace SS13.DM.Runtime
       {
         filename: 'DMRuntimeHelpers.cs',
         content: `using System;
+using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace SS13.DM.Runtime
@@ -469,6 +489,27 @@ namespace SS13.DM.Runtime
         /// Defaults to Null; set around each proc invocation in DMRuntime.CallProc.
         /// </summary>
         public static DMValue CurrentUsr { get; set; } = DMValue.Null;
+
+        /// <summary>
+        /// Every datum created via DMNew that has not been deleted. Used by the
+        /// engine-free position builtins (get_step, get_dist, get_turf, range,
+        /// view) which locate datums by their DM x/y/z vars.
+        /// </summary>
+        public static readonly List<DMRuntime> LiveDatums = new();
+
+        /// <summary>
+        /// DM call(path, proc) proc-references: "DMProcRef:" + key into this
+        /// table. Engine-free stand-in for BYOND proc references.
+        /// </summary>
+        private static readonly Dictionary<string, (DMRuntime? Datum, string TypePath, string ProcName)> ProcRefs = new();
+        private static int _procRefCounter;
+
+        private static string MakeProcRefKey(DMRuntime? datum, string typePath, string procName)
+        {
+            var key = "DMProcRef:" + _procRefCounter++;
+            ProcRefs[key] = (datum, typePath, procName);
+            return key;
+        }
 
         /// <summary>
         /// DM "world" object. Engine integration later drives world.time from
@@ -494,6 +535,7 @@ namespace SS13.DM.Runtime
         public static async Task<DMValue> DMNew(DMRuntime comp, string typePath, params DMValue[] args)
         {
             var datum = new DMRuntime { DMTypePath = typePath };
+            LiveDatums.Add(datum);
             await datum.CallProc("New", args);
             return DMValue.FromDatum(datum);
         }
@@ -504,6 +546,7 @@ namespace SS13.DM.Runtime
             {
                 // Engine integration point: queue entity deletion.
                 datum.MarkForDeletion();
+                LiveDatums.Remove(datum);
             }
             // DM: del/qdel have no meaningful result; returning Null keeps
             // 'return qdel(x)' compilable and correct.
@@ -648,6 +691,476 @@ namespace SS13.DM.Runtime
         }
 
         // ==== Misc builtins ====
+
+        // ==== Value predicates (DM isnull/isnum/istext) ====
+
+        public static DMValue DMIsNull(DMValue value)
+        {
+            return DMValue.FromNumber(value.Type == DMValueType.Null ? 1 : 0);
+        }
+
+        public static DMValue DMIsNum(DMValue value)
+        {
+            return DMValue.FromNumber(value.Type == DMValueType.Number ? 1 : 0);
+        }
+
+        public static DMValue DMIsText(DMValue value)
+        {
+            return DMValue.FromNumber(value.Type == DMValueType.String ? 1 : 0);
+        }
+
+        // ==== nameof / typesof ====
+
+        /// <summary>
+        /// DM nameof(/path/to/thing): the final segment of the path string.
+        /// (A path constant converts to its path string; the emitter passes the
+        /// path literal through, so nameof(/datum/action/proc/Trigger) yields
+        /// "Trigger".)
+        /// </summary>
+        public static DMValue NameOf(DMValue path)
+        {
+            var s = path.ToString();
+            var idx = s.LastIndexOf('/');
+            return DMValue.FromString(idx < 0 ? s : s.Substring(idx + 1));
+        }
+
+        /// <summary>
+        /// DM typesof(...): the union of all type paths known to the runtime
+        /// that match any of the given paths or their descendants.
+        /// </summary>
+        public static DMValue TypesOf(params DMValue[] typePaths)
+        {
+            var list = new DMList();
+            foreach (var tp in typePaths)
+            {
+                var prefix = tp.ToString();
+                foreach (var p in ProcRegistry.RegisteredPaths)
+                {
+                    if (p != prefix && !p.StartsWith(prefix + "/", StringComparison.Ordinal)) continue;
+                    var alreadyAdded = false;
+                    for (var i = 1; i <= list.Count; i++)
+                    {
+                        if (DMValue.Equals(list.Get(i), DMValue.FromString(p)).IsTrue()) { alreadyAdded = true; break; }
+                    }
+                    if (!alreadyAdded) list.Add(DMValue.FromString(p));
+                }
+            }
+            return DMValue.FromList(list);
+        }
+
+        // ==== initial() ====
+
+        /// <summary>
+        /// DM initial(var): the value the var had when the datum was created
+        /// (before runtime mutation). Engine-free approximation: the first
+        /// value ever assigned to the var (DMRuntime.InitialValues).
+        /// </summary>
+        public static DMValue DMInitial(DMRuntime datum, string name)
+        {
+            if (datum.InitialValues.TryGetValue(name, out var v)) return v;
+            return DMValue.Null;
+        }
+
+        public static DMValue DMInitial(DMValue datumOrValue, string name = "")
+        {
+            if (datumOrValue.Type == DMValueType.DatumRef && datumOrValue.DatumRef is DMRuntime datum)
+                return DMInitial(datum, name);
+            return DMValue.Null;
+        }
+
+        // ==== CRASH ====
+
+        public static DMValue DMCRASH(DMValue message)
+        {
+            throw new InvalidOperationException("DM CRASH: " + message.ToString());
+        }
+
+        // ==== turn() ====
+
+        private static readonly int[] ClockwiseDirs = { 1, 5, 4, 6, 2, 10, 8, 9 }; // N, NE, E, SE, S, SW, W, NW
+
+        /// <summary>
+        /// DM turn(dir, angle): rotate a direction by an angle in degrees
+        /// (positive = clockwise, 45-degree steps; approximates BYOND's
+        /// binary-direction rotation).
+        /// </summary>
+        public static DMValue Turn(DMValue dir, DMValue angle)
+        {
+            var d = (int)dir.ToNumber();
+            var idx = Array.IndexOf(ClockwiseDirs, d);
+            if (idx < 0) return dir;
+            var steps = (int)Math.Round(angle.ToNumber() / 45.0);
+            var rotated = (idx + steps) % ClockwiseDirs.Length;
+            if (rotated < 0) rotated += ClockwiseDirs.Length;
+            return DMValue.FromNumber(ClockwiseDirs[rotated]);
+        }
+
+        // ==== Position builtins (engine-free, by DM x/y/z vars) ====
+
+        private static double Coord(DMRuntime datum, string axis)
+        {
+            var v = datum.GetVar(axis);
+            return v.Type == DMValueType.Number ? v.NumberValue : 0;
+        }
+
+        private static (double Dx, double Dy) DirOffset(double dir)
+        {
+            return dir switch
+            {
+                1 => (0, 1),   // N
+                2 => (0, -1),  // S
+                4 => (1, 0),   // E
+                8 => (-1, 0),  // W
+                5 => (1, 1),   // NE
+                6 => (1, -1),  // SE
+                9 => (-1, 1),  // NW
+                10 => (-1, -1),// SW
+                _ => (0, 0)
+            };
+        }
+
+        private static bool At(DMRuntime d, double x, double y, double z)
+        {
+            return Coord(d, "x") == x && Coord(d, "y") == y && Coord(d, "z") == z;
+        }
+
+        /// <summary>
+        /// DM get_dist(a, b): Chebyshev distance (8-direction step count)
+        /// between two datums by their x/y/z vars.
+        /// </summary>
+        public static DMValue GetDist(DMValue a, DMValue b)
+        {
+            if (a.Type != DMValueType.DatumRef || a.DatumRef is not DMRuntime da) return DMValue.FromNumber(0);
+            if (b.Type != DMValueType.DatumRef || b.DatumRef is not DMRuntime db) return DMValue.FromNumber(0);
+            var dx = Math.Abs(Coord(da, "x") - Coord(db, "x"));
+            var dy = Math.Abs(Coord(da, "y") - Coord(db, "y"));
+            return DMValue.FromNumber(Math.Max(dx, dy));
+        }
+
+        /// <summary>
+        /// DM get_dir(a, b): the direction from a to b as a BYOND binary
+        /// direction value (N=1, S=2, E=4, W=8, diagonals are bitwise-ORs).
+        /// </summary>
+        public static DMValue GetDir(DMValue a, DMValue b)
+        {
+            if (a.Type != DMValueType.DatumRef || a.DatumRef is not DMRuntime da) return DMValue.FromNumber(0);
+            if (b.Type != DMValueType.DatumRef || b.DatumRef is not DMRuntime db) return DMValue.FromNumber(0);
+            var dx = Coord(db, "x") - Coord(da, "x");
+            var dy = Coord(db, "y") - Coord(da, "y");
+            var dir = 0;
+            if (dx > 0) dir |= 4;
+            else if (dx < 0) dir |= 8;
+            if (dy > 0) dir |= 1;
+            else if (dy < 0) dir |= 2;
+            return DMValue.FromNumber(dir);
+        }
+
+        /// <summary>
+        /// DM get_step(atom, dir): the datum found one step in the given
+        /// direction (first live datum at that position, or Null).
+        /// </summary>
+        public static DMValue GetStep(DMValue atom, DMValue dir)
+        {
+            if (atom.Type != DMValueType.DatumRef || atom.DatumRef is not DMRuntime a) return DMValue.Null;
+            var (dx, dy) = DirOffset(dir.ToNumber());
+            var x = Coord(a, "x") + dx;
+            var y = Coord(a, "y") + dy;
+            var z = Coord(a, "z");
+            foreach (var d in LiveDatums)
+            {
+                if (d != a && At(d, x, y, z)) return DMValue.FromDatum(d);
+            }
+            return DMValue.Null;
+        }
+
+        /// <summary>
+        /// DM get_turf(atom): the atom itself if it is a /turf, else the live
+        /// /turf at its position, else Null.
+        /// </summary>
+        public static DMValue GetTurf(DMValue atom)
+        {
+            if (atom.Type != DMValueType.DatumRef || atom.DatumRef is not DMRuntime a) return DMValue.Null;
+            if (a.IsType("/turf")) return atom;
+            var x = Coord(a, "x");
+            var y = Coord(a, "y");
+            var z = Coord(a, "z");
+            foreach (var d in LiveDatums)
+            {
+                if (d.IsType("/turf") && At(d, x, y, z)) return DMValue.FromDatum(d);
+            }
+            return DMValue.Null;
+        }
+
+        private static DMValue RangeScan(DMValue center, DMValue distValue, bool excludeCenter)
+        {
+            var dist = distValue.ToNumber();
+            var list = new DMList();
+            if (center.Type != DMValueType.DatumRef || center.DatumRef is not DMRuntime c) return DMValue.FromList(list);
+            var cx = Coord(c, "x");
+            var cy = Coord(c, "y");
+            var cz = Coord(c, "z");
+            foreach (var d in LiveDatums)
+            {
+                if (excludeCenter && d == c) continue;
+                if (Math.Max(Math.Abs(Coord(d, "x") - cx), Math.Abs(Coord(d, "y") - cy)) <= dist && Coord(d, "z") == cz)
+                    list.Add(DMValue.FromDatum(d));
+            }
+            return DMValue.FromList(list);
+        }
+
+        /// <summary>
+        /// DM range(...): live datums within a distance of a center (usr by
+        /// default). Approximates BYOND turf ranges by x/y/z vars.
+        /// </summary>
+        public static DMValue Range(params DMValue[] args)
+        {
+            var center = args.Length > 0 ? args[0] : CurrentUsr;
+            var dist = args.Length > 1 ? args[1] : DMValue.FromNumber(3);
+            return RangeScan(center, dist, false);
+        }
+
+        /// <summary>
+        /// DM view(...): like range but default distance is the 7x7 vision
+        /// view (dist 3).
+        /// </summary>
+        public static DMValue View(params DMValue[] args)
+        {
+            var center = args.Length > 0 ? args[0] : CurrentUsr;
+            var dist = args.Length > 1 ? args[1] : DMValue.FromNumber(3);
+            return RangeScan(center, dist, false);
+        }
+
+        /// <summary>
+        /// DM oview(...): like view but excludes the center.
+        /// </summary>
+        public static DMValue OView(params DMValue[] args)
+        {
+            var center = args.Length > 0 ? args[0] : CurrentUsr;
+            var dist = args.Length > 1 ? args[1] : DMValue.FromNumber(3);
+            return RangeScan(center, dist, true);
+        }
+
+        /// <summary>
+        /// DM block(...): live turfs in a rectangle. Forms: block(a, b) with
+        /// two atoms; block(x1, y1, x2, y2, z) or block(x1, y1, x2, y2, z, type)
+        /// with raw coordinates and an optional type filter.
+        /// </summary>
+        public static DMValue Block(params DMValue[] args)
+        {
+            var list = new DMList();
+            if (args.Length == 2)
+            {
+                if (args[0].Type != DMValueType.DatumRef || args[0].DatumRef is not DMRuntime da) return DMValue.FromList(list);
+                if (args[1].Type != DMValueType.DatumRef || args[1].DatumRef is not DMRuntime db) return DMValue.FromList(list);
+                var x1 = Math.Min(Coord(da, "x"), Coord(db, "x"));
+                var x2 = Math.Max(Coord(da, "x"), Coord(db, "x"));
+                var y1 = Math.Min(Coord(da, "y"), Coord(db, "y"));
+                var y2 = Math.Max(Coord(da, "y"), Coord(db, "y"));
+                var z = Coord(da, "z");
+                foreach (var d in LiveDatums)
+                {
+                    if (d.IsType("/turf") && Coord(d, "x") >= x1 && Coord(d, "x") <= x2 && Coord(d, "y") >= y1 && Coord(d, "y") <= y2 && Coord(d, "z") == z)
+                        list.Add(DMValue.FromDatum(d));
+                }
+                return DMValue.FromList(list);
+            }
+            if (args.Length >= 5)
+            {
+                var x1 = args[0].ToNumber();
+                var y1 = args[1].ToNumber();
+                var x2 = args[2].ToNumber();
+                var y2 = args[3].ToNumber();
+                var z = args[4].ToNumber();
+                string filterType = args.Length >= 6 && args[5].Type == DMValueType.String ? args[5].ToString() : null;
+                foreach (var d in LiveDatums)
+                {
+                    if (!d.IsType("/turf")) continue;
+                    if (filterType != null && !d.IsType(filterType)) continue;
+                    if (Coord(d, "x") >= x1 && Coord(d, "x") <= x2 && Coord(d, "y") >= y1 && Coord(d, "y") <= y2 && Coord(d, "z") == z)
+                        list.Add(DMValue.FromDatum(d));
+                }
+                return DMValue.FromList(list);
+            }
+            return DMValue.FromList(list);
+        }
+
+        // ==== Text / list builtins ====
+
+        public static DMValue SplitText(DMValue text, DMValue separator)
+        {
+            var s = text.ToString();
+            var list = new DMList();
+            var sep = separator.ToString();
+            if (sep.Length == 0)
+            {
+                foreach (var c in s) list.Add(DMValue.FromString(c.ToString()));
+            }
+            else
+            {
+                foreach (var p in s.Split(new[] { sep }, StringSplitOptions.None)) list.Add(DMValue.FromString(p));
+            }
+            return DMValue.FromList(list);
+        }
+
+        public static DMValue JoinText(DMValue value, DMValue separator = default)
+        {
+            var sep = separator.Type == DMValueType.Null && separator.NumberValue == 0 ? "" : separator.ToString();
+            var sb = new System.Text.StringBuilder();
+            var first = true;
+            void Append(string s)
+            {
+                if (!first) sb.Append(sep);
+                sb.Append(s);
+                first = false;
+            }
+            if (value.Type == DMValueType.List)
+            {
+                for (var i = 1; i <= value.ListValue.Count; i++) Append(value.ListValue.Get(i).ToString());
+            }
+            else
+            {
+                Append(value.ToString());
+            }
+            return DMValue.FromString(sb.ToString());
+        }
+
+        /// <summary>
+        /// DM params2list("a=1&b=2"): URL-style params into an associative list.
+        /// </summary>
+        public static DMValue Params2List(DMValue value)
+        {
+            var list = new DMList();
+            foreach (var pair in value.ToString().Split('&'))
+            {
+                if (pair.Length == 0) continue;
+                var eq = pair.IndexOf('=');
+                if (eq < 0) list.Add(DMValue.FromString(pair));
+                else list.SetAssoc(pair.Substring(0, eq), DMValue.FromString(pair.Substring(eq + 1)));
+            }
+            return DMValue.FromList(list);
+        }
+
+        /// <summary>
+        /// DM text2path: a text path converts to the same path string.
+        /// </summary>
+        public static DMValue Text2Path(DMValue value) => value;
+
+        /// <summary>
+        /// DM rgb(r, g, b[, a]): "#RRGGBB" (or "#RRGGBBAA" with alpha) text.
+        /// </summary>
+        public static DMValue RGB(params DMValue[] args)
+        {
+            var r = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+            var g = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+            var b = args.Length > 2 ? (int)args[2].ToNumber() : 0;
+            var a = args.Length > 3 ? (int)args[3].ToNumber() : 0;
+            var hex = "#" + r.ToString("X2") + g.ToString("X2") + b.ToString("X2");
+            if (a > 0) hex += a.ToString("X2");
+            return DMValue.FromString(hex);
+        }
+
+        /// <summary>
+        /// DM fexists(path): whether the file exists on the host filesystem.
+        /// </summary>
+        public static DMValue FExists(DMValue path)
+        {
+            return DMValue.FromNumber(System.IO.File.Exists(path.ToString()) ? 1 : 0);
+        }
+
+        public static DMValue IsNaN(DMValue value)
+        {
+            return DMValue.FromNumber(double.IsNaN(value.ToNumber()) ? 1 : 0);
+        }
+
+        public static DMValue IsInf(DMValue value)
+        {
+            return DMValue.FromNumber(double.IsInfinity(value.ToNumber()) ? 1 : 0);
+        }
+
+        /// <summary>
+        /// DM json_decode: JSON text into a DMValue (objects become associative
+        /// lists, arrays become lists, scalars convert directly).
+        /// </summary>
+        public static DMValue JsonDecode(DMValue value)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(value.ToString());
+                return JsonToDMValue(doc.RootElement);
+            }
+            catch (JsonException)
+            {
+                return DMValue.Null;
+            }
+        }
+
+        private static DMValue JsonToDMValue(JsonElement el)
+        {
+            switch (el.ValueKind)
+            {
+                case JsonValueKind.Object:
+                {
+                    var list = new DMList();
+                    foreach (var prop in el.EnumerateObject()) list.SetAssoc(prop.Name, JsonToDMValue(prop.Value));
+                    return DMValue.FromList(list);
+                }
+                case JsonValueKind.Array:
+                {
+                    var list = new DMList();
+                    foreach (var item in el.EnumerateArray()) list.Add(JsonToDMValue(item));
+                    return DMValue.FromList(list);
+                }
+                case JsonValueKind.String:
+                    return DMValue.FromString(el.GetString() ?? "");
+                case JsonValueKind.Number:
+                    return DMValue.FromNumber(el.GetDouble());
+                case JsonValueKind.True:
+                    return DMValue.FromNumber(1);
+                case JsonValueKind.False:
+                    return DMValue.FromNumber(0);
+                default:
+                    return DMValue.Null;
+            }
+        }
+
+        // ==== call() proc references ====
+
+        /// <summary>
+        /// DM call(target, proc): a reference to a proc, invocable later.
+        /// target is a datum (bound to it) or a type-path string (bound to the
+        /// type; invocation allocates a temporary datum of that type).
+        /// </summary>
+        public static DMValue MakeProcRef(DMValue target, DMValue procName = default)
+        {
+            var name = procName.Type == DMValueType.Null && procName.NumberValue == 0 ? "" : procName.ToString();
+            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime d)
+                return DMValue.FromString(MakeProcRefKey(d, null!, name));
+            return DMValue.FromString(MakeProcRefKey(null!, target.ToString(), name));
+        }
+
+        /// <summary>
+        /// Invokes a proc reference created by call() (DM: pref(x, y)).
+        /// </summary>
+        public static async Task<DMValue> InvokeProcRef(DMValue procRef, params DMValue[] args)
+        {
+            var s = procRef.ToString();
+            if (!s.StartsWith("DMProcRef:") || !ProcRefs.TryGetValue(s, out var entry)) return DMValue.Null;
+            if (entry.Datum != null) return await entry.Datum.CallProc(entry.ProcName, args);
+            var temp = new DMRuntime { DMTypePath = entry.TypePath };
+            return await temp.CallProc(entry.ProcName, args);
+        }
+
+        // ==== Recognized-but-stubbed builtins (visual/UI/extension; return Null) ====
+
+        public static DMValue Animate(params DMValue[] args) => DMValue.Null;
+        public static DMValue Image(params DMValue[] args) => DMValue.Null;
+        public static DMValue Flick(params DMValue[] args) => DMValue.Null;
+        public static DMValue Sound(params DMValue[] args) => DMValue.Null;
+        public static DMValue Matrix(params DMValue[] args) => DMValue.Null;
+        public static DMValue Browse(params DMValue[] args) => DMValue.Null;
+        public static DMValue CallExt(params DMValue[] args) => DMValue.Null;
+        public static DMValue DetectRustG(params DMValue[] args) => DMValue.FromNumber(0);
+
 
         public static DMValue DMProb(DMValue chance)
         {

@@ -31,6 +31,12 @@ engine-free datum runtime. "Compiles" now means compiles against the real engine
       **tgstation: 44,826 sampled procs from 45,502 types → 0 C# errors**, real-engine
       `dotnet build` green; all error classes fixed — CS1061/CS0201/CS0136/CS7036/CS1501/
       CS1503/CS0029/CS1632/CS1026)
+- [x] Builtin expansion (~43 more: `isnull`/`isnum`/`istext`, type predicates,
+      `CRASH`, `nameof`, `typesof`, `initial`, `call()` proc refs, `turn`, position
+      builtins `get_step`/`get_dist`/`get_dir`/`get_turf`/`range`/`view`/`oview`/`block`,
+      `splittext`/`jointext`/`params2list`/`rgb`/`json_decode`/...) + `/proc` registry
+      fallback for bare global proc calls → unknown-builtin sites drop **−88…−91%**
+      across the 4 corpora; probes **24 → 40/40**
 
 ---
 
@@ -48,7 +54,8 @@ Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
 - [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0,
       IR + `new`-expression trailing-slash normalization
 
-Remaining (Phase 2+/Tier 3): `GLOB` statics, bitwise ops, more builtins.
+Remaining (Phase 2+/Tier 3): `GLOB` statics, bitwise ops, remaining builtins
+(`sqrt`, `json_encode`, `regex`, `file`, `step`, `ckey`, `viewers`...).
 
 ---
 

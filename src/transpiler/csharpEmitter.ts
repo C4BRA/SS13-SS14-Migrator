@@ -494,6 +494,14 @@ namespace Content.Server.DM
         ).join(', ')})`
       : node.arguments.map((a: any) => this.transpileExpression(a)).join(', ');
 
+    // Invocation of a proc reference built with call(): f(...) where f is a
+    // call(...) expression parses to a call node with an empty name and a
+    // target. Must be handled before the generic target branch below.
+    if (node.name === '' && node.target) {
+      const refArgs = node.arguments.map((a: any) => this.transpileExpression(a)).join(', ');
+      return `(await DMRuntimeHelpers.InvokeProcRef(${this.transpileExpression(node.target)}${refArgs ? ', ' + refArgs : ''}))`;
+    }
+
     // Method call on a target: obj.method(x). Parenthesized so member access
     // on the result binds to the DMValue, not the awaited Task.
     if (node.target) {
@@ -501,6 +509,18 @@ namespace Content.Server.DM
         return `(await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}"))`;
       }
       return `(await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}", ${args}))`;
+    }
+
+    // DM initial(var): the compile-time value of a datum var. Pass the datum
+    // and the var NAME (not the var's current value).
+    if (node.name === 'initial' && node.arguments.length === 1) {
+      const a = node.arguments[0];
+      if (a.type === 'property') {
+        return `DMRuntimeHelpers.DMInitial(${this.transpileExpression(a.target)}, "${a.property}")`;
+      }
+      if (a.type === 'variable') {
+        return `DMRuntimeHelpers.DMInitial(comp, "${a.name}")`;
+      }
     }
 
     // Built-in DM procs

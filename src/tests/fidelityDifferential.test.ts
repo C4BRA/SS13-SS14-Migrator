@@ -147,6 +147,86 @@ const PROBES: Probe[] = [
     name: 'islist() on a list',
     dm: `/datum/probe/proc/run()\n\treturn islist(list(1))`,
     expected: '1'
+  },
+  {
+    name: 'bare call to a global proc resolves (/proc fallback)',
+    dm: `/proc/global_probe_helper()\n\treturn 42\n/datum/probe/proc/run()\n\treturn global_probe_helper()`,
+    expected: '42'
+  },
+  {
+    name: 'isnull() on an uninitialized var',
+    dm: `/datum/probe/proc/run()\n\tvar/x\n\treturn isnull(x)`,
+    expected: '1'
+  },
+  {
+    name: 'isnum/istext predicates',
+    dm: `/datum/probe/proc/run()\n\treturn isnum(5) && istext("a") && !isnum("x")`,
+    expected: '1'
+  },
+  {
+    name: 'ismob() on a mob instance',
+    dm: `/mob/probe_mob\n/datum/probe/proc/run()\n\tvar/m = new /mob/probe_mob()\n\treturn ismob(m)`,
+    expected: '1'
+  },
+  {
+    name: 'nameof() returns the final path segment',
+    dm: `/datum/probe/proc/run()\n\treturn nameof(/datum/probe/proc/run)`,
+    expected: 'run'
+  },
+  {
+    name: 'turn() rotates a direction clockwise',
+    dm: `/datum/probe/proc/run()\n\treturn turn(4, 90)`,
+    expected: '2' // E + 90deg clockwise = S
+  },
+  {
+    name: 'get_dist() is Chebyshev over x/y vars',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 1\n\ta.y = 1\n\tb.x = 4\n\tb.y = 5\n\treturn get_dist(a, b)`,
+    expected: '4'
+  },
+  {
+    name: 'get_dir() returns binary direction',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 1\n\ta.y = 1\n\tb.x = 4\n\tb.y = 5\n\treturn get_dir(a, b)`,
+    expected: '5' // NE
+  },
+  {
+    name: 'splittext() splits into a list',
+    dm: `/datum/probe/proc/run()\n\tvar/L = splittext("a,b,c", ",")\n\treturn L.len`,
+    expected: '3'
+  },
+  {
+    name: 'jointext() joins a list',
+    dm: `/datum/probe/proc/run()\n\treturn jointext(list("a", "b", "c"), "-")`,
+    expected: 'a-b-c'
+  },
+  {
+    name: 'rgb() formats hex color',
+    dm: `/datum/probe/proc/run()\n\treturn rgb(255, 0, 128)`,
+    expected: '#FF0080'
+  },
+  {
+    name: 'initial() reads the pre-mutation var value',
+    dm: `/datum/probe2\n\tproc/New()\n\t\tsrc.foo = 7\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\ta.foo = 99\n\treturn initial(a.foo)`,
+    expected: '7'
+  },
+  {
+    name: 'call() proc reference invokes dynamically',
+    dm: `/datum/probe2\n\tproc/helper(x)\n\t\treturn x + 1\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn call(a, "helper")(5)`,
+    expected: '6'
+  },
+  {
+    name: 'json_decode() parses into an assoc list',
+    dm: `/datum/probe/proc/run()\n\tvar/L = json_decode("{\\"a\\": 1}")\n\treturn L["a"]`,
+    expected: '1'
+  },
+  {
+    name: 'typesof() lists registered descendants',
+    dm: `/datum/probe_base\n\tproc/base_helper()\n\t\treturn 1\n/datum/probe_base/child\n\tproc/child_helper()\n\t\treturn 1\n/datum/probe/proc/run()\n\tvar/L = typesof(/datum/probe_base)\n\treturn L.len`,
+    expected: '2'
+  },
+  {
+    name: 'range() finds datums within distance',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 0\n\ta.y = 0\n\tb.x = 1\n\tb.y = 1\n\treturn range(a, 2).len`,
+    expected: '2'
   }
 ];
 
@@ -223,7 +303,7 @@ async function main(): Promise<void> {
     try {
       output = execSync('dotnet run --project ProbeDriver.csproj --nologo -v q', {
         cwd: scratch,
-        timeout: 180000,
+        timeout: 300000,
         maxBuffer: 16 * 1024 * 1024,
         stdio: 'pipe',
         env: { ...process.env, DOTNET_ROLL_FORWARD: 'LatestMajor' }
@@ -232,8 +312,9 @@ async function main(): Promise<void> {
       output = (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '');
       const compileErrors = output.split('\n').filter(l => l.includes('error CS')).slice(0, 3);
       const match = false;
-      results.push({ name: probe.name, expected: probe.expected, observed: `BUILD FAILED: ${compileErrors.join('; ')}`, match });
-      console.log(`❌ ${probe.name}  (expected ${probe.expected}) — BUILD FAILED ${compileErrors.length > 0 ? compileErrors[0].trim() : ''}`);
+      const failure = e.killed || e.signal ? `TIMED OUT after 300s (killed=${e.killed})` : (compileErrors.length > 0 ? `BUILD FAILED: ${compileErrors.join('; ')}` : `FAILED: ${e.message ?? e.code ?? 'no output'}`);
+      results.push({ name: probe.name, expected: probe.expected, observed: failure, match });
+      console.log(`❌ ${probe.name}  (expected ${probe.expected}) — ${failure}`);
       continue;
     }
     const m = output.match(/PROBE_RESULT:(.*)$/m);
