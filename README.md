@@ -121,7 +121,7 @@ engine.pin                                    pinned RobustToolbox commit + API 
 ## Known limitations
 
 See `PLAN.md` ("Out of scope") and `FIDELITY-AUDIT.md` (honest loss counts;
-7/24 semantic probes currently preserved — semantic-core rework is Phase 0.5+).
+24/24 semantic probes preserved after the Phase 0.5 semantic core).
 Notable items: no argument macros, no screen/overlay/appearance handling,
 verb-to-command mapping is stubbed, and the generated solution builds against
 the real `Robust.Shared` engine project but does not yet run a live

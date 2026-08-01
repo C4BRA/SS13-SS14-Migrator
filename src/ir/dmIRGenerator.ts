@@ -22,10 +22,11 @@ export class DMIRGenerator {
     // 1. Initialize base types if not present (does not mutate caller array)
     const allNodes = this.ensureBaseTypes(nodes);
 
-    // 2. Index nodes by path
+    // 2. Index nodes by path (normalized: the lexer can leave a trailing
+    // slash on TypePath tokens, e.g. "/obj/item/").
     const nodeMap = new Map<string, DMTypeDeclNode>();
     for (const node of allNodes) {
-      nodeMap.set(node.path, node);
+      nodeMap.set(this.normalizePath(node.path), node);
     }
 
     // 3. Sort paths hierarchically so parent types are processed before children
@@ -104,6 +105,10 @@ export class DMIRGenerator {
     }
 
     return irMap;
+  }
+
+  private normalizePath(path: string): string {
+    return path.replace(/\/+$/, '');
   }
 
   private synthesizeMissingType(path: string, irMap: Map<string, DMIRType>): void {

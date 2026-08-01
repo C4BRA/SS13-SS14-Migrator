@@ -80,7 +80,7 @@ const PROBES: Probe[] = [
   },
   {
     name: '..() executes the parent proc',
-    dm: `/datum\n\tproc/hello()\n\t\tsrc.mark = 9\n/datum/probe\n\tproc/hello()\n\t\t..()\n\t\treturn src.mark`,
+    dm: `/datum\n\tproc/run()\n\t\tsrc.mark = 9\n/datum/probe\n\tproc/run()\n\t\t..()\n\t\treturn src.mark`,
     expected: '9'
   },
   {

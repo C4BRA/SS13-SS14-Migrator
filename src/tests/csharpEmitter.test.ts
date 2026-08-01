@@ -60,7 +60,7 @@ async function runCSharpEmitterTests() {
     var/z = usr.mob
 `);
   assertContains(kw, `await DMCallProc(DMValue.FromDatum(comp), "zero")`, 'src.method() postfix chain');
-  assertContains(kw, `(DMRuntimeHelpers.CurrentUsr).AsDatum()?.GetVar("mob") ?? DMValue.Null`, 'usr property access');
+  assertContains(kw, `DMRuntimeHelpers.DMGetProperty(DMRuntimeHelpers.CurrentUsr, "mob")`, 'usr property access');
 
   // Test 5: Proc args are stored on the component (C#-keyword-safe)
   const args = transpileProc(`/obj/foo/proc/do_work(event, object, args)
@@ -173,8 +173,8 @@ async function runCSharpEmitterTests() {
     ..(5)
     return ..()
 `);
-  assertContains(paren, `await comp.CallProc("..", DMValue.FromNumber(5))`, 'Parent call with args');
-  assertContains(paren, `await comp.CallProc("..")`, 'Parent call zero-arg');
+  assertContains(paren, `await comp.CallParentProc("run", DMValue.FromNumber(5))`, 'Parent call with args');
+  assertContains(paren, `await comp.CallParentProc("run")`, 'Parent call zero-arg');
 
   // Test 21: Modulo / bitwise ops parse
   const mod = transpileProc(`/obj/foo/proc/run()
@@ -215,7 +215,7 @@ async function runCSharpEmitterTests() {
   const ncl = transpileProc(`/obj/foo/proc/run()
     var/y = C.dna?.species
 `);
-  assertContains(ncl, `GetVar("species")`, '?. null-conditional property access');
+  assertContains(ncl, `DMGetProperty(comp.GetVar("C"), "dna")`, '?. null-conditional property access');
 
   // Test 26: 'in' as expression operator
   const inOp = transpileProc(`/obj/foo/proc/run()

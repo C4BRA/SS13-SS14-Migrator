@@ -5,6 +5,13 @@ import { ExpressionNode } from '../parser/dmParser.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
 
 export class CSharpEmitter {
+  private tempCounter = 0;
+  private currentProcName = '';
+  private loopDepth = 0;
+
+  private nextTemp(): string {
+    return `__dm_t${this.tempCounter++}`;
+  }
   public emitCSharpSystems(irMap: Map<string, DMIRType>, outputServerDir: string): void {
     if (!fs.existsSync(outputServerDir)) {
       fs.mkdirSync(outputServerDir, { recursive: true });
@@ -62,6 +69,8 @@ namespace Content.Server.DM
           // collisions (e.g. an arg named `event` or `object`).
           member += `            comp.SetVar("${arg.name}", args.Length > ${idx} ? args[${idx}] : DMValue.Null);\n`;
         });
+
+        this.currentProcName = procName;
 
         if (this.referencesIdentifier(procNode, 'args')) {
           member += `            var __dmArgs = DMList.FromArray(args);\n`;
@@ -164,25 +173,27 @@ namespace Content.Server.DM
         return `${pad}// delete with no target\n`;
 
       case 'SwitchStatement':
-        let switchCode = '';
+        let switchCode = `${pad}// DM switch: emitted as if/else chain inside a while(true)\n${pad}// wrapper so that break/continue inside case bodies are valid C#\n`;
+        switchCode += `${pad}while (true)\n${pad}{\n`;
         const cases: { values: any[]; body: any[] }[] = stmt.cases || [];
         const switchCond = this.transpileExpression(stmt.switchValue);
         for (let i = 0; i < cases.length; i++) {
           const c = cases[i];
           const conds = c.values.map(v => `DMValue.In(${switchCond}, ${this.transpileExpression(v)})`).join(' || ');
-          switchCode += `${pad}${i === 0 ? 'if' : 'else if'} (${conds})\n${pad}{\n`;
+          switchCode += `${pad}    ${i === 0 ? 'if' : 'else if'} (${conds})\n${pad}    {\n`;
           for (const s of c.body || []) {
-            switchCode += this.transpileStatement(s, indent + 4);
+            switchCode += this.transpileStatement(s, indent + 8);
           }
-          switchCode += `${pad}}\n`;
+          switchCode += `${pad}    }\n`;
         }
         if (stmt.defaultBody && stmt.defaultBody.length > 0) {
-          switchCode += `${pad}else\n${pad}{\n`;
+          switchCode += `${pad}    else\n${pad}    {\n`;
           for (const s of stmt.defaultBody) {
-            switchCode += this.transpileStatement(s, indent + 4);
+            switchCode += this.transpileStatement(s, indent + 8);
           }
-          switchCode += `${pad}}\n`;
+          switchCode += `${pad}    }\n`;
         }
+        switchCode += `${pad}}\n`;
         return switchCode;
 
       case 'SpawnStatement':
@@ -217,20 +228,35 @@ namespace Content.Server.DM
         }
         return ifCode;
 
+      case 'BreakStatement':
+        // DM break exits the innermost loop, or the switch when not in a loop;
+        // the switch's while(true) wrapper makes plain `break` correct in both.
+        return `${pad}break;\n`;
+
+      case 'ContinueStatement':
+        if (this.loopDepth > 0) {
+          return `${pad}continue;\n`;
+        }
+        return `${pad}// continue outside a loop\n`;
+
       case 'WhileStatement':
+        this.loopDepth++;
         let whileCode = `${pad}while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}{\n`;
         for (const s of stmt.loopBody || []) {
           whileCode += this.transpileStatement(s, indent + 4);
         }
         whileCode += `${pad}}\n`;
+        this.loopDepth--;
         return whileCode;
 
       case 'DoWhileStatement':
+        this.loopDepth++;
         let doCode = `${pad}do\n${pad}{\n`;
         for (const s of stmt.loopBody || []) {
           doCode += this.transpileStatement(s, indent + 4);
         }
         doCode += `${pad}} while (${stmt.condition ? this.transpileExpression(stmt.condition) : 'DMValue.FromNumber(1)'}.IsTrue());\n`;
+        this.loopDepth--;
         return doCode;
 
       case 'CForStatement':
@@ -238,9 +264,11 @@ namespace Content.Server.DM
         if (stmt.loopVariable) {
           cforCode += `${pad}    comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.init)});\n`;
           cforCode += `${pad}    while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}    {\n`;
+          this.loopDepth++;
           for (const s of stmt.loopBody || []) {
             cforCode += this.transpileStatement(s, indent + 8);
           }
+          this.loopDepth--;
           cforCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.increment)});\n`;
           cforCode += `${pad}    }\n`;
         }
@@ -254,9 +282,11 @@ namespace Content.Server.DM
           forCode += `${pad}    foreach (var __dmIter in DMListItems(${this.transpileExpression(stmt.loopRange)}))\n`;
           forCode += `${pad}    {\n`;
           forCode += `${pad}        comp.SetVar("${stmt.loopVariable}", __dmIter);\n`;
+          this.loopDepth++;
           for (const s of stmt.loopBody || []) {
             forCode += this.transpileStatement(s, indent + 8);
           }
+          this.loopDepth--;
           forCode += `${pad}    }\n`;
         }
         forCode += `${pad}}\n`;
@@ -290,7 +320,7 @@ namespace Content.Server.DM
       case 'call':
         return this.transpileCall(node);
       case 'new':
-        return `await DMNew(comp, "${node.typePath}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''})`;
+        return `await DMNew(comp, "${this.normalizeTypePath(node.typePath)}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''})`;
       case 'ternary':
         return this.transpileTernary(node);
       case 'property':
@@ -329,11 +359,17 @@ namespace Content.Server.DM
 
   private transpileVariable(node: any): string {
     // Special DM variables: src = the current object, usr = the calling mob,
-    // args = the current proc's argument list (DMList, 1-indexed).
+    // args = the current proc's argument list (DMList, 1-indexed), world = the
+    // world datum.
     if (node.name === 'src') return 'DMValue.FromDatum(comp)';
     if (node.name === 'usr') return 'DMRuntimeHelpers.CurrentUsr';
+    if (node.name === 'world') return 'DMRuntimeHelpers.WorldValue';
     if (node.name === 'args') return '__dmArgs';
     return `comp.GetVar("${node.name}")`;
+  }
+
+  private normalizeTypePath(p: string): string {
+    return (p || '').replace(/\/+$/, '');
   }
 
   private referencesIdentifier(node: any, name: string): boolean {
@@ -358,16 +394,29 @@ namespace Content.Server.DM
       case '%': return `DMValue.Modulo(${left}, ${right})`;
       case '==': return `DMValue.Equals(${left}, ${right})`;
       case '~=': return `DMValue.Equals(${left}, ${right})`; // ~= is fuzzy compare; approximated
-      case '!=': return `!DMValue.Equals(${left}, ${right})`;
-      case '~!': return `!DMValue.Equals(${left}, ${right})`; // ~! is fuzzy not-equal; approximated
+      case '!=': return `DMValue.NotEquals(${left}, ${right})`;
+      case '~!': return `DMValue.NotEquals(${left}, ${right})`; // ~! is fuzzy not-equal; approximated
       case '<': return `DMValue.LessThan(${left}, ${right})`;
       case '<=': return `DMValue.LessOrEqual(${left}, ${right})`;
       case '>': return `DMValue.GreaterThan(${left}, ${right})`;
       case '>=': return `DMValue.GreaterOrEqual(${left}, ${right})`;
-      case '&&': return `DMValue.And(${left}, ${right})`;
-      case '||': return `DMValue.Or(${left}, ${right})`;
+      // DM && / || short-circuit AND return the deciding operand's value:
+      //   a && b  ->  a if a is falsy, else b
+      //   a || b  ->  a if a is truthy, else b
+      // C# pattern var binds the left operand once so it is not re-evaluated.
+      // Fully parenthesized: callers append members like .IsTrue() and must
+      // bind to the whole ternary, not its last branch.
+      case '&&': {
+        const t = this.nextTemp();
+        return `((${left}) is var ${t} && ${t}.IsTrue() ? (${right}) : (${t}))`;
+      }
+      case '||': {
+        const t = this.nextTemp();
+        return `((${left}) is var ${t} && !${t}.IsTrue() ? (${right}) : (${t}))`;
+      }
       case '<<': return `DMValue.Output(${left}, ${right})`;
       case 'in': return `DMValue.In(${left}, ${right})`;
+      case 'as': return left; // DM cast on a dynamic value is a runtime no-op
       case 'to': return `DMRuntimeHelpers.MakeRange(${left}, ${right})`;
       case '**': return `DMValue.Power(${left}, ${right})`;
       case '%%': return `DMValue.Modulo(${left}, ${right})`;
@@ -403,6 +452,14 @@ namespace Content.Server.DM
     if (builtin !== null) {
       return builtin;
     }
+    // DM "..()" — dispatch to the parent type's implementation of the
+    // currently executing proc.
+    if (node.name === '..') {
+      if (!args) {
+        return `await comp.CallParentProc("${this.currentProcName}")`;
+      }
+      return `await comp.CallParentProc("${this.currentProcName}", ${args})`;
+    }
     // User-defined proc - call through runtime
     if (!args) {
       return `await comp.CallProc("${node.name}")`;
@@ -419,7 +476,7 @@ namespace Content.Server.DM
 
   private transpileProperty(node: any): string {
     const target = this.transpileExpression(node.target);
-    return `(${target}).AsDatum()?.GetVar("${node.property}") ?? DMValue.Null`;
+    return `DMRuntimeHelpers.DMGetProperty(${target}, "${node.property}")`;
   }
 
   private transpileIndex(node: any): string {

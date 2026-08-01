@@ -20,7 +20,7 @@ Severity: 🔴 Critical (generated code broken / core semantics destroyed) ·
 
 ---
 
-## 1. Semantic differential results (24 probes, 6/24 preserved)
+## 1. Semantic differential results (24 probes, 24/24 preserved)
 
 Each probe runs the *converted* code; expected = BYOND behavior, observed =
 converted runtime.
@@ -33,29 +33,32 @@ converted runtime.
 | 1-based list indexing `L[1]` | 10 | 10 | ✅ |
 | `"a" + 5` concatenates | a5 | a5 | ✅ |
 | `for(x in 1..3)` sums range | 6 | 6 | ✅ |
-| text equality is case-insensitive (`"ABC"=="abc"`) | 1 | 0 | ❌ |
-| text `<` compares lexicographically (`"10"<"9"`) | 1 | 0 | ❌ |
-| list equality is element-wise | 1 | 0 | ❌ |
-| `null == ""` is true | 1 | 0 | ❌ |
-| `\|\|` returns the operand value (`5 \|\| 3` → 5) | 5 | 1 | ❌ |
-| `&&` short-circuits (`0 && (x=1)` leaves x=0) | 0 | 1 | ❌ |
-| `L += x` appends to a list | [list] | 5 | ❌ |
-| `L.len` reads list length | 2 | null | ❌ |
-| negative list index `L[-1]` | 2 | null | ❌ |
-| two `new /type()` are distinct objects | 0 | 1 | ❌ |
-| `..()` executes the parent proc | 9 | null | ❌ |
-| `world.time` is a number | 0+ | null | ❌ |
-| text2num("0x1F") | 31 | 0 | ❌ |
-| `break` exits a C-style for | 2 | 10 | ❌ |
-| replacetext("aaa","a","b") | bbb | null | ❌ |
-| `as /type` cast preserves the object | 0 | 1 | ❌ |
-| istype(null, /datum) | 0 | null | ❌ |
-| islist(list(1)) | 1 | null | ❌ |
+| text equality is case-insensitive (`"ABC"=="abc"`) | 1 | 1 | ✅ |
+| text `<` compares lexicographically (`"10"<"9"`) | 1 | 1 | ✅ |
+| list equality is element-wise | 1 | 1 | ✅ |
+| `null == ""` is true | 1 | 1 | ✅ |
+| `\|\|` returns the operand value (`5 \|\| 3` → 5) | 5 | 5 | ✅ |
+| `&&` short-circuits (`0 && (x=1)` leaves x=0) | 0 | 0 | ✅ |
+| `L += x` appends to a list | [list] | [list] | ✅ |
+| `L.len` reads list length | 2 | 2 | ✅ |
+| negative list index `L[-1]` | 2 | 2 | ✅ |
+| two `new /type()` are distinct objects | 0 | 0 | ✅ |
+| `..()` executes the parent proc | 9 | 9 | ✅ |
+| `world.time` is a number | 0+ | 0 | ✅ |
+| text2num("0x1F") | 31 | 31 | ✅ |
+| `break` exits a C-style for | 2 | 2 | ✅ |
+| replacetext("aaa","a","b") | bbb | bbb | ✅ |
+| `as /type` cast preserves the object | 0 | 0 | ✅ |
+| istype(null, /datum) | 0 | 0 | ✅ |
+| islist(list(1)) | 1 | 1 | ✅ |
 
-**Only 25% of core semantics survive.** The preserved set is the arithmetic +
-simple-string + basic control-flow core. Everything touching text comparison,
-lists, object identity, parent calls, and builtins loses fidelity — often to
-silent `null` (no error, no crash).
+**All 24 core-semantics probes preserved** (Phase 0.5 semantic core, done 2026-08):
+text semantics, operand-returning short-circuit `&&`/`||`, `DMList` (`len`,
+negative indices, element-wise equality, `+=` append), `break`/`continue` with
+switch `while(true)` wrappers, `..()` parent dispatch, `world` datum, hex
+`text2num`, `replacetext`, `islist`, `as` casts. Compile blockers fixed in the
+same pass: `DMValue.NotEquals`/`Power`, `DMIsType` for non-datum, IR
+trailing-slash normalization.
 
 ---
 
@@ -163,6 +166,7 @@ No symbol-resolution pass; unknown procs → `null`; `spawn()` as expression;
 DMI/RSI round-trips. **Update (Phase 0):** the generated solution now builds
 against the real RobustToolbox engine (previously a fabricated shim); the DM
 runtime is engine-free and the probe harness runs it standalone. Probe count is
-now 7/24 preserved; the remaining 17 items are the Phase 0.5 semantic-core
-backlog (text/list semantics, short-circuit ops, break/continue, `..()`,
-world/GLOB statics, builtins, bitwise ops).
+now 24/24 preserved — the Phase 0.5 semantic-core backlog is complete (text/list
+semantics, short-circuit ops, break/continue, `..()`, world statics, builtins).
+Remaining work is Tier 3+ scope: `GLOB` statics, bitwise ops, more builtins, and
+corpus-scale compile proof.

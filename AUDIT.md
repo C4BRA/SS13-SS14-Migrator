@@ -86,7 +86,7 @@ The fabricated `Robust.Shared` shim is **deleted** and the runtime is decoupled 
 | Engine-free runtime | `SS13.DM.Runtime` no longer references RobustToolbox: new `DMRuntime` datum (vars, `CallProc`, `ProcRegistry`) replaces the old `DMRuntimeComponent`; `DMNew` allocates a **fresh** datum — object-identity probe (`two new /type()` distinct) now passes |
 | Generated output split | `ConvertedDMProcs.cs` (engine-free procs, used by the probe harness) + `ConvertedDMSystem.cs` (real `EntitySystem` adapter: `SubscribeLocalEvent` with `ComponentEventRefHandler` `(uid, comp, ref args)`, `ComponentInit : EntityEventArgs`, verified against engine source) |
 | Engine component | `DMRuntimeComponent : Component` (`[RegisterComponent]`, `[DataField]`s) holds a datum on a real entity; YAML `type: DMRuntime` maps to it |
-| Probes | Engine-free now (standalone console project, no RobustToolbox needed): 24 probes, honest baseline **7/24** (was 6/24) |
+| Probes | Engine-free now (standalone console project, no RobustToolbox needed): 24 probes, honest baseline **7/24** (was 6/24); **24/24** after Phase 0.5 semantic core |
 | Scripts | `scripts/setup-engine.sh` (pin fetch), `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes); `EngineDir` MSBuild property / `SS14_ENGINE_DIR` env |
 
 **API facts discovered against the real engine** (recorded in `engine.pin`):

@@ -68,22 +68,71 @@ namespace SS13.DM.Runtime
 
         // Arithmetic
         // DM rule: if either operand is text, + concatenates
-        public static DMValue Add(DMValue a, DMValue b) =>
-            a.Type == DMValueType.String || b.Type == DMValueType.String
-                ? FromString(a.ToString() + b.ToString())
-                : FromNumber(a.ToNumber() + b.ToNumber());
+        public static DMValue Add(DMValue a, DMValue b)
+        {
+            // DM: list + x appends to a copy; list + list concatenates.
+            if (a.Type == DMValueType.List || b.Type == DMValueType.List)
+                return FromList(ConcatLists(a, b));
+            if (a.Type == DMValueType.String || b.Type == DMValueType.String)
+                return FromString(a.ToString() + b.ToString());
+            return FromNumber(a.ToNumber() + b.ToNumber());
+        }
+
+        private static DMList ConcatLists(DMValue a, DMValue b)
+        {
+            var result = new DMList();
+            if (a.Type == DMValueType.List)
+            {
+                for (var i = 1; i <= a.ListValue.Count; i++) result.Add(a.ListValue.Get(i));
+            }
+            else
+            {
+                result.Add(a);
+            }
+            if (b.Type == DMValueType.List)
+            {
+                for (var i = 1; i <= b.ListValue.Count; i++) result.Add(b.ListValue.Get(i));
+            }
+            else
+            {
+                result.Add(b);
+            }
+            return result;
+        }
         public static DMValue Subtract(DMValue a, DMValue b) => FromNumber(a.ToNumber() - b.ToNumber());
         public static DMValue Multiply(DMValue a, DMValue b) => FromNumber(a.ToNumber() * b.ToNumber());
         public static DMValue Divide(DMValue a, DMValue b) => FromNumber(b.ToNumber() != 0 ? a.ToNumber() / b.ToNumber() : 0);
         public static DMValue Modulo(DMValue a, DMValue b) => FromNumber(b.ToNumber() != 0 ? a.ToNumber() % b.ToNumber() : 0);
         public static DMValue Negate(DMValue a) => FromNumber(-a.ToNumber());
+        public static DMValue Power(DMValue a, DMValue b) => FromNumber(Math.Pow(a.ToNumber(), b.ToNumber()));
 
         // Comparison
         public static DMValue Equals(DMValue a, DMValue b) => FromNumber(a.EqualsValue(b) ? 1 : 0);
-        public static DMValue LessThan(DMValue a, DMValue b) => FromNumber(a.ToNumber() < b.ToNumber() ? 1 : 0);
-        public static DMValue LessOrEqual(DMValue a, DMValue b) => FromNumber(a.ToNumber() <= b.ToNumber() ? 1 : 0);
-        public static DMValue GreaterThan(DMValue a, DMValue b) => FromNumber(a.ToNumber() > b.ToNumber() ? 1 : 0);
-        public static DMValue GreaterOrEqual(DMValue a, DMValue b) => FromNumber(a.ToNumber() >= b.ToNumber() ? 1 : 0);
+        public static DMValue NotEquals(DMValue a, DMValue b) => FromNumber(a.EqualsValue(b) ? 0 : 1);
+        public static DMValue LessThan(DMValue a, DMValue b) => FromNumber(Compare(a, b) < 0 ? 1 : 0);
+        public static DMValue LessOrEqual(DMValue a, DMValue b) => FromNumber(Compare(a, b) <= 0 ? 1 : 0);
+        public static DMValue GreaterThan(DMValue a, DMValue b) => FromNumber(Compare(a, b) > 0 ? 1 : 0);
+        public static DMValue GreaterOrEqual(DMValue a, DMValue b) => FromNumber(Compare(a, b) >= 0 ? 1 : 0);
+
+        // DM rule: with a text operand, relational comparison is lexicographic
+        // (numbers are stringified, null is ""); otherwise it is numeric.
+        private static int Compare(DMValue a, DMValue b)
+        {
+            if (a.Type == DMValueType.String || b.Type == DMValueType.String)
+                return string.Compare(TextRepr(a), TextRepr(b), StringComparison.OrdinalIgnoreCase);
+            return a.ToNumber().CompareTo(b.ToNumber());
+        }
+
+        private static string TextRepr(DMValue v)
+        {
+            return v.Type switch
+            {
+                DMValueType.Null => "",
+                DMValueType.Number => v.NumberValue.ToString(),
+                DMValueType.String => v.StringValue,
+                _ => v.ToString()
+            };
+        }
 
         // Logical
         public static DMValue And(DMValue a, DMValue b) => FromNumber(a.IsTrue() && b.IsTrue() ? 1 : 0);
@@ -138,16 +187,37 @@ namespace SS13.DM.Runtime
                 return Math.Abs(other.NumberValue) < 1e-9;
             if (Type == DMValueType.Number && other.Type == DMValueType.Null)
                 return Math.Abs(NumberValue) < 1e-9;
+            // DM: null == "" and null == "0" are true
+            if (Type == DMValueType.Null && other.Type == DMValueType.String)
+                return other.StringValue.Length == 0 || (double.TryParse(other.StringValue, out var sn) && Math.Abs(sn) < 1e-9);
+            if (Type == DMValueType.String && other.Type == DMValueType.Null)
+                return other.EqualsValue(this);
+            // DM: an empty list equals null
+            if (Type == DMValueType.Null && other.Type == DMValueType.List)
+                return other.ListValue != null && other.ListValue.Count == 0;
+            if (Type == DMValueType.List && other.Type == DMValueType.Null)
+                return other.EqualsValue(this);
             if (Type != other.Type) return false;
             return Type switch
             {
                 DMValueType.Null => true,
                 DMValueType.Number => Math.Abs(NumberValue - other.NumberValue) < 1e-9,
-                DMValueType.String => StringValue == other.StringValue,
-                DMValueType.List => ReferenceEquals(ListValue, other.ListValue),
+                DMValueType.String => string.Equals(StringValue, other.StringValue, StringComparison.OrdinalIgnoreCase),
+                DMValueType.List => ReferenceEquals(ListValue, other.ListValue) || ListsEqual(ListValue, other.ListValue),
                 DMValueType.DatumRef => ReferenceEquals(DatumRef, other.DatumRef),
                 _ => false
             };
+        }
+
+        // DM: list equality is element-wise (recursive); order matters.
+        private static bool ListsEqual(DMList a, DMList b)
+        {
+            if (a.Count != b.Count) return false;
+            for (var i = 1; i <= a.Count; i++)
+            {
+                if (!a.Get(i).EqualsValue(b.Get(i))) return false;
+            }
+            return true;
         }
     }
 }
@@ -180,6 +250,8 @@ namespace SS13.DM.Runtime
 
         public DMValue Get(int index)
         {
+            // DM: negative indices read from the end (-1 = last element)
+            if (index < 0) index = _elements.Count + index + 1;
             if (index >= 1 && index <= _elements.Count)
                 return _elements[index - 1];
             return DMValue.Null;
@@ -187,6 +259,7 @@ namespace SS13.DM.Runtime
 
         public DMValue Set(int index, DMValue val)
         {
+            if (index < 0) index = _elements.Count + index + 1;
             if (index >= 1 && index <= _elements.Count)
                 _elements[index - 1] = val;
             else if (index == _elements.Count + 1)
@@ -251,20 +324,39 @@ namespace SS13.DM.Runtime
             if (ProcRegistry.TryGet(DMTypePath, procName, out var handler)
                 || ProcRegistry.TryGetInherited(DMTypePath, procName, out handler))
             {
-                // DM semantics: usr is the object that invoked the call; for direct
-                // calls this is the receiving object itself.
-                var previousUsr = DMRuntimeHelpers.CurrentUsr;
-                DMRuntimeHelpers.CurrentUsr = DMValue.FromDatum(this);
-                try
-                {
-                    return await handler(this, args);
-                }
-                finally
-                {
-                    DMRuntimeHelpers.CurrentUsr = previousUsr;
-                }
+                return await InvokeWithUsr(handler, args);
             }
             return DMValue.Null;
+        }
+
+        /// <summary>
+        /// DM "..()" dispatch: invoke the parent type's implementation of the
+        /// current proc (the nearest ancestor that defines it), skipping this
+        /// type's own override to avoid recursion.
+        /// </summary>
+        public async Task<DMValue> CallParentProc(string procName, params DMValue[] args)
+        {
+            if (ProcRegistry.TryGetInherited(DMTypePath, procName, out var handler))
+            {
+                return await InvokeWithUsr(handler, args);
+            }
+            return DMValue.Null;
+        }
+
+        private async Task<DMValue> InvokeWithUsr(Func<DMRuntime, DMValue[], Task<DMValue>> handler, DMValue[] args)
+        {
+            // DM semantics: usr is the object that invoked the call; for direct
+            // calls this is the receiving object itself.
+            var previousUsr = DMRuntimeHelpers.CurrentUsr;
+            DMRuntimeHelpers.CurrentUsr = DMValue.FromDatum(this);
+            try
+            {
+                return await handler(this, args);
+            }
+            finally
+            {
+                DMRuntimeHelpers.CurrentUsr = previousUsr;
+            }
         }
 
         public bool CanCallProc(string procName)
@@ -369,6 +461,19 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static DMValue CurrentUsr { get; set; } = DMValue.Null;
 
+        /// <summary>
+        /// DM "world" object. Engine integration later drives world.time from
+        /// the tick rate; the engine-free runtime exposes a live datum.
+        /// </summary>
+        public static DMValue WorldValue { get; } = BuildWorld();
+
+        private static DMValue BuildWorld()
+        {
+            var world = new DMRuntime { DMTypePath = "/world" };
+            world.SetVar("time", DMValue.FromNumber(0));
+            return DMValue.FromDatum(world);
+        }
+
         // ==== Object lifecycle ====
 
         /// <summary>
@@ -427,11 +532,52 @@ namespace SS13.DM.Runtime
 
         // ==== Type predicates ====
 
+        public static DMValue DMGetProperty(DMValue target, string name)
+        {
+            // DM: .len on a list or text returns its length; on a datum it
+            // falls through to the normal variable lookup below.
+            if (name == "len")
+            {
+                if (target.Type == DMValueType.List) return DMValue.FromNumber(target.ListValue.Count);
+                if (target.Type == DMValueType.String) return DMValue.FromNumber(target.StringValue.Length);
+            }
+            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
+                return datum.GetVar(name);
+            return DMValue.Null;
+        }
+
         public static DMValue DMIsType(DMValue value, DMValue typePath)
         {
+            // DM: istype(non-datum, /type) is always false (0), never null.
             if (value.Type != DMValueType.DatumRef || value.DatumRef is not DMRuntime datum)
-                return DMValue.Null;
+                return DMValue.FromNumber(0);
             return DMValue.FromNumber(datum.IsType(typePath.ToString()) ? 1 : 0);
+        }
+
+        public static DMValue DMIsList(DMValue value)
+        {
+            return DMValue.FromNumber(value.Type == DMValueType.List ? 1 : 0);
+        }
+
+        public static DMValue ReplaceText(DMValue haystack, DMValue needle, DMValue replacement)
+        {
+            // DM replacetext is case-insensitive and replaces all occurrences.
+            var s = haystack.ToString();
+            var n = needle.ToString();
+            var result = new System.Text.StringBuilder();
+            var idx = 0;
+            while (idx < s.Length)
+            {
+                var found = s.IndexOf(n, idx, StringComparison.OrdinalIgnoreCase);
+                if (found < 0)
+                {
+                    result.Append(s, idx, s.Length - idx);
+                    break;
+                }
+                result.Append(s, idx, found - idx).Append(replacement.ToString());
+                idx = found + n.Length;
+            }
+            return DMValue.FromString(result.ToString());
         }
 
         public static DMValue DMIsPath(DMValue value, DMValue typePath)
@@ -576,7 +722,11 @@ namespace SS13.DM.Runtime
 
         public static DMValue Text2Num(DMValue value)
         {
-            return DMValue.FromNumber(double.TryParse(value.ToString(), out var n) ? n : 0);
+            var s = value.ToString().Trim();
+            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(s.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out var hex))
+                return DMValue.FromNumber(hex);
+            return DMValue.FromNumber(double.TryParse(s, out var n) ? n : 0);
         }
 
         public static DMValue Num2Text(DMValue value)

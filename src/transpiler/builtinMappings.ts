@@ -5,7 +5,7 @@ export const MAPPED_BUILTINS = [
   'sleep', 'spawn', 'qdel', 'locate', 'istype', 'ispath', 'prob', 'pick', 'rand',
   'list', 'length', 'text', 'text2num', 'num2text', 'copytext', 'findtext',
   'clamp', 'max', 'min', 'round', 'abs', 'uppertext', 'lowertext', 'hascall',
-  'alert', 'input', 'icon'
+  'alert', 'input', 'icon', 'islist', 'replacetext'
 ];
 
 export function transpileBuiltinCall(name: string, args: string): string | null {
@@ -22,6 +22,10 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMIsType(${args})`;
     case 'ispath':
       return `DMIsPath(${args})`;
+    case 'islist':
+      return `DMIsList(${args})`;
+    case 'replacetext':
+      return `ReplaceText(${args})`;
     case 'prob':
       return `DMProb(${args})`;
     case 'pick':

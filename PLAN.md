@@ -24,24 +24,30 @@ engine-free datum runtime. "Compiles" now means compiles against the real engine
       component with `[DataField]`s, all verified against the cloned engine source)
 - [x] `ss14Template` emits a solution referencing real RobustToolbox via `EngineDir`
       MSBuild property (`-p:EngineDir=` / `SS14_ENGINE_DIR`); fake shim project deleted
-- [x] Semantic probes run engine-free (pure runtime console project) — 24 probes, honest
-      count **7/24** (up from 6/24; `new` identity fixed). Remaining 17 are Phase 2 work
+- [x] Semantic probes run engine-free (pure runtime console project) — 24 probes,
+      count **24/24** (7/24 at Phase 0; Phase 0.5 semantic core completed below)
 - [x] Build loop: `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes)
 - [~] Corpus-scale compile proof against the real engine (fidelity audit `--build` path; run
       on tgstation corpus, fix any CS errors at scale)
 
 ---
 
-## Phase 0.5+ — Semantic core (from FIDELITY-AUDIT.md fix backlog)
+## Phase 0.5 — Semantic core (from FIDELITY-AUDIT.md fix backlog)
 
-Not yet started. Order of attack (Tier 0 first):
+Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
 
-- [ ] `DMValue` text semantics: case-insensitive `==`, lexicographic `<`, `null == ""`
-- [ ] `&&`/`||` short-circuit returning operands (emitted ternaries)
-- [ ] `DMList`: `len`, negative indices, element-wise equality, `+=` append
-- [ ] `break`/`continue` emission (loop nesting in the emitter)
-- [ ] `..()` parent dispatch (registry walk with current-proc context)
-- [ ] `world`/`GLOB` statics, `text2num` hex, `replacetext`, `islist`, `as` casts, bitwise ops
+- [x] `DMValue` text semantics: case-insensitive `==`, lexicographic `<`, `null == ""`
+- [x] `&&`/`||` short-circuit returning operands (emitted ternaries)
+- [x] `DMList`: `len`, negative indices, element-wise equality, `+=` append
+- [x] `break`/`continue` emission (loop nesting in the emitter; switches wrapped
+      in `while(true)` so case-body `break` is valid and correct)
+- [x] `..()` parent dispatch (registry walk with current-proc context)
+- [x] `world` datum, `text2num` hex, `replacetext`, `islist`, `as` casts
+- [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0,
+      IR + `new`-expression trailing-slash normalization
+
+Remaining (Phase 2+/Tier 3): `GLOB` statics, bitwise ops, more builtins,
+corpus-scale compile proof against the real engine.
 
 ---
 
