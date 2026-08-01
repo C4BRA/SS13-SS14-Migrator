@@ -71,7 +71,7 @@ trailing-slash normalization.
 | `new` → same object, identity broken | 12,665 | 8,146 | 12,353 | 10,798 | **43,962** | 🔴 |
 | `break`/`continue` dropped | 5,694 | 2,532 | 3,447 | 4,410 | **16,083** | 🔴 loops wrong |
 | world refs (`world.*`) → `null` | 3,705 | 1,748 | 3,160 | 3,843 | **12,456** | 🟠 |
-| GLOB.x reads → `null` | 6,384 | 3,970 | 5,738 | 5,780 | **21,872** | 🟠 |
+| GLOB.x reads → `null` | 6,384 | 3,970 | 5,738 | 5,780 | **21,872** | ✅ resolved (3d) |
 | for-as loop filters | 3,899 | 304 | 761 | 2,036 | **7,000** | 🟠 |
 | `!=`/`~!` in value position → **CS0023** | 2,939 | 1,160 | 1,835 | 3,632 | **9,566** | 🔴 won't compile |
 | `**` → **CS0103** (`Power` missing) | 971 | 87 | 123 | 632 | **1,813** | 🔴 won't compile |
@@ -169,6 +169,38 @@ Batch: map ~43 additional builtins + resolve bare global proc calls in the runti
   SIGKILL timeout — previously a stuck MSBuild build server could block the harness
   beyond its timeout, and buffered output made healthy builds look hung.
 
+### 3d. GLOB statics — VERIFIED (2026-08)
+
+Batch: materialize `/global/var/` declarations as a runtime `GlobalVars` registry;
+`GLOB.x` reads/writes route through it instead of returning `null`.
+
+- **Parser**: `/global/var/[type/]name = expr` initializers are re-parsed into full
+  expression trees (`parseInitializerTextToExpr`; `DMGlobalVarDeclNode.initialValueExpr`).
+- **Emitter**: `generateProcsCS(irMap, globals)` now emits `public static class GlobalVars`
+  with a lazy `EnsureInit()` assigning every declared global in declaration order;
+  `GLOB.x` reads → `(await GlobalVars.Get("x"))`, writes → `(await GlobalVars.Set("x", v))`
+  (hooks in `transpileProperty`/`property_assignment`); undeclared names read as Null.
+- **Global-initializer context**: `src` → Null, bare proc calls → `GlobalVars.CallGlobal`
+  (routes through the `/proc` registry), `new /type()` → `DMNew(null, …)`.
+- **Audit**: fixed a latent ordering bug (`numGlobalVars` was read before `parser.parse()`,
+  so it was always 0 — tgstation actually declares 1,075 globals); `numGlobalVars`,
+  `numGlobAccess`, and bare-global-call sites are reclassified as **resolved** (out of
+  the loss total; bare globals resolve via the 3c `/proc` fallback).
+- **Fresh 4-corpus audit** (loss sites, pre-GLOB batch → post):
+
+  | corpus | global decls | GLOB.x sites | loss before | loss after | drop |
+  |---|---|---:|---:|---:|---:|
+  | tgstation | 1,075 | 6,384 | 161,185 | **118,012** | −43,173 |
+  | paradise | 790 | 5,738 | 94,512 | **65,282** | −29,230 |
+  | tgmc | 699 | 3,970 | 65,389 | **48,356** | −17,033 |
+  | beestation | 991 | 5,780 | 116,596 | **84,545** | −32,051 |
+
+- Semantic probes **40 → 49/49** (10 new: global defaults, writes, list defaults,
+  cross-global initializers, `new` defaults, undeclared → null, cross-proc state,
+  cross-type sharing, assoc keys on global lists).
+- Compile proof **re-verified at 44,826 procs → 0 C# errors** (dotnet build green,
+  ~11 min) with `GlobalVars` materializing all corpus globals.
+
 ---
 
 ## 4. Ranked fix backlog
@@ -201,8 +233,11 @@ Batch: map ~43 additional builtins + resolve bare global proc calls in the runti
 12. Expand `MAPPED_BUILTINS`/runtime helpers: `isnull`, `isnum`, `get_step`,
     `CRASH` (throw), `sqrt`/`log`/`sin`/`cos`, `text2num` hex, `replacetext` (string
     replace — currently `null`), `findtext` (works) → the largest single bucket.
-13. `GLOB` as a real static class; `var/global/GLOB/x` declarations populate it →
-    21,872 sites.
+    (Done: the 3b builtin batch + `/proc` fallback; remaining: `sqrt`, `json_encode`,
+    `regex`, `file`/`fdel`, `step`, `orange`, `viewers`, `winset`, `copytext_char`,
+    `ckey`, `floor`, `ceil`, `SpacemanDMM_unlint`, stale `arglist`).
+13. ~~`GLOB` as a real static class; `var/global/GLOB/x` declarations populate it~~ →
+    **DONE (3d)**: `GlobalVars` registry, 21,872 sites resolved, probes 49/49.
 14. `world.*` → static world state (time, tick) → 12,456 sites.
 
 **Tier 4 — parser gaps & acceptance**
@@ -211,7 +246,7 @@ Batch: map ~43 additional builtins + resolve bare global proc calls in the runti
 16. Verb declarations: map to SS14 commands or document as unsupported (tgmc has 268).
 
 ## Verification
-- `npm run build` clean; `npm run audit:semantics` → 24 probes run under `dotnet`
+- `npm run build` clean; `npm run audit:semantics` → 49 probes run under `dotnet`
   (scratch kept in `$TMPDIR/dm2ss14-fidelity`); `npm run audit:fidelity -- <repo>`
   reproduces all counters above; results archived in
   `~/Documents/antigravity/ss13-audit-corpora/`.
@@ -223,7 +258,8 @@ No symbol-resolution pass; unknown procs → `null`; `spawn()` as expression;
 DMI/RSI round-trips. **Update (Phase 0):** the generated solution now builds
 against the real RobustToolbox engine (previously a fabricated shim); the DM
 runtime is engine-free and the probe harness runs it standalone. Probe count is
-now 24/24 preserved — the Phase 0.5 semantic-core backlog is complete (text/list
-semantics, short-circuit ops, break/continue, `..()`, world statics, builtins).
-Remaining work is Tier 3+ scope: `GLOB` statics, bitwise ops, more builtins, and
-corpus-scale compile proof.
+now 49/49 preserved — the Phase 0.5 semantic-core backlog is complete (text/list
+semantics, short-circuit ops, break/continue, `..()`, world statics, builtins,
+`/proc` fallback, GLOB statics). Remaining work is Tier 3+ scope: bitwise ops,
+remaining builtins (`sqrt`/`json_encode`/`regex`/`file`…), `world.*`, and corpus-scale
+compile proof.

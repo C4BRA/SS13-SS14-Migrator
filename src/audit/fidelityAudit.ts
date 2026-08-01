@@ -307,8 +307,10 @@ function runAudit(dir: string, name: string): CodebaseResult {
     const tokens = lexer.tokenize();
     collector.merge(lexer.diagnostics);
     const parser = new DMParser(tokens, collector);
-    counters.numGlobalVars += parser.globalVars.length;
     countASTLevel(counters, parser, relFile, allProcNames);
+    // countASTLevel triggers parser.parse(); read globalVars afterwards so
+    // /global/var/ declarations are included.
+    counters.numGlobalVars += parser.globalVars.length;
 
     counters.parseErrors += collector.errors.length;
     counters.parseWarnings += collector.warnings.length;
@@ -344,13 +346,13 @@ function runAudit(dir: string, name: string): CodebaseResult {
     counters.numGoto + counters.numSetModifiers + counters.numSwitchBraceForm +
     counters.numWeightedPick + counters.numMultiVarFor + counters.numForStepClause +
     counters.numForAsFilter + counters.numVerbDecls + counters.numClientDecls +
-    counters.numWorldDecls + counters.numGlobalVars + counters.numClassicGlobalVars + counters.numGlobAccess +
+    counters.numWorldDecls + counters.numClassicGlobalVars +
     counters.numTry + counters.numBreak + counters.numContinue + counters.numLabeledBlock +
     counters.numNew + counters.numParentCall + counters.numBinaryNull +
     counters.numBinaryOutput + counters.numCompileBreak + counters.numAsCast +
     counters.numUnaryTilde + counters.numSpawnExpr + counters.numWorldRef +
     counters.numPathConstPropRead + counters.numBrokenPropRead +
-    counters.numUnknownBuiltin + counters.numBareGlobalProcCalls;
+    counters.numUnknownBuiltin;
 
   return { name, dir, files: files.length, counters };
 }
@@ -362,9 +364,9 @@ function printResult(r: CodebaseResult): void {
   };
   console.log(`\n=== FIDELITY AUDIT: ${r.name} (${r.files} files) ===`);
   console.log(`Parse diagnostics: ${c.parseErrors} errors, ${c.parseWarnings} warnings`);
-  console.log(`  Types / procs parsed: ${c.typeCount} types, ${c.procCount} procs`);  line('/global/var/ dropped', c.numGlobalVars, 'parsed, never emitted');
-  line('var/global/ (classic)', c.numClassicGlobalVars, 'lands on /datum, dropped');
-  line('GLOB.x accessor reads', c.numGlobAccess, 'var never initialized -> Null');
+  console.log(`  Types / procs parsed: ${c.typeCount} types, ${c.procCount} procs`);  line('/global/var/ decls', c.numGlobalVars, 'emitted into GlobalVars registry');
+  line('var/global/ (classic)', c.numClassicGlobalVars, 'emitted into GlobalVars registry');
+  line('GLOB.x accessor reads', c.numGlobAccess, 'resolved via GlobalVars.Get');
   console.log('-- Preprocessor loss --');
   line('#elif (mis-handled)', c.numElif);
   line('#if numeric/relational', c.numIfNumeric, 'comparisons ignored');
@@ -427,6 +429,7 @@ async function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number
   const files = walk(r.dir, '.dm');
   const collected = DMPreprocessor.collectDefinesFromFiles(files);
   const allNodes: any[] = [];
+  const allGlobals: any[] = [];
   const collector = new DiagnosticCollector();
   let count = 0;
   for (const file of files) {
@@ -440,6 +443,7 @@ async function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number
     const pre = pp.process(code, file);
     const parser = new DMParser(new DMLexer(pre).tokenize(), collector);
     allNodes.push(...parser.parse());
+    allGlobals.push(...parser.globalVars);
     count++;
   }
   console.log(`[${r.name}] Parsed ${count} files for build sample.`);
@@ -471,7 +475,7 @@ async function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number
   const emitter = new CSharpEmitter();
   const serverDMDir = path.join(outDir, 'Content.Server', 'DM');
   fs.mkdirSync(serverDMDir, { recursive: true });
-  fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(sampleIr), 'utf-8');
+  fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(sampleIr, allGlobals), 'utf-8');
   fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMSystem.cs'), emitter.generateSystemCS(), 'utf-8');
 
   const template = new SS14Template();

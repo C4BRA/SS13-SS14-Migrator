@@ -227,6 +227,51 @@ const PROBES: Probe[] = [
     name: 'range() finds datums within distance',
     dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 0\n\ta.y = 0\n\tb.x = 1\n\tb.y = 1\n\treturn range(a, 2).len`,
     expected: '2'
+  },
+  {
+    name: 'GLOB.x reads the global default value',
+    dm: `/global/var/counter = 5\n/datum/probe/proc/run()\n\treturn GLOB.counter`,
+    expected: '5'
+  },
+  {
+    name: 'GLOB.x = v writes and reads back',
+    dm: `/global/var/x = 0\n/datum/probe/proc/run()\n\tGLOB.x = 42\n\treturn GLOB.x`,
+    expected: '42'
+  },
+  {
+    name: 'GLOB list default appends',
+    dm: `/global/var/list/items = list()\n/datum/probe/proc/run()\n\tGLOB.items += "z"\n\treturn GLOB.items.len`,
+    expected: '1'
+  },
+  {
+    name: 'global initializer references an earlier global',
+    dm: `/global/var/a = 2\n/global/var/b = GLOB.a + 3\n/datum/probe/proc/run()\n\treturn GLOB.b`,
+    expected: '5'
+  },
+  {
+    name: 'global with new /type() default is a datum',
+    dm: `/datum/probe2\n/global/var/obj = new /datum/probe2()\n/datum/probe/proc/run()\n\treturn GLOB.obj != null`,
+    expected: '1'
+  },
+  {
+    name: 'undeclared GLOB.x reads as null',
+    dm: `/datum/probe/proc/run()\n\treturn isnull(GLOB.nope)`,
+    expected: '1'
+  },
+  {
+    name: 'GLOB state persists across proc calls',
+    dm: `/global/var/x = 0\n/datum/probe/proc/run()\n\tGLOB.x = 9\n\treturn helper()\n/datum/probe/proc/helper()\n\treturn GLOB.x`,
+    expected: '9'
+  },
+  {
+    name: 'GLOB shared across datum types',
+    dm: `/global/var/shared = 7\n/datum/probe2\n\tproc/helper()\n\t\treturn GLOB.shared\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn a.helper()`,
+    expected: '7'
+  },
+  {
+    name: 'assoc key on global list persists',
+    dm: `/global/var/list/registry = list()\n/datum/probe/proc/run()\n\tGLOB.registry["k"] = 5\n\treturn GLOB.registry["k"]`,
+    expected: '5'
   }
 ];
 
@@ -247,7 +292,7 @@ function emitConverted(dmCode: string, outDir: string): void {
   const ir = new DMIRGenerator().generateIR(nodes);
   const emitter = new CSharpEmitter();
   fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(ir), 'utf-8');
+  fs.writeFileSync(path.join(outDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(ir, parser.globalVars), 'utf-8');
 }
 
 const DRIVER = `using System;

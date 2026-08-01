@@ -28,7 +28,7 @@ function transpileProc(dmCode: string): string {
   const nodes = parser.parse();
   assert(parser.diagnostics.errors.length === 0, `No parse errors for: ${dmCode.trim().split('\n')[1] || dmCode}`);
   const ir = new DMIRGenerator().generateIR(nodes);
-  return new CSharpEmitter().generateProcsCS(ir);
+  return new CSharpEmitter().generateProcsCS(ir, parser.globalVars);
 }
 
 async function runCSharpEmitterTests() {
@@ -223,6 +223,38 @@ async function runCSharpEmitterTests() {
         x = 1
 `);
   assertContains(inOp, `DMValue.In(DMValue.FromNumber(5), comp.GetVar("stuff"))`, 'in expression operator');
+
+  // Test 27: GLOB.x reads resolve through the GlobalVars registry
+  const globRead = transpileProc(`/global/var/counter = 5
+/datum/probe/proc/run()
+    return GLOB.counter
+`);
+  assertContains(globRead, `(await GlobalVars.Get("counter"))`, 'GLOB.x read emits GlobalVars.Get');
+  assertContains(globRead, `public static class GlobalVars`, 'GlobalVars registry class emitted');
+  assertContains(globRead, `Vars["counter"] = DMValue.FromNumber(5);`, 'Global default value materialized');
+
+  // Test 28: GLOB.x writes resolve through the GlobalVars registry
+  const globWrite = transpileProc(`/global/var/counter = 0
+/datum/probe/proc/run()
+    GLOB.counter = 42
+    return GLOB.counter
+`);
+  assertContains(globWrite, `(await GlobalVars.Set("counter", DMValue.FromNumber(42)))`, 'GLOB.x = v emits GlobalVars.Set');
+
+  // Test 29: Global initializers with new/compound expressions
+  const globInit = transpileProc(`/global/var/obj = new /datum/probe2()
+/datum/probe/proc/run()
+    return GLOB.obj
+`);
+  assertContains(globInit, `Vars["obj"] = (await DMNew(null, "/datum/probe2"));`, 'Global init with new uses null datum');
+
+  // Test 30: Global referencing another global in its initializer
+  const globRef = transpileProc(`/global/var/a = 2
+/global/var/b = GLOB.a + 3
+/datum/probe/proc/run()
+    return GLOB.b
+`);
+  assertContains(globRef, `Vars["b"] = DMValue.Add((await GlobalVars.Get("a")), DMValue.FromNumber(3));`, 'Global init reads earlier global');
 
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }

@@ -49,6 +49,9 @@ export interface DMGlobalVarDeclNode extends ASTNode {
   name: string;
   varType: string;
   initialValue?: any;
+  /** Initializer re-parsed as an expression tree (used by the emitter to
+   *  materialize /global/var/ declarations as runtime values). */
+  initialValueExpr?: ExpressionNode | null;
 }
 
 export interface DMStatementNode extends ASTNode {
@@ -137,7 +140,8 @@ export class DMParser {
           type: 'GlobalVarDecl',
           name: varName,
           varType,
-          initialValue
+          initialValue,
+          initialValueExpr: this.parseInitializerTextToExpr(initialValue)
         };
         this.globalVars.push(globalNode);
         continue;
@@ -156,7 +160,7 @@ export class DMParser {
           initialValue = this.parseInitialValueText();
         }
         if (isGlobal) {
-          this.globalVars.push({ type: 'GlobalVarDecl', name: varName, varType, initialValue });
+          this.globalVars.push({ type: 'GlobalVarDecl', name: varName, varType, initialValue, initialValueExpr: this.parseInitializerTextToExpr(initialValue) });
         } else {
           const ownerNode = this.getOrCreateTypeNode(ownerPath, typeDecls);
           ownerNode.vars.push({ type: 'DMVarDecl', name: varName, varType, initialValue });
@@ -495,6 +499,22 @@ export class DMParser {
       parts.push(value);
     }
     return parts.join(' ').trim();
+  }
+
+  /**
+   * Re-parse a captured initializer string (see parseInitialValueText) into a
+   * full expression tree. Globals are declared at top level where no statement
+   * parser is running, so their initializers are re-lexed into a sub-parser.
+   */
+  public parseInitializerTextToExpr(text: string): ExpressionNode | null {
+    if (!text) return null;
+    try {
+      const tokens = new DMLexer(text).tokenize();
+      const sub = new DMParser(tokens, this.diagnostics);
+      return sub.parseExpression() ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private parseMemberDecl(targetTypeNode: DMTypeDeclNode): void {
@@ -1136,7 +1156,7 @@ export class DMParser {
   }
 
   // Expression parser using Pratt parsing / precedence climbing
-  private parseExpression(minPrec: number = 0, stopAtColon: boolean = false): ExpressionNode {
+  public parseExpression(minPrec: number = 0, stopAtColon: boolean = false): ExpressionNode {
     let left = this.parsePrimary();
 
     while (true) {

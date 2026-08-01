@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { DMIRType } from '../ir/dmIRGenerator.js';
-import { ExpressionNode } from '../parser/dmParser.js';
+import { DMGlobalVarDeclNode, ExpressionNode } from '../parser/dmParser.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
 
 export class CSharpEmitter {
@@ -11,10 +11,15 @@ export class CSharpEmitter {
   private switchDepth = 0;
   private lambdaDepth = 0;
 
+  /** While true, expressions are emitted in the GlobalVars initializer
+   *  context (no `comp`, no current datum): src is Null, bare calls go
+   *  through GlobalVars.CallGlobal, and new() uses a null datum. */
+  private globalsMode = false;
+
   private nextTemp(): string {
     return `__dm_t${this.tempCounter++}`;
   }
-  public emitCSharpSystems(irMap: Map<string, DMIRType>, outputServerDir: string): void {
+  public emitCSharpSystems(irMap: Map<string, DMIRType>, outputServerDir: string, globals: DMGlobalVarDeclNode[] = []): void {
     if (!fs.existsSync(outputServerDir)) {
       fs.mkdirSync(outputServerDir, { recursive: true });
     }
@@ -22,7 +27,7 @@ export class CSharpEmitter {
     // ConvertedDMProcs.cs — engine-free: transpiled DM procs + proc registry
     // registration. Compiles against SS13.DM.Runtime alone (used by the
     // semantic-probe harness without any engine).
-    const procsCode = this.generateProcsCS(irMap);
+    const procsCode = this.generateProcsCS(irMap, globals);
     fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMProcs.cs'), procsCode, 'utf-8');
 
     // ConvertedDMSystem.cs — engine adapter: an SS14 EntitySystem wired to the
@@ -34,7 +39,7 @@ export class CSharpEmitter {
    * Pure C# (no RobustToolbox references): the static proc registry and one
    * static method per DM proc, operating on the engine-free DMRuntime datum.
    */
-  public generateProcsCS(irMap: Map<string, DMIRType>): string {
+  public generateProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[] = []): string {
     let code = `using System;
 using System.Threading.Tasks;
 using SS13.DM.Runtime;
@@ -100,7 +105,54 @@ namespace Content.Server.DM
       code += member;
     }
 
-    code += `    }\n}\n`;
+    code += `    }
+
+`;
+
+    // GlobalVars: materializes /global/var/ declarations. Initialized once,
+    // lazily, in declaration order; GLOB.x reads/writes and bare calls in
+    // initializers resolve here. Undeclared names read as Null (matching DM
+    // before the global is assigned).
+    code += `    public static class GlobalVars
+    {
+        private static readonly Dictionary<string, DMValue> Vars = new Dictionary<string, DMValue>();
+        private static bool _initialized;
+
+        public static async Task<DMValue> Get(string name)
+        {
+            await EnsureInit();
+            return Vars.TryGetValue(name, out var v) ? v : DMValue.Null;
+        }
+
+        public static async Task<DMValue> Set(string name, DMValue value)
+        {
+            await EnsureInit();
+            Vars[name] = value;
+            return value;
+        }
+
+        public static async Task<DMValue> CallGlobal(string procName, params DMValue[] args)
+        {
+            await EnsureInit();
+            return await new DMRuntime { DMTypePath = "/datum" }.CallProc(procName, args);
+        }
+
+        private static async Task EnsureInit()
+        {
+            if (_initialized) return;
+            _initialized = true;
+`;
+    const prevMode = this.globalsMode;
+    this.globalsMode = true;
+    for (const g of globals) {
+      const expr = g.initialValueExpr ? this.transpileExpression(g.initialValueExpr) : 'DMValue.Null';
+      code += `            Vars["${g.name}"] = ${expr};\n`;
+    }
+    this.globalsMode = prevMode;
+    code += `        }
+    }
+}
+`;
     return code;
   }
 
@@ -365,7 +417,8 @@ namespace Content.Server.DM
       case 'new':
         // Parenthesized: member access binds tighter than await, so callers
         // appending .IsTrue() etc. must bind to the DMValue, not the Task.
-        return `(await DMNew(comp, "${this.normalizeTypePath(node.typePath)}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''}))`;
+        // Global initializers have no comp; DMNew ignores the datum argument.
+        return `(await DMNew(${this.globalsMode ? 'null' : 'comp'}, "${this.normalizeTypePath(node.typePath)}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''}))`;
       case 'ternary':
         return this.transpileTernary(node);
       case 'property':
@@ -375,8 +428,14 @@ namespace Content.Server.DM
       case 'assignment':
         // Variable assignment within expression
         return `comp.SetVar("${(node as any).target}", ${this.transpileExpression((node as any).value)})`;
-      case 'property_assignment':
-        return `(${this.transpileExpression((node as any).target)}).AsDatum()?.SetVar("${(node as any).property}", ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
+      case 'property_assignment': {
+        // GLOB.x = v writes through the generated GlobalVars registry.
+        const paTarget = (node as any).target;
+        if (paTarget?.type === 'variable' && paTarget.name === 'GLOB') {
+          return `(await GlobalVars.Set("${(node as any).property}", ${this.transpileExpression((node as any).value)}))`;
+        }
+        return `(${this.transpileExpression(paTarget)}).AsDatum()?.SetVar("${(node as any).property}", ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
+      }
       case 'index_assignment':
         return `DMListSet(${this.transpileExpression((node as any).target)}, ${this.transpileExpression((node as any).index)}, ${this.transpileExpression((node as any).value)})`;
       case 'list':
@@ -406,7 +465,7 @@ namespace Content.Server.DM
     // Special DM variables: src = the current object, usr = the calling mob,
     // args = the current proc's argument list (DMList, 1-indexed), world = the
     // world datum.
-    if (node.name === 'src') return 'DMValue.FromDatum(comp)';
+    if (node.name === 'src') return this.globalsMode ? 'DMValue.Null' : 'DMValue.FromDatum(comp)';
     if (node.name === 'usr') return 'DMRuntimeHelpers.CurrentUsr';
     if (node.name === 'world') return 'DMRuntimeHelpers.WorldValue';
     if (node.name === 'args') return 'DMValue.FromList(__dmArgs)';
@@ -536,7 +595,14 @@ namespace Content.Server.DM
       }
       return `(await comp.CallParentProc("${this.currentProcName}", ${args}))`;
     }
-    // User-defined proc - call through runtime
+    // User-defined proc - call through runtime. In a global initializer there
+    // is no current datum, so route through the GlobalVars bridge.
+    if (this.globalsMode) {
+      if (!args) {
+        return `(await GlobalVars.CallGlobal("${node.name}"))`;
+      }
+      return `(await GlobalVars.CallGlobal("${node.name}", ${args}))`;
+    }
     if (!args) {
       return `(await comp.CallProc("${node.name}"))`;
     }
@@ -553,6 +619,10 @@ namespace Content.Server.DM
   }
 
   private transpileProperty(node: any): string {
+    // GLOB.x reads resolve through the generated GlobalVars registry.
+    if (node.target?.type === 'variable' && node.target.name === 'GLOB') {
+      return `(await GlobalVars.Get("${node.property}"))`;
+    }
     const target = this.transpileExpression(node.target);
     return `DMRuntimeHelpers.DMGetProperty(${target}, "${node.property}")`;
   }

@@ -37,6 +37,11 @@ engine-free datum runtime. "Compiles" now means compiles against the real engine
       `splittext`/`jointext`/`params2list`/`rgb`/`json_decode`/...) + `/proc` registry
       fallback for bare global proc calls → unknown-builtin sites drop **−88…−91%**
       across the 4 corpora; probes **24 → 40/40**
+- [x] GLOB statics: `/global/var/` declarations materialized as a `GlobalVars` registry
+      (lazy `EnsureInit`, declaration order; `GLOB.x` reads/writes → `Get`/`Set`;
+      global-initializer context bridges `src`/bare calls/`new`); 21,872 GLOB.x sites
+      resolved, loss drops **−29,230…−43,173** per corpus; probes **40 → 49/49**;
+      compile proof still green at 44,826 procs (0 C# errors)
 
 ---
 
@@ -54,8 +59,10 @@ Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
 - [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0,
       IR + `new`-expression trailing-slash normalization
 
-Remaining (Phase 2+/Tier 3): `GLOB` statics, bitwise ops, remaining builtins
-(`sqrt`, `json_encode`, `regex`, `file`, `step`, `ckey`, `viewers`...).
+Remaining (Phase 2+/Tier 3): bitwise ops, remaining builtins
+(`sqrt`, `json_encode`, `regex`, `file`, `step`, `ckey`, `viewers`, `winset`,
+`orange`, `floor`/`ceil`, `copytext_char`, `SpacemanDMM_unlint`), `world.*`
+statics, top parse-error classes (paradise 14k / beestation 16k).
 
 ---
 
