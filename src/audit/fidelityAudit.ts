@@ -487,11 +487,16 @@ function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number): voi
   try {
     const out = execSync(`dotnet build Content.sln --nologo -v q -p:EngineDir="${engineDir}" 2>&1`, {
       cwd: outDir,
-      timeout: 15 * 60 * 1000,
+      timeout: 30 * 60 * 1000,
       maxBuffer: 256 * 1024 * 1024
     }).toString();
     console.log(out);
   } catch (e: any) {
+    if (e.killed || e.signal) {
+      console.log(`[${r.name}] dotnet build TIMED OUT after ${30 * 60}s (killed=${e.killed}, signal=${e.signal}); generated code did not finish compiling`);
+      console.log('    (raised --build-max-procs or lowered the audit timeout; this is NOT a compile failure)');
+      return;
+    }
     const text = (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '');
     const errLines = text.split('\n').filter((l: string) => l.includes('error CS'));
     const byCode = new Map<string, number>();

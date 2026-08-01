@@ -27,8 +27,10 @@ engine-free datum runtime. "Compiles" now means compiles against the real engine
 - [x] Semantic probes run engine-free (pure runtime console project) — 24 probes,
       count **24/24** (7/24 at Phase 0; Phase 0.5 semantic core completed below)
 - [x] Build loop: `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes)
-- [~] Corpus-scale compile proof against the real engine (fidelity audit `--build` path; run
-      on tgstation corpus, fix any CS errors at scale)
+- [x] Corpus-scale compile proof against the real engine (fidelity audit `--build` path;
+      **tgstation: 44,826 sampled procs from 45,502 types → 0 C# errors**, real-engine
+      `dotnet build` green; all error classes fixed — CS1061/CS0201/CS0136/CS7036/CS1501/
+      CS1503/CS0029/CS1632/CS1026)
 
 ---
 
@@ -46,8 +48,7 @@ Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
 - [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0,
       IR + `new`-expression trailing-slash normalization
 
-Remaining (Phase 2+/Tier 3): `GLOB` statics, bitwise ops, more builtins,
-corpus-scale compile proof against the real engine.
+Remaining (Phase 2+/Tier 3): `GLOB` statics, bitwise ops, more builtins.
 
 ---
 

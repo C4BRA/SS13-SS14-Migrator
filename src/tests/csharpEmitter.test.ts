@@ -201,7 +201,7 @@ async function runCSharpEmitterTests() {
     for (var/datum/x as anything in stuff)
         x = x
 `);
-  assertContains(asClause, `foreach (var __dmIter in DMListItems(comp.GetVar("stuff")))`, 'for-in with as filter clause');
+  assertContains(asClause, `foreach (var __dmIter0 in DMListItems(comp.GetVar("stuff")))`, 'for-in with as filter clause');
 
   // Test 24: istype/locate keyword calls parse
   const istype = transpileProc(`/obj/foo/proc/run()

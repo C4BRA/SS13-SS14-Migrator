@@ -112,6 +112,29 @@ paradise 14,118 · beestation 16,003 — beestation/paradise lose whole files.
 - ~44,829 procs → solution builds after the 6 CS0111 lines are removed; no other
   hard compile breakers surfaced at this scale.
 
+### 3b. Corpus compile proof — VERIFIED (2026-08)
+
+Run: `node dist/audit/fidelityAudit.js <tgstation> --build temp_test_corpus_build --build-max-procs 1500`
+with `SS14_ENGINE_DIR` set to a pinned RobustToolbox (`engine.pin`, commit `9cefa116`).
+
+- **44,826 sampled procs from 45,502 types → real-engine `dotnet build` green, 0 C# errors.**
+- Error classes fixed along the way (146,874 → 4 → 12,984 → 228 → 10 → **0**):
+  - **CS1061** — `Task<DMValue>` / bool `.IsTrue()`: parens around awaited calls
+    (`(await DMCallProc(...))`), parenthesized `&&`/`||`/ternary emissions.
+  - **CS0201** — expression statements: call statements strip parens (guarded by
+    startsWith/endsWith); assignments / index-assignments / non-calls emit `_ = expr;`.
+  - **CS0136** — `__dmIter` collisions: unique `__dmIter${n}` per `foreach`.
+  - **CS7036** — `DMIsType`/`DMIsPath`/`DMLocate` default `typePath`; `Num2Text` 2-arg overload.
+  - **CS1503** — `arglist()` → `DMArgsConcat`/`DMArgList`; raw `args` → `DMValue.FromList(__dmArgs)`.
+  - **CS0029** — `DMDelete` returns `DMValue` (`return qdel(x)`).
+  - **CS1632** — `break` inside `spawn()` lambda: emitter resets loop/switch depth and
+    comments the `break` out.
+  - **CS1026** — unguarded paren-strip truncated builtin calls (`MRuntimeHelpers.Alert`).
+- Audit harness: build timeout raised to 30 min; timeouts are now reported distinctly
+  from compile failures (a 131 MB generated file takes ~15 min to build at 44,826 procs).
+- Regression guards: `src/tests/runtimeTemplate.test.ts` pins the runtime-template
+  backtick structure (a stray backtick in a C# comment silently breaks the TS build).
+
 ---
 
 ## 4. Ranked fix backlog

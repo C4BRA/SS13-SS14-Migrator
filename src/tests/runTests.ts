@@ -25,6 +25,7 @@ async function runTests() {
   await import('./dmmParser.test.js');
   await import('./csharpEmitter.test.js');
   await import('./preprocessor.test.js');
+  await import('./runtimeTemplate.test.js');
 
   // Test 1: DM Lexer
   const sampleDM = `

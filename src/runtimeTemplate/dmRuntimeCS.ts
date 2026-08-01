@@ -139,14 +139,23 @@ namespace SS13.DM.Runtime
         public static DMValue Or(DMValue a, DMValue b) => FromNumber(a.IsTrue() || b.IsTrue() ? 1 : 0);
         public static DMValue Not(DMValue a) => FromNumber(a.IsTrue() ? 0 : 1);
 
-        // Membership test for switch cases
-        public static bool In(DMValue value, params DMValue[] candidates)
+        // Membership test for switch cases and the 'in' operator.
+        // Returns a DMValue (1/0) so results compose with other expressions;
+        // a single list candidate tests membership in that list.
+        public static DMValue In(DMValue value, params DMValue[] candidates)
         {
+            if (candidates.Length == 1 && candidates[0].Type == DMValueType.List)
+            {
+                var list = candidates[0].ListValue;
+                for (var i = 1; i <= list.Count; i++)
+                    if (value.EqualsValue(list.Get(i))) return DMValue.FromNumber(1);
+                return DMValue.FromNumber(0);
+            }
             foreach (var c in candidates)
             {
-                if (value.EqualsValue(c)) return true;
+                if (value.EqualsValue(c)) return DMValue.FromNumber(1);
             }
-            return false;
+            return DMValue.FromNumber(0);
         }
 
         // DM output operator: world << "text" / usr << x
@@ -489,13 +498,16 @@ namespace SS13.DM.Runtime
             return DMValue.FromDatum(datum);
         }
 
-        public static void DMDelete(DMValue target)
+        public static DMValue DMDelete(DMValue target)
         {
             if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
             {
                 // Engine integration point: queue entity deletion.
                 datum.MarkForDeletion();
             }
+            // DM: del/qdel have no meaningful result; returning Null keeps
+            // 'return qdel(x)' compilable and correct.
+            return DMValue.Null;
         }
 
         // ==== Proc dispatch ====
@@ -510,6 +522,49 @@ namespace SS13.DM.Runtime
         }
 
         // ==== List helpers ====
+
+        /// <summary>
+        /// DM arglist(x): expands a list into an argument array (a single
+        /// non-list value becomes a one-element array).
+        /// </summary>
+        public static DMValue[] DMArgList(DMValue v)
+        {
+            if (v.Type == DMValueType.List)
+                return DMListToArray(v.ListValue);
+            return new[] { v };
+        }
+
+        /// <summary>
+        /// arglist(args) where args is the special argument list (a raw DMList).
+        /// </summary>
+        public static DMValue[] DMArgList(DMList list)
+        {
+            return list == null ? Array.Empty<DMValue>() : DMListToArray(list);
+        }
+
+        private static DMValue[] DMListToArray(DMList list)
+        {
+            var arr = new DMValue[list.Count];
+            for (var i = 1; i <= list.Count; i++) arr[i - 1] = list.Get(i);
+            return arr;
+        }
+
+        /// <summary>
+        /// Concatenates argument segments for calls containing arglist().
+        /// </summary>
+        public static DMValue[] DMArgsConcat(params DMValue[][] segments)
+        {
+            var total = 0;
+            foreach (var s in segments) total += s.Length;
+            var result = new DMValue[total];
+            var pos = 0;
+            foreach (var s in segments)
+            {
+                Array.Copy(s, 0, result, pos, s.Length);
+                pos += s.Length;
+            }
+            return result;
+        }
 
         public static DMValue DMListGet(DMValue target, DMValue index)
         {
@@ -546,11 +601,14 @@ namespace SS13.DM.Runtime
             return DMValue.Null;
         }
 
-        public static DMValue DMIsType(DMValue value, DMValue typePath)
+        public static DMValue DMIsType(DMValue value, DMValue typePath = default)
         {
             // DM: istype(non-datum, /type) is always false (0), never null.
             if (value.Type != DMValueType.DatumRef || value.DatumRef is not DMRuntime datum)
                 return DMValue.FromNumber(0);
+            // DM: istype(x) with no type is true for any datum.
+            if (typePath.Type == DMValueType.Null)
+                return DMValue.FromNumber(1);
             return DMValue.FromNumber(datum.IsType(typePath.ToString()) ? 1 : 0);
         }
 
@@ -580,8 +638,11 @@ namespace SS13.DM.Runtime
             return DMValue.FromString(result.ToString());
         }
 
-        public static DMValue DMIsPath(DMValue value, DMValue typePath)
+        public static DMValue DMIsPath(DMValue value, DMValue typePath = default)
         {
+            // DM: ispath(x) with no type is true when x is itself a path.
+            if (typePath.Type == DMValueType.Null)
+                return DMValue.FromNumber(value.Type == DMValueType.String ? 1 : 0);
             var type = value.ToString();
             return DMValue.FromNumber(type == typePath.ToString() || type == typePath.ToString().TrimStart('/') ? 1 : 0);
         }
@@ -620,9 +681,10 @@ namespace SS13.DM.Runtime
             }
         }
 
-        public static DMValue DMLocate(DMValue typePath)
+        public static DMValue DMLocate(DMValue typePath = default, DMValue x = default, DMValue y = default)
         {
-            // Engine integration point: locate a datum of the given type.
+            // Engine integration point: locate a datum of the given type
+            // (or at the given turf coordinates for the 3-arg form).
             return DMValue.Null;
         }
 
@@ -731,8 +793,16 @@ namespace SS13.DM.Runtime
 
         public static DMValue Num2Text(DMValue value)
         {
+            return Num2Text(value, DMValue.FromNumber(0));
+        }
+
+        public static DMValue Num2Text(DMValue value, DMValue len)
+        {
             var n = value.ToNumber();
-            return DMValue.FromString(n == (int)n ? ((int)n).ToString() : n.ToString());
+            var s = n == (int)n ? ((int)n).ToString() : n.ToString();
+            var width = (int)len.ToNumber();
+            if (width > s.Length) s = s.PadLeft(width, '0');
+            return DMValue.FromString(s);
         }
 
         public static DMValue CopyText(DMValue text, DMValue start, DMValue end = default)

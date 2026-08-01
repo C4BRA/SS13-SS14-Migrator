@@ -8,6 +8,8 @@ export class CSharpEmitter {
   private tempCounter = 0;
   private currentProcName = '';
   private loopDepth = 0;
+  private switchDepth = 0;
+  private lambdaDepth = 0;
 
   private nextTemp(): string {
     return `__dm_t${this.tempCounter++}`;
@@ -175,11 +177,12 @@ namespace Content.Server.DM
       case 'SwitchStatement':
         let switchCode = `${pad}// DM switch: emitted as if/else chain inside a while(true)\n${pad}// wrapper so that break/continue inside case bodies are valid C#\n`;
         switchCode += `${pad}while (true)\n${pad}{\n`;
+        this.switchDepth++;
         const cases: { values: any[]; body: any[] }[] = stmt.cases || [];
         const switchCond = this.transpileExpression(stmt.switchValue);
         for (let i = 0; i < cases.length; i++) {
           const c = cases[i];
-          const conds = c.values.map(v => `DMValue.In(${switchCond}, ${this.transpileExpression(v)})`).join(' || ');
+          const conds = c.values.map(v => `DMValue.In(${switchCond}, ${this.transpileExpression(v)}).IsTrue()`).join(' || ');
           switchCode += `${pad}    ${i === 0 ? 'if' : 'else if'} (${conds})\n${pad}    {\n`;
           for (const s of c.body || []) {
             switchCode += this.transpileStatement(s, indent + 8);
@@ -193,16 +196,31 @@ namespace Content.Server.DM
           }
           switchCode += `${pad}    }\n`;
         }
+        this.switchDepth--;
         switchCode += `${pad}}\n`;
         return switchCode;
 
       case 'SpawnStatement':
-        let spawnCode = `${pad}DMTickScheduler.Spawn(${stmt.timeExpr ? this.transpileExpression(stmt.timeExpr) : 'DMValue.FromNumber(0)'}, async () => {\n`;
-        for (const s of stmt.body || []) {
-          spawnCode += this.transpileStatement(s, indent + 4);
+        // spawn() becomes an async lambda: DM break/continue can never cross
+        // the spawn boundary (DM forbids it), so loop/switch context does not
+        // carry into the lambda body.
+        {
+          const savedLoop = this.loopDepth;
+          const savedSwitch = this.switchDepth;
+          const savedLambda = this.lambdaDepth;
+          this.loopDepth = 0;
+          this.switchDepth = 0;
+          this.lambdaDepth++;
+          let spawnCode = `${pad}DMTickScheduler.Spawn(${stmt.timeExpr ? this.transpileExpression(stmt.timeExpr) : 'DMValue.FromNumber(0)'}, async () => {\n`;
+          for (const s of stmt.body || []) {
+            spawnCode += this.transpileStatement(s, indent + 4);
+          }
+          spawnCode += `${pad}});\n`;
+          this.loopDepth = savedLoop;
+          this.switchDepth = savedSwitch;
+          this.lambdaDepth = savedLambda;
+          return spawnCode;
         }
-        spawnCode += `${pad}});\n`;
-        return spawnCode;
 
       case 'AssignmentStatement':
         return `${pad}comp.SetVar("${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
@@ -231,6 +249,10 @@ namespace Content.Server.DM
       case 'BreakStatement':
         // DM break exits the innermost loop, or the switch when not in a loop;
         // the switch's while(true) wrapper makes plain `break` correct in both.
+        // Never emitted inside a spawn lambda (DM forbids crossing spawn).
+        if (this.loopDepth === 0 && this.switchDepth === 0 && this.lambdaDepth > 0) {
+          return `${pad}// break cannot cross a spawn boundary\n`;
+        }
         return `${pad}break;\n`;
 
       case 'ContinueStatement':
@@ -276,29 +298,50 @@ namespace Content.Server.DM
         return cforCode;
 
       case 'ForStatement':
-        // DM for(x in list) -> real iteration over list elements
-        let forCode = `${pad}{\n`;
-        if (stmt.loopVariable && stmt.loopRange) {
-          forCode += `${pad}    foreach (var __dmIter in DMListItems(${this.transpileExpression(stmt.loopRange)}))\n`;
-          forCode += `${pad}    {\n`;
-          forCode += `${pad}        comp.SetVar("${stmt.loopVariable}", __dmIter);\n`;
-          this.loopDepth++;
-          for (const s of stmt.loopBody || []) {
-            forCode += this.transpileStatement(s, indent + 8);
+        // DM for(x in list) -> real iteration over list elements. The iterator
+        // local gets a unique name: nested loops would otherwise collide
+        // (CS0136) when the outer iterator is used inside the inner loop.
+        {
+          const iter = `__dmIter${this.tempCounter++}`;
+          let forCode = `${pad}{\n`;
+          if (stmt.loopVariable && stmt.loopRange) {
+            forCode += `${pad}    foreach (var ${iter} in DMListItems(${this.transpileExpression(stmt.loopRange)}))\n`;
+            forCode += `${pad}    {\n`;
+            forCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${iter});\n`;
+            this.loopDepth++;
+            for (const s of stmt.loopBody || []) {
+              forCode += this.transpileStatement(s, indent + 8);
+            }
+            this.loopDepth--;
+            forCode += `${pad}    }\n`;
           }
-          this.loopDepth--;
-          forCode += `${pad}    }\n`;
+          forCode += `${pad}}\n`;
+          return forCode;
         }
-        forCode += `${pad}}\n`;
-        return forCode;
 
       case 'ExpressionStatement':
         if (stmt.expression) {
           const expr = this.transpileExpression(stmt.expression);
-          if (stmt.expression.type === 'property_assignment' || stmt.expression.type === 'index_assignment') {
+          // Calls are emitted parenthesized (so member access on the result
+          // binds to the DMValue, not the Task) — but a parenthesized call is
+          // not a valid C# expression-statement, so strip the outer parens.
+          // Builtin calls (DMRuntimeHelpers.X(...)) are not parenthesized.
+          if (stmt.expression.type === 'call') {
+            const bare = expr.startsWith('(') && expr.endsWith(')') ? expr.slice(1, -1) : expr;
+            return `${pad}${bare};\n`;
+          }
+          if (stmt.expression.type === 'assignment' || stmt.expression.type === 'index_assignment') {
+            return `${pad}${expr};\n`;
+          }
+          // property_assignment emits `(...).AsDatum()?.SetVar(...) ?? DMValue.Null`
+          // — not a valid bare statement, so discard the value explicitly.
+          if (stmt.expression.type === 'property_assignment') {
             return `${pad}_ = ${expr};\n`;
           }
-          return `${pad}${expr};\n`;
+          // Only calls are valid C# expression-statements; everything else
+          // (ternaries, literals, binary ops, ranges, ...) is discarded via
+          // the discard assignment, which keeps side effects intact.
+          return `${pad}_ = ${expr};\n`;
         }
         return '';
 
@@ -320,7 +363,9 @@ namespace Content.Server.DM
       case 'call':
         return this.transpileCall(node);
       case 'new':
-        return `await DMNew(comp, "${this.normalizeTypePath(node.typePath)}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''})`;
+        // Parenthesized: member access binds tighter than await, so callers
+        // appending .IsTrue() etc. must bind to the DMValue, not the Task.
+        return `(await DMNew(comp, "${this.normalizeTypePath(node.typePath)}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''}))`;
       case 'ternary':
         return this.transpileTernary(node);
       case 'property':
@@ -364,7 +409,7 @@ namespace Content.Server.DM
     if (node.name === 'src') return 'DMValue.FromDatum(comp)';
     if (node.name === 'usr') return 'DMRuntimeHelpers.CurrentUsr';
     if (node.name === 'world') return 'DMRuntimeHelpers.WorldValue';
-    if (node.name === 'args') return '__dmArgs';
+    if (node.name === 'args') return 'DMValue.FromList(__dmArgs)';
     return `comp.GetVar("${node.name}")`;
   }
 
@@ -437,14 +482,25 @@ namespace Content.Server.DM
   }
 
   private transpileCall(node: any): string {
-    const args = node.arguments.map((a: any) => this.transpileExpression(a)).join(', ');
+    // DM f(x, arglist(L)) passes L's elements as the rest of the arguments.
+    // C# params cannot spread an array inline, so any arglist() argument
+    // flattens the whole argument list into a single DMArgsConcat array.
+    const hasArglist = node.arguments.some((a: any) => a.type === 'call' && a.name === 'arglist');
+    const args = hasArglist
+      ? `DMRuntimeHelpers.DMArgsConcat(${node.arguments.map((a: any) =>
+          a.type === 'call' && a.name === 'arglist'
+            ? `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a.arguments[0])})`
+            : `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a)})`
+        ).join(', ')})`
+      : node.arguments.map((a: any) => this.transpileExpression(a)).join(', ');
 
-    // Method call on a target: obj.method(x)
+    // Method call on a target: obj.method(x). Parenthesized so member access
+    // on the result binds to the DMValue, not the awaited Task.
     if (node.target) {
       if (!args) {
-        return `await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}")`;
+        return `(await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}"))`;
       }
-      return `await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}", ${args})`;
+      return `(await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}", ${args}))`;
     }
 
     // Built-in DM procs
@@ -456,22 +512,24 @@ namespace Content.Server.DM
     // currently executing proc.
     if (node.name === '..') {
       if (!args) {
-        return `await comp.CallParentProc("${this.currentProcName}")`;
+        return `(await comp.CallParentProc("${this.currentProcName}"))`;
       }
-      return `await comp.CallParentProc("${this.currentProcName}", ${args})`;
+      return `(await comp.CallParentProc("${this.currentProcName}", ${args}))`;
     }
     // User-defined proc - call through runtime
     if (!args) {
-      return `await comp.CallProc("${node.name}")`;
+      return `(await comp.CallProc("${node.name}"))`;
     }
-    return `await comp.CallProc("${node.name}", ${args})`;
+    return `(await comp.CallProc("${node.name}", ${args}))`;
   }
 
   private transpileTernary(node: any): string {
     const cond = this.transpileExpression(node.condition);
     const trueExpr = this.transpileExpression(node.trueExpr);
     const falseExpr = this.transpileExpression(node.falseExpr);
-    return `${cond}.IsTrue() ? ${trueExpr} : ${falseExpr}`;
+    // Parenthesized: callers append members like .IsTrue() and must bind to
+    // the whole ternary, not its last branch.
+    return `(${cond}.IsTrue() ? ${trueExpr} : ${falseExpr})`;
   }
 
   private transpileProperty(node: any): string {
