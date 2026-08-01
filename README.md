@@ -7,7 +7,11 @@ entity prototypes, ECS systems, RSI textures, and grid maps.
 ## Requirements
 
 - Node.js >= 18
-- (Optional) .NET SDK 8+ to compile the generated C# solution
+- .NET SDK 10+ (required to compile the generated C# solution and run the
+  semantic probes)
+- A pinned RobustToolbox checkout to build generated solutions against the
+  real engine: `bash scripts/setup-engine.sh` (clones to `../RobustToolbox`
+  by default; override with `SS14_ENGINE_DIR`). See `engine.pin`.
 
 ## Install & Build
 
@@ -15,6 +19,16 @@ entity prototypes, ECS systems, RSI textures, and grid maps.
 npm install
 npm run build       # compiles TypeScript to dist/
 npm test            # runs the full test suite (parser, transpiler, DMI, DMM)
+                    # + dotnet build of the generated solution vs real engine
+                    # (needs SS14_ENGINE_DIR set, or a RobustToolbox checkout
+                    #  next to the output dir; skips gracefully otherwise)
+```
+
+Full Phase 0 build loop (CI-style):
+
+```bash
+bash scripts/setup-engine.sh   # one-time: fetch + pin real RobustToolbox
+bash scripts/build-loop.sh     # npm ci -> build -> tests -> probes
 ```
 
 ## Usage
@@ -81,18 +95,37 @@ src/
   transpiler/  csharpEmitter.ts, yamlGenerator.ts, builtinMappings.ts
   dmi/         dmiParser.ts, rsiWriter.ts     DMI (PNG chunk) -> RSI
   dmm/         dmmParser.ts, mapConverter.ts  DMM -> grid YAML
-  project/     ss14Template.ts                solution scaffolding
-  runtimeTemplate/ dmRuntimeCS.ts             embedded C# runtime (DMValue, ...)
+  project/     ss14Template.ts                solution scaffolding (real engine)
+  runtimeTemplate/ dmRuntimeCS.ts             embedded C# runtime (engine-free)
   gui/         server.ts                      local web UI
   tests/       runTests.ts + suites           test runner (no framework deps)
+scripts/
+  setup-engine.sh                             fetch + pin real RobustToolbox
+  build-loop.sh                               Phase 0 CI loop (build+test+probes)
+engine.pin                                    pinned RobustToolbox commit + API notes
 ```
+
+## Generated C# layout (Phase 0)
+
+- `SS13.DM.Runtime` — pure C#, **no RobustToolbox dependency**: `DMValue`,
+  `DMList`, the `DMRuntime` datum (vars + `CallProc` via `ProcRegistry`),
+  tick scheduler, builtin helpers. Runnable standalone (semantic probes).
+- `Content.Server/DM/ConvertedDMProcs.cs` — transpiled DM procs; engine-free.
+- `Content.Server/DM/ConvertedDMSystem.cs` — real `EntitySystem` adapter
+  (`SubscribeLocalEvent` + `ComponentInit`, real RobustToolbox API).
+- `Content.Server/DM/DMRuntimeComponent.cs` — `[RegisterComponent]` ECS
+  component holding a `DMRuntime` datum on an engine entity.
+- `Content.Server.csproj` — `ProjectReference` to `Robust.Shared` via the
+  `EngineDir` MSBuild property (`-p:EngineDir=...` or `SS14_ENGINE_DIR`).
 
 ## Known limitations
 
-See `PLAN.md` ("Out of scope"). Notable items: no argument macros, no
-screen/overlay/appearance handling, verb-to-command mapping is stubbed, and the
-generated solution builds against a vendored minimal `Robust.Shared` shim rather
-than the real engine.
+See `PLAN.md` ("Out of scope") and `FIDELITY-AUDIT.md` (honest loss counts;
+7/24 semantic probes currently preserved — semantic-core rework is Phase 0.5+).
+Notable items: no argument macros, no screen/overlay/appearance handling,
+verb-to-command mapping is stubbed, and the generated solution builds against
+the real `Robust.Shared` engine project but does not yet run a live
+server/client (Robust.Server / Robust.Client integration is Phase 3).
 
 ## License
 

@@ -73,3 +73,23 @@ Files: `src/transpiler/csharpEmitter.ts`, `src/runtimeTemplate/dmRuntimeCS.ts`.
 - No symbol-resolution pass — unknown proc targets resolve to `DMValue.Null` at runtime
 - `x = spawn(2)` (spawn as expression) unsupported; `DMNew` is a placeholder
 - Argument macros, screen/overlay/appearance, verb→command mapping, real RobustToolbox interop (vendored shim only) — see `PLAN.md` "Out of scope"
+
+---
+
+## Phase 0 — Real Engine Ground Truth (re-foundation, 2026-08)
+
+The fabricated `Robust.Shared` shim is **deleted** and the runtime is decoupled from the engine.
+
+| Change | Detail |
+|---|---|
+| Real engine reference | Generated solutions reference `Robust.Shared` from the real RobustToolbox (`engine.pin`, commit `9cefa116`, net10.0). `dotnet build Robust.Shared` clean; `npm test` now includes a real-engine build of the generated solution (exit 0) |
+| Engine-free runtime | `SS13.DM.Runtime` no longer references RobustToolbox: new `DMRuntime` datum (vars, `CallProc`, `ProcRegistry`) replaces the old `DMRuntimeComponent`; `DMNew` allocates a **fresh** datum — object-identity probe (`two new /type()` distinct) now passes |
+| Generated output split | `ConvertedDMProcs.cs` (engine-free procs, used by the probe harness) + `ConvertedDMSystem.cs` (real `EntitySystem` adapter: `SubscribeLocalEvent` with `ComponentEventRefHandler` `(uid, comp, ref args)`, `ComponentInit : EntityEventArgs`, verified against engine source) |
+| Engine component | `DMRuntimeComponent : Component` (`[RegisterComponent]`, `[DataField]`s) holds a datum on a real entity; YAML `type: DMRuntime` maps to it |
+| Probes | Engine-free now (standalone console project, no RobustToolbox needed): 24 probes, honest baseline **7/24** (was 6/24) |
+| Scripts | `scripts/setup-engine.sh` (pin fetch), `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes); `EngineDir` MSBuild property / `SS14_ENGINE_DIR` env |
+
+**API facts discovered against the real engine** (recorded in `engine.pin`):
+`Component` has no public virtual `Initialize()` — lifecycle is event-driven;
+component YAML type = class name minus "Component" suffix; `SpawnEntity` takes
+`EntityCoordinates`/`MapCoordinates` + optional overrides.

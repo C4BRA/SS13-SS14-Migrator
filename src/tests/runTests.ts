@@ -163,7 +163,8 @@ state "icon"
     assert(fs.existsSync(path.join(tmpOutputDir, 'SS13.DM.Runtime', 'DMValue.cs')), "Generated DMValue.cs in DM.Runtime");
     assert(fs.existsSync(path.join(tmpOutputDir, 'SS13.DM.Runtime', 'RustGAdapterStubs.cs')), "Generated rust-g stub adapters");
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Prototypes', 'converted_entities.yml')), "Generated SS14 Entity Prototypes");
-    assert(fs.existsSync(path.join(tmpOutputDir, 'Content.Server', 'DM', 'ConvertedDMSystems.cs')), "Generated C# DM Systems");
+    assert(fs.existsSync(path.join(tmpOutputDir, 'Content.Server', 'DM', 'ConvertedDMProcs.cs')), "Generated C# DM procs (engine-free)");
+    assert(fs.existsSync(path.join(tmpOutputDir, 'Content.Server', 'DM', 'ConvertedDMSystem.cs')), "Generated C# DM system (real-engine adapter)");
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Textures', 'icon.rsi', 'meta.json')), "DMI converted to RSI with meta.json");
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml')), "DMM converted to grid map YAML");
     const dmmMapYaml = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml'), 'utf-8');
@@ -193,21 +194,28 @@ state "icon"
     if (fs.existsSync(unzippedInputDir)) fs.rmSync(unzippedInputDir, { recursive: true, force: true });
     if (fs.existsSync(tmpZipOutputDir)) fs.rmSync(tmpZipOutputDir, { recursive: true, force: true });
 
-    // Test 7: Generated C# solution compiles (dotnet build), if dotnet is available
+    // Test 7: Generated C# solution compiles against the REAL RobustToolbox
+    // (dotnet build), if dotnet + the engine checkout are available.
     const { spawnSync } = await import('child_process');
     const dotnetCheck = spawnSync('dotnet', ['--version'], { stdio: 'pipe' });
     if (dotnetCheck.status === 0) {
-      console.log("   dotnet found, verifying generated solution compiles...");
-      const buildResult = spawnSync('dotnet', ['build', path.join(tmpOutputDir, 'Content.sln'), '--nologo', '-v', 'q'], {
-        stdio: 'pipe',
-        timeout: 300000
-      });
-      const buildLog = buildResult.stdout?.toString() + buildResult.stderr?.toString();
-      const failed = buildResult.status !== 0 || /error CS\d+/.test(buildLog);
-      if (failed) {
-        console.error(buildLog.slice(-2000));
+      const engineDir = process.env.SS14_ENGINE_DIR || path.join(tmpOutputDir, '..', 'RobustToolbox');
+      const engineProject = path.join(engineDir, 'Robust.Shared', 'Robust.Shared.csproj');
+      if (!fs.existsSync(engineProject)) {
+        console.log(`   RobustToolbox not found at ${engineDir} (set SS14_ENGINE_DIR) — skipping real-engine build check`);
+      } else {
+        console.log(`   dotnet found + RobustToolbox at ${engineDir}, verifying generated solution compiles against the real engine...`);
+        const buildResult = spawnSync('dotnet', ['build', path.join(tmpOutputDir, 'Content.sln'), '--nologo', '-v', 'q', '-p:EngineDir=' + engineDir], {
+          stdio: 'pipe',
+          timeout: 600000
+        });
+        const buildLog = buildResult.stdout?.toString() + buildResult.stderr?.toString();
+        const failed = buildResult.status !== 0 || /error CS\d+/.test(buildLog);
+        if (failed) {
+          console.error(buildLog.slice(-2000));
+        }
+        assert(!failed, `Generated C# solution builds against real RobustToolbox (exit ${buildResult.status})`);
       }
-      assert(!failed, `Generated C# solution builds (exit ${buildResult.status})`);
     } else {
       console.log("   dotnet CLI not available — skipping generated solution build check");
     }

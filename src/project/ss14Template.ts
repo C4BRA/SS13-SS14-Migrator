@@ -2,15 +2,30 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DMRuntimeCS } from '../runtimeTemplate/dmRuntimeCS.js';
 
+/**
+ * Emits a Content solution that builds against the REAL RobustToolbox engine
+ * (github.com/space-wizards/RobustToolbox, MIT). The engine source is located
+ * via the MSBuild property `EngineDir`:
+ *   - default: `$(MSBuildThisFileDirectory)..\..\RobustToolbox` (i.e. a
+ *     `RobustToolbox` checkout next to the generated output dir)
+ *   - override:  `dotnet build Content.sln -p:EngineDir=/path/to/RobustToolbox`
+ *
+ * Engine pin: see `engine.pin` in this repo. Verified against commit
+ * 9cefa1167c9ac45f7258094129daf46b6c3516d3 (net10.0, LangVersion 14).
+ *
+ * SS13.DM.Runtime is engine-free by design (pure C# datum runtime); the only
+ * engine-dependent surface is Content.Server/DM/DMRuntimeComponent.cs and
+ * Content.Server/DM/ConvertedDMSystem.cs (generated).
+ */
 export class SS14Template {
   public generateSS14Solution(outputDir: string): void {
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    // 1. Solution File Content.sln
+    // 1. Solution file Content.sln (engine projects are pulled in via
+    //    ProjectReference and do not need to be listed here).
     const projects = [
-      { name: 'Robust.Shared', file: 'Robust.Shared\\Robust.Shared.csproj', guid: '{00000000-0000-0000-0000-000000000001}' },
       { name: 'SS13.DM.Runtime', file: 'SS13.DM.Runtime\\SS13.DM.Runtime.csproj', guid: '{11111111-1111-1111-1111-111111111111}' },
       { name: 'Content.Shared', file: 'Content.Shared\\Content.Shared.csproj', guid: '{22222222-2222-2222-2222-222222222222}' },
       { name: 'Content.Server', file: 'Content.Server\\Content.Server.csproj', guid: '{33333333-3333-3333-3333-333333333333}' },
@@ -44,88 +59,21 @@ EndGlobal
 `;
     fs.writeFileSync(path.join(outputDir, 'Content.sln'), slnContent.trim(), 'utf-8');
 
-    // 2. Robust.Shared Shim Project (no NuGet packages exist for Robust, so the
-    //    solution is fully self-contained; generated code uses a minimal subset)
-    const robustDir = path.join(outputDir, 'Robust.Shared');
-    fs.mkdirSync(robustDir, { recursive: true });
+    // Shared MSBuild props: TFM + engine location.
+    const engineDirProp = `<PropertyGroup>
+    <EngineDir Condition="'$(EngineDir)' == ''">$(MSBuildThisFileDirectory)..\\..\\RobustToolbox</EngineDir>
+  </PropertyGroup>`;
 
-    const robustCsproj = `<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
-</Project>`;
-    fs.writeFileSync(path.join(robustDir, 'Robust.Shared.csproj'), robustCsproj, 'utf-8');
-
-    const robustShim = `using System;
-
-namespace Robust.Shared.GameObjects
-{
-    public readonly struct EntityUid : IEquatable<EntityUid>
-    {
-        public static readonly EntityUid Invalid = new EntityUid(0);
-
-        public readonly int Id;
-
-        public EntityUid(int id) { Id = id; }
-
-        public bool Equals(EntityUid other) => Id == other.Id;
-        public override bool Equals(object? obj) => obj is EntityUid other && Equals(other);
-        public override int GetHashCode() => Id;
-        public static bool operator ==(EntityUid a, EntityUid b) => a.Equals(b);
-        public static bool operator !=(EntityUid a, EntityUid b) => !a.Equals(b);
-        public override string ToString() => $"ent {Id}";
-    }
-
-    public class Component
-    {
-        public EntityUid Owner { get; set; }
-        public bool Initialized { get; set; }
-        public bool Running { get; set; }
-        public bool Deleted { get; set; }
-    }
-
-    public sealed class ComponentInit { }
-
-    [AttributeUsage(AttributeTargets.Class)]
-    public sealed class RegisterComponent : Attribute { }
-
-    public abstract class EntitySystem
-    {
-        public virtual void Initialize() { }
-
-        protected void SubscribeLocalEvent<TComp, TEvent>(Action<EntityUid, TComp, TEvent> handler)
-            where TComp : Component
-        {
-            // Engine integration point: event bus registration.
-        }
-    }
-
-    public sealed class EntityManager
-    {
-        public static EntityManager Instance { get; } = new EntityManager();
-        private EntityManager() { }
-
-        public EntityUid SpawnEntity(string prototype, EntityUid? parent = null) => EntityUid.Invalid;
-    }
-}
-`;
-    fs.writeFileSync(path.join(robustDir, 'RobustShim.cs'), robustShim.trim(), 'utf-8');
-
-    // 3. SS13.DM.Runtime Project
+    // 2. SS13.DM.Runtime Project — engine-free datum runtime.
     const runtimeDir = path.join(outputDir, 'SS13.DM.Runtime');
     fs.mkdirSync(runtimeDir, { recursive: true });
 
     const runtimeCsproj = `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\\Robust.Shared\\Robust.Shared.csproj" />
-  </ItemGroup>
 </Project>`;
     fs.writeFileSync(path.join(runtimeDir, 'SS13.DM.Runtime.csproj'), runtimeCsproj, 'utf-8');
 
@@ -133,13 +81,13 @@ namespace Robust.Shared.GameObjects
       fs.writeFileSync(path.join(runtimeDir, file.filename), file.content, 'utf-8');
     }
 
-    // 4. Content.Shared Project
+    // 3. Content.Shared Project
     const sharedDir = path.join(outputDir, 'Content.Shared');
     fs.mkdirSync(sharedDir, { recursive: true });
 
     const sharedCsproj = `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
@@ -150,24 +98,62 @@ namespace Robust.Shared.GameObjects
     fs.writeFileSync(path.join(sharedDir, 'Content.Shared.csproj'), sharedCsproj, 'utf-8');
     fs.writeFileSync(path.join(sharedDir, 'DummyShared.cs'), 'namespace Content.Shared { public class Dummy { } }', 'utf-8');
 
-    // 5. Content.Server Project
+    // 4. Content.Server Project — references the REAL RobustToolbox.
     const serverDir = path.join(outputDir, 'Content.Server');
     fs.mkdirSync(serverDir, { recursive: true });
 
     const serverCsproj = `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  ${engineDirProp}
   <ItemGroup>
     <ProjectReference Include="..\\SS13.DM.Runtime\\SS13.DM.Runtime.csproj" />
     <ProjectReference Include="..\\Content.Shared\\Content.Shared.csproj" />
-    <ProjectReference Include="..\\Robust.Shared\\Robust.Shared.csproj" />
+    <ProjectReference Include="$(EngineDir)/Robust.Shared/Robust.Shared.csproj" />
   </ItemGroup>
 </Project>`;
     fs.writeFileSync(path.join(serverDir, 'Content.Server.csproj'), serverCsproj, 'utf-8');
+
+    // Engine-facing adapter: SS14 component holding the DM datum. The YAML
+    // prototype emitter writes `type: DMRuntime` (component name = class name
+    // minus the "Component" suffix) with dmTypePath + initialVars data fields.
+    const dmServerDir = path.join(serverDir, 'DM');
+    fs.mkdirSync(dmServerDir, { recursive: true });
+    const dmComponentCS = `using System.Collections.Generic;
+using Robust.Shared.GameObjects;
+using Robust.Shared.Serialization.Manager.Attributes;
+using SS13.DM.Runtime;
+
+namespace Content.Server.DM
+{
+    /// <summary>
+    /// SS14 ECS component that carries a DM datum (SS13.DM.Runtime.DMRuntime)
+    /// on a real engine entity. Prototype YAML:
+    ///   - type: DMRuntime
+    ///     dmTypePath: /obj/item/...
+    ///     initialVars:
+    ///       custom_var: value
+    /// Initialization (DMTypePath/InitialVars -> runtime) and New() dispatch
+    /// happen in ConvertedDMSystem.OnDMComponentInit.
+    /// </summary>
+    [RegisterComponent]
+    public sealed class DMRuntimeComponent : Component
+    {
+        [DataField("dmTypePath")]
+        public string DMTypePath { get; set; } = "/datum";
+
+        [DataField("initialVars")]
+        public Dictionary<string, string> InitialVars { get; set; } = new();
+
+        public DMRuntime Runtime { get; } = new();
+    }
+}
+`;
+    fs.writeFileSync(path.join(dmServerDir, 'DMRuntimeComponent.cs'), dmComponentCS, 'utf-8');
 
     const programCS = `using System;
 
@@ -184,14 +170,15 @@ namespace Content.Server
 }`;
     fs.writeFileSync(path.join(serverDir, 'Program.cs'), programCS, 'utf-8');
 
-    // 6. Content.Client Project
+    // 5. Content.Client Project (console stub; full Robust.Client integration
+    //    is out of scope for Phase 0 — see PLAN.md).
     const clientDir = path.join(outputDir, 'Content.Client');
     fs.mkdirSync(clientDir, { recursive: true });
 
     const clientCsproj = `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
@@ -203,7 +190,7 @@ namespace Content.Server
     fs.writeFileSync(path.join(clientDir, 'Content.Client.csproj'), clientCsproj, 'utf-8');
     fs.writeFileSync(path.join(clientDir, 'Program.cs'), `using System; namespace Content.Client { public class Program { public static void Main(string[] args) { Console.WriteLine("SS14 Client Initialized"); } } }`, 'utf-8');
 
-    // 7. Config files
+    // 6. Config files
     fs.writeFileSync(path.join(outputDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
   }
 }

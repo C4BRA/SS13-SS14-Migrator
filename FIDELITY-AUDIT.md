@@ -160,4 +160,9 @@ paradise 14,118 · beestation 16,003 — beestation/paradise lose whole files.
 
 ## Accepted (by design, per PLAN.md)
 No symbol-resolution pass; unknown procs → `null`; `spawn()` as expression;
-DMI/RSI round-trips; RobustToolbox interop is a vendored shim.
+DMI/RSI round-trips. **Update (Phase 0):** the generated solution now builds
+against the real RobustToolbox engine (previously a fabricated shim); the DM
+runtime is engine-free and the probe harness runs it standalone. Probe count is
+now 7/24 preserved; the remaining 17 items are the Phase 0.5 semantic-core
+backlog (text/list semantics, short-circuit ops, break/continue, `..()`,
+world/GLOB statics, builtins, bitwise ops).

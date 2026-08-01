@@ -1,0 +1,28 @@
+# RobustToolbox engine pin for dm2ss14 (Phase 0+)
+
+The generated SS14 solution builds against the REAL engine via ProjectReference
+(`-p:EngineDir=` or the `SS14_ENGINE_DIR` env var). This file records which
+engine commit the generated code + runtime template were verified against.
+
+repo: https://github.com/space-wizards/RobustToolbox
+commit: 9cefa1167c9ac45f7258094129daf46b6c3516d3
+target-framework: net10.0
+notes:
+- A shallow clone suffices: `git clone --depth 1`
+- Submodules are required for the build: `git submodule update --init --depth 1`
+  (Lidgren.Network, NetSerializer, XamlX, Robust.LoaderApi, cefglue)
+- Verified API surface (this commit):
+  * EntitySystem (abstract partial) with [Dependency] EntityManager field
+  * SubscribeLocalEvent<TComp, TEvent> with ComponentEventRefHandler
+    signature (EntityUid uid, TComp comp, ref TEvent args), TEvent : notnull
+  * ComponentInit : EntityEventArgs (sealed class, not a struct)
+  * Component base class has NO public virtual Initialize() — lifecycle is
+    event-driven (ComponentInit broadcast)
+  * EntityManager.SpawnEntity(protoId, coordinates, overrides)
+  * RegisterComponentAttribute; YAML component type = class name minus
+    "Component" suffix; [DataField] for prototype serialization
+
+Refresh procedure:
+1. Update the engine checkout to a newer commit and bump `commit:` here.
+2. Re-run `bash scripts/build-loop.sh`; fix any API drift in the runtime
+   template / generated system template.

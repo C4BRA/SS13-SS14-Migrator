@@ -7,6 +7,44 @@ Status legend: [ ] not started · [~] in progress · [x] done
 
 ---
 
+## Phase 0 — Real Engine Ground Truth (re-foundation)
+
+The fabricated `Robust.Shared` shim is gone. Generated solutions now build against the **real
+RobustToolbox** (`engine.pin`, verified commit `9cefa116`), and `SS13.DM.Runtime` is a pure,
+engine-free datum runtime. "Compiles" now means compiles against the real engine.
+
+- [x] Clone + pin real RobustToolbox (`scripts/setup-engine.sh`, `engine.pin`); `dotnet build
+      Robust.Shared` clean with dotnet 10 SDK (net10.0)
+- [x] `SS13.DM.Runtime` decoupled from the engine: `DMRuntime` datum (vars, `CallProc`,
+      `ProcRegistry`) with zero RobustToolbox references; `DMNew` allocates a real object
+      (identity probe now passes)
+- [x] Generated output split: `ConvertedDMProcs.cs` (engine-free procs + registry) and
+      `ConvertedDMSystem.cs` (real `EntitySystem` adapter — `SubscribeLocalEvent` with
+      `ComponentEventRefHandler`, `ComponentInit : EntityEventArgs`, `[RegisterComponent]`
+      component with `[DataField]`s, all verified against the cloned engine source)
+- [x] `ss14Template` emits a solution referencing real RobustToolbox via `EngineDir`
+      MSBuild property (`-p:EngineDir=` / `SS14_ENGINE_DIR`); fake shim project deleted
+- [x] Semantic probes run engine-free (pure runtime console project) — 24 probes, honest
+      count **7/24** (up from 6/24; `new` identity fixed). Remaining 17 are Phase 2 work
+- [x] Build loop: `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes)
+- [~] Corpus-scale compile proof against the real engine (fidelity audit `--build` path; run
+      on tgstation corpus, fix any CS errors at scale)
+
+---
+
+## Phase 0.5+ — Semantic core (from FIDELITY-AUDIT.md fix backlog)
+
+Not yet started. Order of attack (Tier 0 first):
+
+- [ ] `DMValue` text semantics: case-insensitive `==`, lexicographic `<`, `null == ""`
+- [ ] `&&`/`||` short-circuit returning operands (emitted ternaries)
+- [ ] `DMList`: `len`, negative indices, element-wise equality, `+=` append
+- [ ] `break`/`continue` emission (loop nesting in the emitter)
+- [ ] `..()` parent dispatch (registry walk with current-proc context)
+- [ ] `world`/`GLOB` statics, `text2num` hex, `replacetext`, `islist`, `as` casts, bitwise ops
+
+---
+
 ## Phase 0 — Repo Hygiene & Submission Readiness
 
 Repo is submittable as-is from a clean checkout.
@@ -85,10 +123,12 @@ Behavior matches DM semantics for the supported subset.
 - Full DM macro system (`#define` with arguments, conditional `*` blocks), `procmacro`
 - Screen objects / appearance handling, icon overlays, and UI widgets
 - Networked verbs (`set hidden`, `set category`) mapping to SS14 commands
-- RobustToolbox interop beyond the vendored shim
+- RobustToolbox interop beyond: Content.Server builds against `Robust.Shared` (real engine);
+  running a live server (Robust.Server) and client (Robust.Client) integration is Phase 3
 
 ## Risks
 
-- `dotnet` CLI may be absent on the submission machine → build-check test degrades gracefully
-- Preprocessor eval can balloon → capped at `defined()` + object-like macros
-- SS14 prototype schema drift → validation against vendored shim only
+- Real-engine API drift on engine updates → mitigated by `engine.pin` + `scripts/build-loop.sh`
+- `dotnet` CLI may be absent on the submission machine → build-check tests degrade gracefully
+- Corpus-scale build against the real engine is heavier (NuGet restore + source generators);
+  run via `npm run audit:fidelity -- <repo> --build` with `SS14_ENGINE_DIR` set

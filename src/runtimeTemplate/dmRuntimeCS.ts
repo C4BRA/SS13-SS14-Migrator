@@ -4,7 +4,6 @@ export class DMRuntimeCS {
       {
         filename: 'DMValue.cs',
         content: `using System;
-using System.Collections.Generic;
 
 namespace SS13.DM.Runtime
 {
@@ -31,10 +30,10 @@ namespace SS13.DM.Runtime
         public static DMValue FromString(string val) => new DMValue { Type = DMValueType.String, StringValue = val ?? "" };
         public static DMValue FromList(DMList list) => new DMValue { Type = DMValueType.List, ListValue = list };
         public static DMValue FromRef(object obj) => new DMValue { Type = DMValueType.DatumRef, DatumRef = obj };
-        public static DMValue FromComponent(DMRuntimeComponent comp) => new DMValue { Type = DMValueType.DatumRef, DatumRef = comp };
+        public static DMValue FromDatum(DMRuntime datum) => new DMValue { Type = DMValueType.DatumRef, DatumRef = datum };
 
-        public DMRuntimeComponent? AsComponent() =>
-            Type == DMValueType.DatumRef ? DatumRef as DMRuntimeComponent : null;
+        public DMRuntime? AsDatum() =>
+            Type == DMValueType.DatumRef ? DatumRef as DMRuntime : null;
 
         public DMList? AsList() =>
             Type == DMValueType.List ? ListValue : null;
@@ -202,17 +201,27 @@ namespace SS13.DM.Runtime
 `
       },
       {
-        filename: 'DMObjectComponent.cs',
-        content: `using System.Collections.Generic;
-using Robust.Shared.GameObjects;
+        filename: 'DMRuntime.cs',
+        content: `using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace SS13.DM.Runtime
 {
-    [RegisterComponent]
-    public class DMRuntimeComponent : Component
+    /// <summary>
+    /// A single DM datum instance: the runtime-side object that carries DM
+    /// variables and dispatches proc calls through <see cref="ProcRegistry"/>.
+    ///
+    /// This class is engine-free by design. It has no dependency on
+    /// RobustToolbox; the engine-facing wrapper (an SS14 ECS component) lives
+    /// in Content.Server and holds a DMRuntime alongside an EntityUid.
+    /// </summary>
+    public class DMRuntime
     {
         public string DMTypePath { get; set; } = "/datum";
         public Dictionary<string, DMValue> Variables { get; } = new();
+
+        public bool MarkedForDeletion { get; private set; }
 
         public DMValue GetVar(string name)
         {
@@ -232,7 +241,9 @@ namespace SS13.DM.Runtime
 
         public void MarkForDeletion()
         {
-            // Engine integration point: queue entity deletion.
+            // Engine integration point: the hosting system observes this flag
+            // and queues the wrapped entity for deletion.
+            MarkedForDeletion = true;
         }
 
         public async Task<DMValue> CallProc(string procName, params DMValue[] args)
@@ -243,7 +254,7 @@ namespace SS13.DM.Runtime
                 // DM semantics: usr is the object that invoked the call; for direct
                 // calls this is the receiving object itself.
                 var previousUsr = DMRuntimeHelpers.CurrentUsr;
-                DMRuntimeHelpers.CurrentUsr = DMValue.FromComponent(this);
+                DMRuntimeHelpers.CurrentUsr = DMValue.FromDatum(this);
                 try
                 {
                     return await handler(this, args);
@@ -269,19 +280,19 @@ namespace SS13.DM.Runtime
     /// </summary>
     public static class ProcRegistry
     {
-        private static readonly Dictionary<(string TypePath, string Name), Func<DMRuntimeComponent, DMValue[], Task<DMValue>>> Procs = new();
+        private static readonly Dictionary<(string TypePath, string Name), Func<DMRuntime, DMValue[], Task<DMValue>>> Procs = new();
 
-        public static void Register(string typePath, string procName, Func<DMRuntimeComponent, DMValue[], Task<DMValue>> handler)
+        public static void Register(string typePath, string procName, Func<DMRuntime, DMValue[], Task<DMValue>> handler)
         {
             Procs[(typePath, procName)] = handler;
         }
 
-        public static bool TryGet(string typePath, string procName, out Func<DMRuntimeComponent, DMValue[], Task<DMValue>> handler)
+        public static bool TryGet(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
         {
             return Procs.TryGetValue((typePath, procName), out handler!);
         }
 
-        public static bool TryGetInherited(string typePath, string procName, out Func<DMRuntimeComponent, DMValue[], Task<DMValue>> handler)
+        public static bool TryGetInherited(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
         {
             var parts = typePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             while (parts.Length > 0)
@@ -354,31 +365,31 @@ namespace SS13.DM.Runtime
 
         /// <summary>
         /// The mob that initiated the currently executing proc call (DM "usr").
-        /// Defaults to Null; set around each proc invocation in CallProc.
+        /// Defaults to Null; set around each proc invocation in DMRuntime.CallProc.
         /// </summary>
         public static DMValue CurrentUsr { get; set; } = DMValue.Null;
 
         // ==== Object lifecycle ====
 
         /// <summary>
-        /// Creates a new object of the given DM type path. Entity spawn is
-        /// provided by the hosting engine; the vendored shim has no entity
-        /// allocator, so this returns a reference to the creating component
-        /// as a placeholder. New() dispatch happens on component init.
+        /// Creates a new datum of the given DM type path. Engine integration is
+        /// provided by the hosting system; the engine-free runtime allocates a
+        /// fresh DMRuntime (real object identity) and dispatches New() through
+        /// the proc registry.
         /// </summary>
-        public static async Task<DMValue> DMNew(DMRuntimeComponent comp, string typePath, params DMValue[] args)
+        public static async Task<DMValue> DMNew(DMRuntime comp, string typePath, params DMValue[] args)
         {
-            // Engine integration point: spawn entity + DMRuntimeComponent,
-            // then dispatch New() via the proc registry.
-            return DMValue.FromRef(comp);
+            var datum = new DMRuntime { DMTypePath = typePath };
+            await datum.CallProc("New", args);
+            return DMValue.FromDatum(datum);
         }
 
         public static void DMDelete(DMValue target)
         {
-            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntimeComponent comp)
+            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
             {
                 // Engine integration point: queue entity deletion.
-                comp.MarkForDeletion();
+                datum.MarkForDeletion();
             }
         }
 
@@ -386,9 +397,9 @@ namespace SS13.DM.Runtime
 
         public static async Task<DMValue> DMCallProc(DMValue target, string procName, params DMValue[] args)
         {
-            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntimeComponent comp)
+            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
             {
-                return await comp.CallProc(procName, args);
+                return await datum.CallProc(procName, args);
             }
             return DMValue.Null;
         }
@@ -418,9 +429,9 @@ namespace SS13.DM.Runtime
 
         public static DMValue DMIsType(DMValue value, DMValue typePath)
         {
-            if (value.Type != DMValueType.DatumRef || value.DatumRef is not DMRuntimeComponent comp)
+            if (value.Type != DMValueType.DatumRef || value.DatumRef is not DMRuntime datum)
                 return DMValue.Null;
-            return DMValue.FromNumber(comp.IsType(typePath.ToString()) ? 1 : 0);
+            return DMValue.FromNumber(datum.IsType(typePath.ToString()) ? 1 : 0);
         }
 
         public static DMValue DMIsPath(DMValue value, DMValue typePath)
@@ -439,7 +450,7 @@ namespace SS13.DM.Runtime
 
         // ==== Iteration helper: for(x in range) ====
 
-        public static IEnumerable<DMValue> DMListItems(DMValue value)
+        public static System.Collections.Generic.IEnumerable<DMValue> DMListItems(DMValue value)
         {
             switch (value.Type)
             {
@@ -636,8 +647,8 @@ namespace SS13.DM.Runtime
 
         public static DMValue HasCall(DMValue target, DMValue procName)
         {
-            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntimeComponent comp)
-                return DMValue.FromNumber(comp.CanCallProc(procName.ToString()) ? 1 : 0);
+            if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
+                return DMValue.FromNumber(datum.CanCallProc(procName.ToString()) ? 1 : 0);
             return DMValue.FromNumber(0);
         }
 

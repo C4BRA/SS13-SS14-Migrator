@@ -28,7 +28,7 @@ function transpileProc(dmCode: string): string {
   const nodes = parser.parse();
   assert(parser.diagnostics.errors.length === 0, `No parse errors for: ${dmCode.trim().split('\n')[1] || dmCode}`);
   const ir = new DMIRGenerator().generateIR(nodes);
-  return new CSharpEmitter().generateSystemCS(ir);
+  return new CSharpEmitter().generateProcsCS(ir);
 }
 
 async function runCSharpEmitterTests() {
@@ -59,8 +59,8 @@ async function runCSharpEmitterTests() {
     var/y = src.zero()
     var/z = usr.mob
 `);
-  assertContains(kw, `await DMCallProc(DMValue.FromComponent(comp), "zero")`, 'src.method() postfix chain');
-  assertContains(kw, `(DMRuntimeHelpers.CurrentUsr).AsComponent()?.GetVar("mob") ?? DMValue.Null`, 'usr property access');
+  assertContains(kw, `await DMCallProc(DMValue.FromDatum(comp), "zero")`, 'src.method() postfix chain');
+  assertContains(kw, `(DMRuntimeHelpers.CurrentUsr).AsDatum()?.GetVar("mob") ?? DMValue.Null`, 'usr property access');
 
   // Test 5: Proc args are stored on the component (C#-keyword-safe)
   const args = transpileProc(`/obj/foo/proc/do_work(event, object, args)

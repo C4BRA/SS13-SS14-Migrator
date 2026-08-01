@@ -12,7 +12,9 @@
     "test": "node dist/tests/runTests.js",
     "audit:repo": "node dist/tests/repoAudit.js",
     "audit:fidelity": "node dist/audit/fidelityAudit.js",
-    "audit:semantics": "node dist/tests/fidelityDifferential.test.js"
+    "audit:semantics": "node dist/tests/fidelityDifferential.test.js",
+    "setup:engine": "bash scripts/setup-engine.sh",
+    "phase0": "bash scripts/build-loop.sh"
   },
   "keywords": [
     "ss13",

@@ -471,7 +471,8 @@ function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number): voi
   const emitter = new CSharpEmitter();
   const serverDMDir = path.join(outDir, 'Content.Server', 'DM');
   fs.mkdirSync(serverDMDir, { recursive: true });
-  fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMSystems.cs'), emitter.generateSystemCS(sampleIr), 'utf-8');
+  fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(sampleIr), 'utf-8');
+  fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMSystem.cs'), emitter.generateSystemCS(), 'utf-8');
 
   const template = new SS14Template();
   template.generateSS14Solution(outDir);
@@ -482,8 +483,9 @@ function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number): voi
   }
 
   console.log(`[${r.name}] Running dotnet build ...`);
+  const engineDir = process.env.SS14_ENGINE_DIR || path.join(outDir, '..', 'RobustToolbox');
   try {
-    const out = execSync('dotnet build Content.sln --nologo -v q 2>&1', {
+    const out = execSync(`dotnet build Content.sln --nologo -v q -p:EngineDir="${engineDir}" 2>&1`, {
       cwd: outDir,
       timeout: 15 * 60 * 1000,
       maxBuffer: 256 * 1024 * 1024

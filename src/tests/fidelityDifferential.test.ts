@@ -19,7 +19,6 @@ import { DMParser } from '../parser/dmParser.js';
 import { DiagnosticCollector } from '../diagnostics.js';
 import { DMIRGenerator } from '../ir/dmIRGenerator.js';
 import { CSharpEmitter } from '../transpiler/csharpEmitter.js';
-import { SS14Template } from '../project/ss14Template.js';
 import { DMRuntimeCS } from '../runtimeTemplate/dmRuntimeCS.js';
 
 interface Probe {
@@ -167,9 +166,8 @@ function emitConverted(dmCode: string, outDir: string): void {
   assert(collector.errors.length === 0, `Probe failed to parse: ${collector.errors[0]?.message ?? 'unknown'}`);
   const ir = new DMIRGenerator().generateIR(nodes);
   const emitter = new CSharpEmitter();
-  const serverDMDir = path.join(outDir, 'Content.Server', 'DM');
-  fs.mkdirSync(serverDMDir, { recursive: true });
-  fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMSystems.cs'), emitter.generateSystemCS(ir), 'utf-8');
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(ir), 'utf-8');
 }
 
 const DRIVER = `using System;
@@ -180,9 +178,9 @@ class ProbeDriver
 {
     static void Main()
     {
-        var comp = new DMRuntimeComponent { DMTypePath = "/datum/probe" };
-        ConvertedDMSystem.RegisterProcs();
-        var res = comp.CallProc("run").Result;
+        var datum = new DMRuntime { DMTypePath = "/datum/probe" };
+        ConvertedDMProcs.RegisterProcs();
+        var res = datum.CallProc("run").Result;
         Console.WriteLine("PROBE_RESULT:" + res.ToString());
     }
 }
@@ -199,13 +197,21 @@ async function main(): Promise<void> {
   if (fs.existsSync(scratch)) fs.rmSync(scratch, { recursive: true, force: true });
   fs.mkdirSync(scratch, { recursive: true });
 
-  new SS14Template().generateSS14Solution(scratch);
+  // Engine-free probe project: the SS13.DM.Runtime sources + the generated
+  // proc file + a driver. No RobustToolbox needed — the runtime is pure C#.
+  const csproj = `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>`;
+  fs.writeFileSync(path.join(scratch, 'ProbeDriver.csproj'), csproj, 'utf-8');
   for (const f of DMRuntimeCS.getRuntimeCSFiles()) {
-    const target = path.join(scratch, 'SS13.DM.Runtime', f.filename);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, f.content, 'utf-8');
+    fs.writeFileSync(path.join(scratch, f.filename), f.content, 'utf-8');
   }
-  fs.writeFileSync(path.join(scratch, 'Content.Server', 'Program.cs'), DRIVER, 'utf-8');
+  fs.writeFileSync(path.join(scratch, 'Program.cs'), DRIVER, 'utf-8');
 
   console.log('=== Semantic Differential Probes (expected = BYOND, observed = converted) ===');
   let matches = 0;
@@ -215,7 +221,7 @@ async function main(): Promise<void> {
     emitConverted(probe.dm, scratch);
     let output: string;
     try {
-      output = execSync('dotnet run --project Content.Server --nologo -v q', {
+      output = execSync('dotnet run --project ProbeDriver.csproj --nologo -v q', {
         cwd: scratch,
         timeout: 180000,
         maxBuffer: 16 * 1024 * 1024,

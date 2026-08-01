@@ -10,43 +10,39 @@ export class CSharpEmitter {
       fs.mkdirSync(outputServerDir, { recursive: true });
     }
 
-    const csCode = this.generateSystemCS(irMap);
-    fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMSystems.cs'), csCode, 'utf-8');
+    // ConvertedDMProcs.cs — engine-free: transpiled DM procs + proc registry
+    // registration. Compiles against SS13.DM.Runtime alone (used by the
+    // semantic-probe harness without any engine).
+    const procsCode = this.generateProcsCS(irMap);
+    fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMProcs.cs'), procsCode, 'utf-8');
+
+    // ConvertedDMSystem.cs — engine adapter: an SS14 EntitySystem wired to the
+    // real RobustToolbox API (compiles against Robust.Shared).
+    fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMSystem.cs'), this.generateSystemCS(), 'utf-8');
   }
 
-  public generateSystemCS(irMap: Map<string, DMIRType>): string {
+  /**
+   * Pure C# (no RobustToolbox references): the static proc registry and one
+   * static method per DM proc, operating on the engine-free DMRuntime datum.
+   */
+  public generateProcsCS(irMap: Map<string, DMIRType>): string {
     let code = `using System;
-using System.Collections.Generic;
 using System.Threading.Tasks;
-using Robust.Shared.GameObjects;
 using SS13.DM.Runtime;
 using static SS13.DM.Runtime.DMRuntimeHelpers;
 
 namespace Content.Server.DM
 {
-    public class ConvertedDMSystem : EntitySystem
+    /// <summary>
+    /// Transpiled DM procs. Engine-free: operates on the pure DMRuntime datum
+    /// and the ProcRegistry, so it compiles and runs without RobustToolbox.
+    /// The engine-facing ConvertedDMSystem calls RegisterProcs() at startup.
+    /// </summary>
+    public static class ConvertedDMProcs
     {
-        public override void Initialize()
-        {
-            base.Initialize();
-            RegisterProcs();
-            SubscribeLocalEvent<DMRuntimeComponent, ComponentInit>(OnDMComponentInit);
-        }
-
-        private void OnDMComponentInit(EntityUid uid, DMRuntimeComponent comp, ComponentInit args)
-        {
-            ExecuteNew(uid, comp);
-        }
-
-        public void ExecuteNew(EntityUid uid, DMRuntimeComponent comp)
-        {
-            _ = comp.CallProc("New");
-        }
-
         public static void RegisterProcs()
         {
 `;
-
     const registrations: string[] = [];
     const procMembers: string[] = [];
 
@@ -58,10 +54,10 @@ namespace Content.Server.DM
 
       for (const [procName, procNode] of irType.procs.entries()) {
         const csharpProcName = this.capitalize(procName);
-        let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntimeComponent comp, DMValue[] args)\n        {\n`;
+        let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntime comp, DMValue[] args)\n        {\n`;
 
         procNode.args.forEach((arg, idx) => {
-          // Args are stored on the component so body references via
+          // Args are stored on the datum so body references via
           // comp.GetVar(name) resolve them; this also sidesteps C# keyword
           // collisions (e.g. an arg named `event` or `object`).
           member += `            comp.SetVar("${arg.name}", args.Length > ${idx} ? args[${idx}] : DMValue.Null);\n`;
@@ -95,6 +91,53 @@ namespace Content.Server.DM
 
     code += `    }\n}\n`;
     return code;
+  }
+
+  /**
+   * SS14 engine adapter against the real RobustToolbox API:
+   *   - EntitySystem (abstract partial class) with a [Dependency] EntityManager field
+   *   - SubscribeLocalEvent<DMRuntimeComponent, ComponentInit> with the
+   *     ComponentEventRefHandler signature (EntityUid, TComp, ref TEvent)
+   *   - ComponentInit : EntityEventArgs (class)
+   *   - DMRuntimeComponent : Component (RegisterComponent) holding a DMRuntime datum
+   * Verified against RobustToolbox commit 9cefa1167c9ac45f7258094129daf46b6c3516d3.
+   */
+  public generateSystemCS(): string {
+    return `using Robust.Shared.GameObjects;
+using SS13.DM.Runtime;
+
+namespace Content.Server.DM
+{
+    /// <summary>
+    /// Engine-facing wrapper: wires the transpiled DM proc registry into an
+    /// SS14 EntitySystem and drives New() dispatch on component init.
+    /// </summary>
+    public sealed class ConvertedDMSystem : EntitySystem
+    {
+        public override void Initialize()
+        {
+            base.Initialize();
+            ConvertedDMProcs.RegisterProcs();
+            SubscribeLocalEvent<DMRuntimeComponent, ComponentInit>(OnDMComponentInit);
+        }
+
+        private void OnDMComponentInit(EntityUid uid, DMRuntimeComponent comp, ref ComponentInit args)
+        {
+            comp.Runtime.DMTypePath = comp.DMTypePath;
+            foreach (var (k, v) in comp.InitialVars)
+            {
+                comp.Runtime.SetVar(k, DMValue.FromString(v));
+            }
+            ExecuteNew(uid, comp);
+        }
+
+        public void ExecuteNew(EntityUid uid, DMRuntimeComponent comp)
+        {
+            _ = comp.Runtime.CallProc("New");
+        }
+    }
+}
+`;
   }
 
   private transpileStatement(stmt: any, indent: number): string {
@@ -258,7 +301,7 @@ namespace Content.Server.DM
         // Variable assignment within expression
         return `comp.SetVar("${(node as any).target}", ${this.transpileExpression((node as any).value)})`;
       case 'property_assignment':
-        return `(${this.transpileExpression((node as any).target)}).AsComponent()?.SetVar("${(node as any).property}", ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
+        return `(${this.transpileExpression((node as any).target)}).AsDatum()?.SetVar("${(node as any).property}", ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
       case 'index_assignment':
         return `DMListSet(${this.transpileExpression((node as any).target)}, ${this.transpileExpression((node as any).index)}, ${this.transpileExpression((node as any).value)})`;
       case 'list':
@@ -287,7 +330,7 @@ namespace Content.Server.DM
   private transpileVariable(node: any): string {
     // Special DM variables: src = the current object, usr = the calling mob,
     // args = the current proc's argument list (DMList, 1-indexed).
-    if (node.name === 'src') return 'DMValue.FromComponent(comp)';
+    if (node.name === 'src') return 'DMValue.FromDatum(comp)';
     if (node.name === 'usr') return 'DMRuntimeHelpers.CurrentUsr';
     if (node.name === 'args') return '__dmArgs';
     return `comp.GetVar("${node.name}")`;
@@ -376,7 +419,7 @@ namespace Content.Server.DM
 
   private transpileProperty(node: any): string {
     const target = this.transpileExpression(node.target);
-    return `(${target}).AsComponent()?.GetVar("${node.property}") ?? DMValue.Null`;
+    return `(${target}).AsDatum()?.GetVar("${node.property}") ?? DMValue.Null`;
   }
 
   private transpileIndex(node: any): string {
