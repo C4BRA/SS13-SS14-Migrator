@@ -42,8 +42,9 @@ repository and the converted solution is written to your Downloads folder.
    (a dynamic `DMValue` runtime), `Content.Shared`, `Content.Server`, `Content.Client`.
 2. **Preprocesses & parses DM source** — a `#include`/`#define`/`#if`-aware
    preprocessor feeds a hand-written lexer and indentation-sensitive parser that
-   builds an AST (type declarations, vars, procs, `if`/`else if`/`switch`/
-   `for`/`for-in`/`while`, `spawn`/`sleep`, verbs with `set` modifiers, and full
+   builds    an AST (type declarations, vars, procs, `if`/`else if`/`switch`/
+   `for`/`for-in`/C-style `for(var/i=..)`/`while`/`do-while`, `spawn`/`sleep`,
+   `{...}` list literals, `1..5` ranges, verbs with `set` modifiers, and full
    expressions including string interpolation).
 3. **Builds a DM-IR** — merges all files into a type hierarchy, auto-synthesizes
    missing parents, and classifies types as *static* (plain YAML prototype) or
@@ -58,7 +59,8 @@ repository and the converted solution is written to your Downloads folder.
      text/number coercion, and string-concat `+`
    - `Resources/Textures/**/*.rsi` — DMI icons converted to RSI (tEXt/iTXt/zTXt
      metadata, per-direction delays)
-   - `Resources/Maps/**/*.yml` — DMM maps converted to grid maps
+   - `Resources/Maps/**/*.yml` — DMM maps converted to grid maps (multi-Z maps
+     are preserved as separate grids with origin-aware coordinates)
 5. **Reports diagnostics** — errors and warnings are aggregated per file with
    source positions (including orphan DMM tile keys, non-rectangular grids,
    DMI frame/delay mismatches); the CLI exits non-zero if any errors were found.
@@ -76,8 +78,7 @@ src/
   parser/      dmLexer.ts, dmParser.ts        DM tokenizer + AST parser
   preprocessor.ts                             #include/#define/#if handling
   ir/          dmIRGenerator.ts               type hierarchy + static/dynamic split
-  transpiler/  csharpEmitter.ts, expressionTranspiler.ts,
-               yamlGenerator.ts, builtinMappings.ts
+  transpiler/  csharpEmitter.ts, yamlGenerator.ts, builtinMappings.ts
   dmi/         dmiParser.ts, rsiWriter.ts     DMI (PNG chunk) -> RSI
   dmm/         dmmParser.ts, mapConverter.ts  DMM -> grid YAML
   project/     ss14Template.ts                solution scaffolding

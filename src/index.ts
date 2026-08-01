@@ -44,11 +44,20 @@ export class DM2SS14Transpiler {
     const allASTNodes: any[] = [];
     const diagnostics = new DiagnosticCollector();
 
+    // Pre-pass: collect object-like AND function-like #defines across the
+    // whole input tree so macros defined in one file (e.g. __DEFINES/*.dm)
+    // are visible in all files, matching how BYOND compiles a codebase as a
+    // single unit.
+    const collected = DMPreprocessor.collectDefinesFromFiles(dmFiles);
+    if (collected.object.size + collected.function.size > 0) {
+      console.log(`      Seeded ${collected.object.size} object-like and ${collected.function.size} function-like global #defines from ${dmFiles.length} source files.`);
+    }
+
     for (const dmFile of dmFiles) {
       const code = fs.readFileSync(dmFile, 'utf-8');
       const collector = new DiagnosticCollector();
       collector.file = path.relative(options.inputDir, dmFile);
-      const preprocessor = new DMPreprocessor(collector);
+      const preprocessor = new DMPreprocessor(collector, collected.object, collected.function);
       const processed = preprocessor.process(code, dmFile);
       const lexer = new DMLexer(processed);
       const tokens = lexer.tokenize();
@@ -134,7 +143,12 @@ export class DM2SS14Transpiler {
     const list = fs.readdirSync(dir);
     for (const file of list) {
       const filePath = path.join(dir, file);
-      const stat = fs.statSync(filePath);
+      let stat;
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        continue; // e.g. broken symlinks
+      }
       if (stat.isDirectory()) {
         results.push(...this.findFiles(filePath, ext));
       } else if (file.endsWith(ext)) {

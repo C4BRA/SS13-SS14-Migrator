@@ -51,7 +51,7 @@ Everything unrecognized is reported, not dropped.
 
 Behavior matches DM semantics for the supported subset.
 
-- [x] Symbol resolution pass: verify proc call targets exist (type + ancestors + globals), `new`/`istype`/`ispath` type paths exist; unresolved → warnings
+- [ ] Symbol resolution pass: verify proc call targets exist (type + ancestors + globals), `new`/`istype`/`ispath` type paths exist; unresolved → warnings. **Not implemented** — the runtime `CallProc` registry resolves by (typePath, procName) at runtime; unknown targets silently produce `DMValue.Null` (see `AUDIT.md`).
 - [x] `DMValue` coercion: `+` string-concats when left is text (DM rule); numeric strings compare equal to numbers; `IsTrue` matches DM truthiness (`0`, `""`, `"0"`, null, empty list are falsy); `Equals` uses 1e-9 tolerance + cross-type rules
 - [x] `for(x in list)` emits real iteration: `foreach (var __v in DMListItems(range)) { comp.SetVar("x", __v); body }`
 - [x] `spawn(n) body` keeps its body: `DMTickScheduler.Spawn(n, async () => { body })` with `Func<Task>` support
@@ -60,6 +60,16 @@ Behavior matches DM semantics for the supported subset.
 - [x] YAML: emit `Fixtures` content and `initialVars`; replace `Name`/`Description`/`Sprite` components with SS14-correct forms; parent mapping `/obj→BaseItem`, `/turf→BaseFloor/BaseWall`, `/mob→BaseMobDummy`, `/area→none`; synthesized types named from path basename, not `"datum"`
 - [x] `ensureBaseTypes` stops mutating caller arrays
 - [x] `usr`/`src`/`args` semantics documented and consistent through `CallProc`
+- [x] Proc args are stored on the component (`comp.SetVar("name", args[i])`) instead of emitting `var name = ...` locals, so DM identifiers that are C# keywords (`event`, `object`, ...) no longer break the generated C#
+- [x] `1..5` range operator (lexer no longer swallows `..` into the number token; `MakeRange` helper; descending ranges supported) and `{1, 2, 3}` list literals
+- [x] `do { } while (cond)` and C-style `for(var/i = init, cond, incr)` parsed and emitted
+- [x] Zero-arg method calls no longer emit a trailing comma; method name and target propagated correctly
+- [x] `rand()` semantics: `rand()` → float in [0,1), `rand(a)` → 1..a, `rand(a,b)` → closed interval [a,b]
+- [x] Multi-Z DMM maps: every z-level emitted as its own grid with origin-aware world coordinates; definition-less maps warned and skipped
+- [x] DMI `iTXt` chunks parsed (5-NUL header, compression flag, zlib payload); RSI per-direction delays sliced to frame count
+- [x] GUI server: 2 GiB upload cap, zip entry / total-size limits (zip-bomb guard), temp dir cleanup on error, binds to `127.0.0.1`
+- [x] Lexer: UTF-8 BOM stripped, unterminated block-comment diagnostic, inconsistent-indent warning, duplicate TypePath branch removed
+- [x] Removed duplicate `expressionTranspiler.ts` (only used by tests); regression suite moved to golden-string tests against the real emitter (`src/tests/csharpEmitter.test.ts`)
 
 ## Phase 4 — Verification & Submission
 

@@ -23,7 +23,7 @@ async function runTests() {
   // Run the standalone test suites (self-executing test modules)
   await import('./dmiParser.test.js');
   await import('./dmmParser.test.js');
-  await import('./expressionTranspiler.test.js');
+  await import('./csharpEmitter.test.js');
   await import('./preprocessor.test.js');
 
   // Test 1: DM Lexer
@@ -34,10 +34,29 @@ async function runTests() {
     density = 1
     icon_state = "sword"
     var/custom_power = 100
+    var/list/effects = {1, 2, 3}
 
     proc/attack_self(mob/user)
         sleep(5)
-        return 1
+        if (user)
+            var/i = 1
+            for (var/n in 1..3)
+                i += n
+            for(var/j = 1, j <= 3, j++)
+                i += j
+            spawn(2)
+                i += 10
+            do
+                i -= 1
+            while (i > 5)
+            stuff.activate(i)
+            return 1
+        return 0
+
+    proc/activate(power)
+        var/x = stuff[1]
+        var/r = rand()
+        return power + x
 `;
 
   const lexer = new DMLexer(sampleDM);
@@ -92,14 +111,14 @@ async function runTests() {
     fs.writeFileSync(path.join(tmpInputDir, 'code.dm'), sampleDM, 'utf-8');
 
     // DMM map fixture: floor + wall + one dynamic item (prototype /obj/item/weapon/sword)
-    const dmmFixture = `"floor" = (/turf/simulated/floor)
-"wall" = (/turf/simulated/wall)
-"sword" = (/obj/item/weapon/sword)
+    const dmmFixture = `"flr" = (/turf/simulated/floor)
+"wal" = (/turf/simulated/wall)
+"swd" = (/obj/item/weapon/sword)
 
 (1,1,1) = {" 
-wall
-floorsword
-wall
+walwal
+flrswd
+walwal
 "}`;
     fs.writeFileSync(path.join(tmpInputDir, 'testmap.dmm'), dmmFixture, 'utf-8');
 

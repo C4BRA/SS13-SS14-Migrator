@@ -23,10 +23,11 @@ export class RSIWriter {
           directions: s.dirs
         };
         if (s.delay) {
-          // DMI delay lists are per-direction; replicate for each direction
-          state.delays = s.dirs > 1
-            ? Array.from({ length: s.dirs }, () => s.delay as number[])
-            : [s.delay];
+          // DMI delay lists cover frames*dirs entries (frame-major per
+          // direction); SS14 `delays` is one array per direction holding the
+          // per-frame delays, so slice to the frame count per direction.
+          const frameDelays = s.delay.slice(0, s.frames);
+          state.delays = Array.from({ length: s.dirs }, () => frameDelays);
         }
         return state;
       })

@@ -106,6 +106,59 @@ async function runPreprocessorTests() {
   assert(mob!.vars[0].name === 'hp' && mob!.vars[0].initialValue === '100', 'Macro expanded to numeric initializer');
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
+
+  // Test 11: Backslash line continuations are joined before directive handling
+  const t11 = preprocess('#define FLAG_A \\\n    1\nvar/a = FLAG_A\n');
+  assertContains(t11.out, 'var/a = 1', 'Object-like define with backslash continuation');
+
+  // Test 12: Function-like macro expansion with argument substitution
+  const t12 = preprocess('#define DOUBLE(x) (2 * x)\nvar/a = DOUBLE(5)\n');
+  assertContains(t12.out, 'var/a = (2 * 5)', 'Function-like macro argument substitution');
+
+  // Test 13: Token pasting (##) and stringification (#)
+  const t13 = preprocess('#define GLOBAL_LIST_INIT(X, V) /global/var/list/##X = V\nGLOBAL_LIST_INIT(organ, list(1, 2))\n#define GREET(x) "hello " + #x\nvar/b = GREET(world)\n');
+  assertContains(t13.out, '/global/var/list/organ = list(1, 2)', '## token pasting');
+  assertContains(t13.out, '"hello " + "world"', '# stringification');
+
+  // Test 14: Variadic macro (...)
+  const t14 = preprocess('#define LIST(...) list(...)\nvar/c = LIST(1, 2, 3)\n');
+  assertContains(t14.out, 'var/c = list(1, 2, 3)', 'Variadic macro with ...');
+
+  // Test 15: Recursive macro expansion is depth-guarded
+  const t15 = preprocess('#define LOOP(x) LOOP(x)\nvar/d = LOOP(1)\n');
+  assert(!t15.out.includes('LOOP(LOOP(LOOP(LOOP(LOOP'), 'Recursive macro expansion bounded by depth guard');
+
+  // Test 16: Nested macro in argument
+  const t16 = preprocess('#define INNER 7\n#define OUTER(x) [x]\nvar/e = OUTER(INNER)\n');
+  assertContains(t16.out, 'var/e = [7]', 'Nested macro expanded inside function-like argument');
+
+  // Test 17: Function-like macro used without parentheses is left as-is
+  const t17 = preprocess('#define FOO(x) x\nvar/f = FOO\n');
+  assertContains(t17.out, 'var/f = FOO', 'Function-like macro without call parens untouched');
+
+  // Test 18: #include with backslash path separators resolves on all platforms
+  const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pp_test_'));
+  fs.mkdirSync(path.join(tmpDir2, 'dir'));
+  fs.writeFileSync(path.join(tmpDir2, 'dir', 'core.dm'), '#define CORE 7\n');
+  fs.writeFileSync(path.join(tmpDir2, 'main2.dm'), '#include "dir\\core.dm"\nvar/x = CORE\n');
+  const t18 = preprocess(fs.readFileSync(path.join(tmpDir2, 'main2.dm'), 'utf-8'), path.join(tmpDir2, 'main2.dm'));
+  assertContains(t18.out, 'var/x = 7', 'Backslash #include path resolved');
+
+  // Test 19: Seed defines make cross-file macros visible
+  const seeds = new Map([['GLOBAL_CONST', '42']]);
+  const coll13 = new DiagnosticCollector();
+  const pp13 = new DMPreprocessor(coll13, seeds);
+  const t19 = pp13.process('var/y = GLOBAL_CONST\n', '/tmp/pp_test13.dm');
+  assertContains(t19, 'var/y = 42', 'Seeded global defines expand in every file');
+
+  // Test 20: Seeded function-like macros expand across files
+  const fnSeeds = new Map([['GLOBAL_VAR_INIT', { params: ['X', 'V'], variadic: false, body: '/global/var/##X = V' }]]);
+  const coll20 = new DiagnosticCollector();
+  const pp20 = new DMPreprocessor(coll20, undefined, fnSeeds);
+  const t20 = pp20.process('GLOBAL_VAR_INIT(counter, 0)\n', '/tmp/pp_test20.dm');
+  assertContains(t20, '/global/var/counter = 0', 'Seeded function-like macro expands');
+
+  fs.rmSync(tmpDir2, { recursive: true, force: true });
   console.log("\n✅ ALL PREPROCESSOR TESTS PASSED!");
 }
 

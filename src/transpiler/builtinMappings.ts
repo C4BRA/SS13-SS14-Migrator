@@ -5,7 +5,7 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
     case 'sleep':
       return `await DMTickScheduler.Sleep(${args || 'DMValue.FromNumber(1)'})`;
     case 'spawn':
-      return `DMTickScheduler.Spawn(${args || 'DMValue.FromNumber(0)'}, () => { /* spawn body */ })`;
+      return `DMTickScheduler.Spawn(${args || 'DMValue.FromNumber(0)'}, async () => { /* spawn body */ })`;
     case 'qdel':
       return `DMDelete(${args})`;
     case 'locate':

@@ -14,7 +14,7 @@ export class CSharpEmitter {
     fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMSystems.cs'), csCode, 'utf-8');
   }
 
-  private generateSystemCS(irMap: Map<string, DMIRType>): string {
+  public generateSystemCS(irMap: Map<string, DMIRType>): string {
     let code = `using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -61,7 +61,10 @@ namespace Content.Server.DM
         let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntimeComponent comp, DMValue[] args)\n        {\n`;
 
         procNode.args.forEach((arg, idx) => {
-          member += `            var ${arg.name} = args.Length > ${idx} ? args[${idx}] : DMValue.Null;\n`;
+          // Args are stored on the component so body references via
+          // comp.GetVar(name) resolve them; this also sidesteps C# keyword
+          // collisions (e.g. an arg named `event` or `object`).
+          member += `            comp.SetVar("${arg.name}", args.Length > ${idx} ? args[${idx}] : DMValue.Null);\n`;
         });
 
         if (this.referencesIdentifier(procNode, 'args')) {
@@ -72,7 +75,7 @@ namespace Content.Server.DM
           member += this.transpileStatement(stmt, 12); // 12 spaces indent
         }
 
-        member += `            return DMValue.Null;\n        }\n`;
+        member += `            return comp.GetVar(".");\n        }\n`;
         procMembers.push(member);
 
         registrations.push(
@@ -102,7 +105,8 @@ namespace Content.Server.DM
         if (stmt.returnValue) {
           return `${pad}return ${this.transpileExpression(stmt.returnValue)};\n`;
         }
-        return `${pad}return DMValue.Null;\n`;
+        // Bare `return` returns the implicit '.' value in DM
+        return `${pad}return comp.GetVar(".");\n`;
 
       case 'SleepStatement':
         if (stmt.timeExpr) {
@@ -178,6 +182,28 @@ namespace Content.Server.DM
         whileCode += `${pad}}\n`;
         return whileCode;
 
+      case 'DoWhileStatement':
+        let doCode = `${pad}do\n${pad}{\n`;
+        for (const s of stmt.loopBody || []) {
+          doCode += this.transpileStatement(s, indent + 4);
+        }
+        doCode += `${pad}} while (${stmt.condition ? this.transpileExpression(stmt.condition) : 'DMValue.FromNumber(1)'}.IsTrue());\n`;
+        return doCode;
+
+      case 'CForStatement':
+        let cforCode = `${pad}{\n`;
+        if (stmt.loopVariable) {
+          cforCode += `${pad}    comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.init)});\n`;
+          cforCode += `${pad}    while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}    {\n`;
+          for (const s of stmt.loopBody || []) {
+            cforCode += this.transpileStatement(s, indent + 8);
+          }
+          cforCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.increment)});\n`;
+          cforCode += `${pad}    }\n`;
+        }
+        cforCode += `${pad}}\n`;
+        return cforCode;
+
       case 'ForStatement':
         // DM for(x in list) -> real iteration over list elements
         let forCode = `${pad}{\n`;
@@ -234,7 +260,11 @@ namespace Content.Server.DM
       case 'property_assignment':
         return `(${this.transpileExpression((node as any).target)}).AsComponent()?.SetVar("${(node as any).property}", ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
       case 'index_assignment':
-        return `(${this.transpileExpression((node as any).target)}).AsList()?.Set(${this.transpileExpression((node as any).index)}, ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
+        return `DMListSet(${this.transpileExpression((node as any).target)}, ${this.transpileExpression((node as any).index)}, ${this.transpileExpression((node as any).value)})`;
+      case 'list':
+        return `DMRuntimeHelpers.MakeList(${node.elements.map((e: any) => this.transpileExpression(e)).join(', ')})`;
+      case 'range':
+        return `DMRuntimeHelpers.MakeRange(${this.transpileExpression(node.start)}, ${this.transpileExpression(node.end)})`;
       default:
         return 'DMValue.Null';
     }
@@ -284,7 +314,9 @@ namespace Content.Server.DM
       case '/': return `DMValue.Divide(${left}, ${right})`;
       case '%': return `DMValue.Modulo(${left}, ${right})`;
       case '==': return `DMValue.Equals(${left}, ${right})`;
+      case '~=': return `DMValue.Equals(${left}, ${right})`; // ~= is fuzzy compare; approximated
       case '!=': return `!DMValue.Equals(${left}, ${right})`;
+      case '~!': return `!DMValue.Equals(${left}, ${right})`; // ~! is fuzzy not-equal; approximated
       case '<': return `DMValue.LessThan(${left}, ${right})`;
       case '<=': return `DMValue.LessOrEqual(${left}, ${right})`;
       case '>': return `DMValue.GreaterThan(${left}, ${right})`;
@@ -292,6 +324,11 @@ namespace Content.Server.DM
       case '&&': return `DMValue.And(${left}, ${right})`;
       case '||': return `DMValue.Or(${left}, ${right})`;
       case '<<': return `DMValue.Output(${left}, ${right})`;
+      case 'in': return `DMValue.In(${left}, ${right})`;
+      case 'to': return `DMRuntimeHelpers.MakeRange(${left}, ${right})`;
+      case '**': return `DMValue.Power(${left}, ${right})`;
+      case '%%': return `DMValue.Modulo(${left}, ${right})`;
+      case '&': case '|': case '^': case '~': return 'DMValue.Null'; // bitwise ops unsupported by the runtime; parsed without data loss
       default: return 'DMValue.Null';
     }
   }
@@ -302,6 +339,7 @@ namespace Content.Server.DM
       case '!': return `DMValue.Not(${operand})`;
       case '-': return `DMValue.Negate(${operand})`;
       case '+': return operand;
+      case '~': return 'DMValue.Null'; // bitwise NOT unsupported by the runtime
       default: return operand;
     }
   }
@@ -311,6 +349,9 @@ namespace Content.Server.DM
 
     // Method call on a target: obj.method(x)
     if (node.target) {
+      if (!args) {
+        return `await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}")`;
+      }
       return `await DMCallProc(${this.transpileExpression(node.target)}, "${node.name}", ${args})`;
     }
 
@@ -320,6 +361,9 @@ namespace Content.Server.DM
       return builtin;
     }
     // User-defined proc - call through runtime
+    if (!args) {
+      return `await comp.CallProc("${node.name}")`;
+    }
     return `await comp.CallProc("${node.name}", ${args})`;
   }
 
@@ -338,7 +382,7 @@ namespace Content.Server.DM
   private transpileIndex(node: any): string {
     const target = this.transpileExpression(node.target);
     const index = this.transpileExpression(node.index);
-    return `(${target}).AsList()?.Get(${index}) ?? DMValue.Null`;
+    return `DMListGet(${target}, ${index})`;
   }
 
   private escapeString(str: string): string {

@@ -362,7 +362,9 @@ namespace SS13.DM.Runtime
 
         /// <summary>
         /// Creates a new object of the given DM type path. Entity spawn is
-        /// provided by the hosting engine; returns a datum reference.
+        /// provided by the hosting engine; the vendored shim has no entity
+        /// allocator, so this returns a reference to the creating component
+        /// as a placeholder. New() dispatch happens on component init.
         /// </summary>
         public static async Task<DMValue> DMNew(DMRuntimeComponent comp, string typePath, params DMValue[] args)
         {
@@ -481,21 +483,46 @@ namespace SS13.DM.Runtime
             return values[new Random().Next(values.Length)];
         }
 
-        public static DMValue Rand(DMValue a, DMValue b = default)
+        public static DMValue Rand(DMValue a = default, DMValue b = default)
         {
-            if (b.Type == DMValueType.Null && b.NumberValue == 0)
+            // DM semantics: rand() -> float in [0, 1); rand(a) -> integer in 1..a;
+            // rand(a, b) -> integer in [min(a,b), max(a,b)].
+            if (a.Type == DMValueType.Null)
+                return DMValue.FromNumber(new Random().NextDouble());
+            if (b.Type == DMValueType.Null)
             {
-                return DMValue.FromNumber(new Random().Next((int)Math.Max(0, a.ToNumber()) + 1));
+                var hi = (int)a.ToNumber();
+                return DMValue.FromNumber(hi <= 0 ? 0 : new Random().Next(hi) + 1);
             }
             var lo = (int)Math.Min(a.ToNumber(), b.ToNumber());
-            var hi = (int)Math.Max(a.ToNumber(), b.ToNumber());
-            return DMValue.FromNumber(lo + new Random().Next(hi - lo + 1));
+            var high = (int)Math.Max(a.ToNumber(), b.ToNumber());
+            return DMValue.FromNumber(lo + new Random().Next(high - lo + 1));
         }
 
         public static DMValue MakeList(params DMValue[] values)
         {
             var list = new DMList();
             foreach (var v in values) list.Add(v);
+            return DMValue.FromList(list);
+        }
+
+        /// <summary>
+        /// DM range literal: 1..5 -&gt; list [1, 2, 3, 4, 5]; descending ranges
+        /// (5..1) are supported. Used by for(x in 1..N) loops.
+        /// </summary>
+        public static DMValue MakeRange(DMValue a, DMValue b)
+        {
+            var list = new DMList();
+            var lo = (int)a.ToNumber();
+            var hi = (int)b.ToNumber();
+            if (lo <= hi)
+            {
+                for (var i = lo; i <= hi; i++) list.Add(DMValue.FromNumber(i));
+            }
+            else
+            {
+                for (var i = lo; i >= hi; i--) list.Add(DMValue.FromNumber(i));
+            }
             return DMValue.FromList(list);
         }
 

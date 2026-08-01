@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/cli.js",
-    "test": "node dist/tests/runTests.js"
+    "test": "node dist/tests/runTests.js",
+    "audit:repo": "node dist/tests/repoAudit.js"
   },
   "keywords": [
     "ss13",

@@ -30,7 +30,7 @@ export class GUIServer {
       res.end('Not Found');
     });
 
-    server.listen(this.port, () => {
+    server.listen(this.port, '127.0.0.1', () => {
       console.log(`\n==================================================`);
       console.log(`\u{1F680} dm2ss14 macOS Desktop App launched!`);
       console.log(`\u{1F449} Open http://localhost:${this.port} in your browser`);
@@ -38,11 +38,27 @@ export class GUIServer {
     });
   }
 
+  private static readonly MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
+  private static readonly MAX_ZIP_ENTRIES = 50000;
+  private static readonly MAX_ZIP_UNCOMPRESSED = 4 * 1024 * 1024 * 1024; // 4 GiB
+
   private async handleConvertRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const chunks: Buffer[] = [];
-    req.on('data', chunk => chunks.push(chunk));
+    let totalBytes = 0;
+    let oversized = false;
+    req.on('data', chunk => {
+      totalBytes += chunk.length;
+      if (totalBytes > GUIServer.MAX_UPLOAD_BYTES) oversized = true;
+      if (!oversized) chunks.push(chunk);
+    });
     req.on('end', async () => {
+      let tempInputDir: string | null = null;
       try {
+        if (oversized) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Upload exceeds the 2 GiB size limit.' }));
+          return;
+        }
         const body = Buffer.concat(chunks);
         const contentType = req.headers['content-type'] || '';
 
@@ -69,10 +85,23 @@ export class GUIServer {
           return;
         }
 
-        const tempInputDir = path.join(process.cwd(), 'temp_gui_input_' + Date.now());
+        // Validate the archive before extracting: guard against zip bombs and
+        // pathological archives (excessive entry counts / uncompressed sizes).
+        const zip = new AdmZip(zipBuffer);
+        const entries = zip.getEntries();
+        let totalUncompressed = 0;
+        for (const entry of entries) {
+          totalUncompressed += entry.header.size;
+          if (entries.length > GUIServer.MAX_ZIP_ENTRIES || totalUncompressed > GUIServer.MAX_ZIP_UNCOMPRESSED) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Archive rejected: too many entries or total size exceeds limits.' }));
+            return;
+          }
+        }
+
+        tempInputDir = path.join(process.cwd(), 'temp_gui_input_' + Date.now());
         fs.mkdirSync(tempInputDir, { recursive: true });
 
-        const zip = new AdmZip(zipBuffer);
         zip.extractAllTo(tempInputDir, true);
 
         const transpiler = new DM2SS14Transpiler();
@@ -80,10 +109,6 @@ export class GUIServer {
           inputDir: tempInputDir,
           outputDir: outputDirPath
         });
-
-        if (fs.existsSync(tempInputDir)) {
-          fs.rmSync(tempInputDir, { recursive: true, force: true });
-        }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -94,6 +119,10 @@ export class GUIServer {
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message || 'Transpilation failed.' }));
+      } finally {
+        if (tempInputDir && fs.existsSync(tempInputDir)) {
+          fs.rmSync(tempInputDir, { recursive: true, force: true });
+        }
       }
     });
   }

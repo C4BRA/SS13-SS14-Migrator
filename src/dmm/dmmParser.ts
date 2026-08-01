@@ -8,6 +8,8 @@ export interface DMMTileDefinition {
 
 export interface DMMGrid {
   z: number;
+  originX: number;
+  originY: number;
   width: number;
   height: number;
   cells: string[][]; // 2D array of tile keys
@@ -37,6 +39,8 @@ export class DMMParser {
     let inGridSection = false;
     let currentGridLines: string[] = [];
     let currentZ = 1;
+    let currentOriginX = 0;
+    let currentOriginY = 0;
 
     for (let line of lines) {
       line = line.trim();
@@ -74,13 +78,15 @@ export class DMMParser {
       }
 
       // Match Grid Coordinate header line: (1,1,1) = {"
-      const gridHeaderMatch = line.match(/^\(\d+,\d+,(\d+)\)\s*=\s*\{"$/);
+      const gridHeaderMatch = line.match(/^\((\d+),(\d+),(\d+)\)\s*=\s*\{"$/);
       if (gridHeaderMatch) {
         if (currentGridLines.length > 0) {
-          mapData.grids.push(this.buildGrid(currentGridLines, currentZ, mapData.definitions, mapData.warnings));
+          mapData.grids.push(this.buildGrid(currentGridLines, currentZ, currentOriginX, currentOriginY, mapData.definitions, mapData.warnings));
           currentGridLines = [];
         }
-        currentZ = parseInt(gridHeaderMatch[1], 10);
+        currentZ = parseInt(gridHeaderMatch[3], 10);
+        currentOriginX = parseInt(gridHeaderMatch[1], 10);
+        currentOriginY = parseInt(gridHeaderMatch[2], 10);
         inGridSection = true;
         continue;
       }
@@ -89,7 +95,7 @@ export class DMMParser {
         if (line === '"}') {
           inGridSection = false;
           if (currentGridLines.length > 0) {
-            mapData.grids.push(this.buildGrid(currentGridLines, currentZ, mapData.definitions, mapData.warnings));
+            mapData.grids.push(this.buildGrid(currentGridLines, currentZ, currentOriginX, currentOriginY, mapData.definitions, mapData.warnings));
             currentGridLines = [];
           }
         } else {
@@ -121,9 +127,14 @@ export class DMMParser {
     return mapData;
   }
 
-  private buildGrid(rawLines: string[], z: number, definitions: Map<string, DMMTileDefinition>, warnings: string[]): DMMGrid {
-    // Key length is deduced from first key in definitions or raw line
-    const sampleKey = definitions.keys().next().value || "aaa";
+  private buildGrid(rawLines: string[], z: number, originX: number, originY: number, definitions: Map<string, DMMTileDefinition>, warnings: string[]): DMMGrid {
+    // Key length is deduced from the first key in the definitions. If the map
+    // has no definitions at all, grid rows cannot be decoded; report and skip.
+    const sampleKey = definitions.keys().next().value;
+    if (typeof sampleKey !== 'string' || sampleKey.length === 0) {
+      warnings.push(`grid z=${z}: no tile key definitions found; grid skipped`);
+      return { z, originX, originY, width: 0, height: 0, cells: [] };
+    }
     const keyLen = sampleKey.length;
 
     const cells: string[][] = [];
@@ -168,6 +179,8 @@ export class DMMParser {
 
     return {
       z,
+      originX,
+      originY,
       width,
       height,
       cells

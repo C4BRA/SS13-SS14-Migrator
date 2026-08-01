@@ -38,7 +38,8 @@ export class DMLexer {
   ]);
 
   constructor(input: string) {
-    this.input = input;
+    // Strip a UTF-8 BOM so the first token of Windows-edited files lexes cleanly.
+    this.input = input.startsWith('\uFEFF') ? input.slice(1) : input;
   }
 
   public tokenize(): Token[] {
@@ -80,8 +81,12 @@ export class DMLexer {
           }
         }
 
-        // If line is empty or comment, ignore indentation changes
-        if (this.pos < this.input.length && (this.input[this.pos] === '\n' || (this.input[this.pos] === '/' && (this.peek() === '/' || this.peek() === '*')))) {
+        // If line is empty or a //-comment, ignore indentation changes
+        // (a //-comment consumes the rest of the line). A /* */ comment may
+        // be followed by code on the same line, so those lines must affect
+        // indentation normally — otherwise the indent stack never unwinds
+        // and following code is parsed inside the previous block.
+        if (this.pos < this.input.length && (this.input[this.pos] === '\n' || (this.input[this.pos] === '/' && this.peek() === '/'))) {
           continue;
         }
 
@@ -94,6 +99,15 @@ export class DMLexer {
             indentStack.pop();
             tokens.push({ type: TokenType.Dedent, value: '', line: this.line, column: this.col });
           }
+          if (indent !== indentStack[indentStack.length - 1]) {
+            // Inconsistent indentation (e.g. 4 -> 8 -> 5) would otherwise be
+            // silently treated as a full dedent. Report it; block structure is
+            // still guessed from the nearest enclosing level.
+            this.diagnostics.warning(
+              `Inconsistent indentation: ${indent} spaces does not match any enclosing block level`,
+              this.line, this.col
+            );
+          }
         }
         continue;
       }
@@ -105,7 +119,7 @@ export class DMLexer {
       }
 
       // TypePaths starting with / (e.g. /obj/item/weapon/sword)
-      if (ch === '/' && this.isAlpha(this.peek())) {
+      if (ch === '/' && (this.isAlpha(this.peek()) || this.peek() === '_')) {
         tokens.push(this.readTypePath());
         continue;
       }
@@ -117,6 +131,15 @@ export class DMLexer {
       }
       if (ch === "'") {
         tokens.push(this.readString("'"));
+        continue;
+      }
+
+      // DM regex literal: @pattern@ (an inner @@ is an escaped @).
+      // `@'...'` / `@"..."` are handled earlier as regex strings. A
+      // standalone `@` operator is followed by whitespace, so require a
+      // non-whitespace next char here.
+      if (ch === '@' && this.peek() !== '"' && this.peek() !== "'" && !/[\s]/.test(this.peek())) {
+        tokens.push(this.readRegex());
         continue;
       }
 
@@ -136,12 +159,6 @@ export class DMLexer {
         continue;
       }
 
-      // TypePaths starting with / (e.g. /obj/item/weapon/sword)
-      if (ch === '/' && this.isAlpha(this.peek())) {
-        tokens.push(this.readTypePath());
-        continue;
-      }
-
       // Operators and Punctuation
       const startLine = this.line;
       const startCol = this.col;
@@ -149,23 +166,42 @@ export class DMLexer {
       // Multi-char operators
       const twoChar = ch + this.peek();
       const threeChar = ch + this.peek() + (this.pos + 2 < this.input.length ? this.input[this.pos + 2] : '');
-      if (['<<=', '>>='].includes(threeChar)) {
+      if (['<<=', '>>=', '||=', '&&='].includes(threeChar)) {
         this.advance();
         this.advance();
         this.advance();
         tokens.push({ type: TokenType.Operator, value: threeChar, line: startLine, column: startCol });
         continue;
       }
-      if (['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '&&', '||', '::', '..', '++', '--', '<<', '>>'].includes(twoChar)) {
+      if (['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '&&', '||', '::', '..', '++', '--', '<<', '>>', '?.', '%=', '&=', '|=', '^=', '%%', '**', '~=', '~!'].includes(twoChar)) {
         this.advance();
         this.advance();
         tokens.push({ type: TokenType.Operator, value: twoChar, line: startLine, column: startCol });
         continue;
       }
 
-      if ('+-*/=<>!&|^?:.'.includes(ch)) {
+      // DM regex literal: @"pattern" or @'pattern' — treated as a string.
+      if (ch === '@' && (this.peek() === '"' || this.peek() === "'")) {
+        this.advance(); // consume @
+        tokens.push(this.readString(this.input[this.pos]));
+        continue;
+      }
+
+      if ('+-*/=<>!&|^?:.%~@$'.includes(ch)) {
         this.advance();
         tokens.push({ type: TokenType.Operator, value: ch, line: startLine, column: startCol });
+        continue;
+      }
+
+      // Backslash line continuation (e.g. multi-line #define bodies)
+      if (ch === '\\' && (this.peek() === '\n' || this.peek() === '\r')) {
+        this.advance();
+        continue;
+      }
+
+      // DM multi-line template string: {" ... "} — scan to the closing "}.
+      if (ch === '{' && this.peek() === '"') {
+        tokens.push(this.readTemplateString());
         continue;
       }
 
@@ -225,10 +261,11 @@ export class DMLexer {
       if (this.input[this.pos] === '*' && this.peek() === '/') {
         this.advance();
         this.advance();
-        break;
+        return;
       }
       this.advance();
     }
+    this.diagnostics.error('Unterminated block comment', this.line, this.col);
   }
 
   private readTypePath(): Token {
@@ -241,6 +278,16 @@ export class DMLexer {
       if (ch === '/' || this.isAlpha(ch) || this.isDigit(ch) || ch === '_') {
         path += ch;
         this.advance();
+      } else if (ch === '.') {
+        // Path-dot notation: /datum.proc/foo — allow a dot followed by a
+        // word char to continue the path (e.g. /datum.proc/ or /mob.verb/).
+        const next = this.input[this.pos + 1];
+        if (next !== undefined && this.isAlpha(next)) {
+          path += '.';
+          this.advance();
+        } else {
+          break;
+        }
       } else {
         break;
       }
@@ -259,6 +306,15 @@ export class DMLexer {
     while (this.pos < this.input.length) {
       const ch = this.input[this.pos];
       if (ch === quoteChar) {
+        // DM escapes a quote inside a string by doubling it: "say ""hi""".
+        // An empty `""` is an empty string, so only treat the doubling as
+        // an escape once the string already has content.
+        if (str.length > 0 && this.input[this.pos + 1] === quoteChar) {
+          str += quoteChar;
+          this.advance();
+          this.advance();
+          continue;
+        }
         this.advance();
         closed = true;
         break;
@@ -267,6 +323,7 @@ export class DMLexer {
         // DM string interpolation: [expr] may contain quotes and nested
         // brackets; scan to the matching ']' keeping the raw text.
         let depth = 0;
+        let closedBracket = false;
         while (this.pos < this.input.length) {
           const c = this.input[this.pos];
           if (c === '[') depth++;
@@ -275,11 +332,15 @@ export class DMLexer {
             if (depth === 0) {
               str += c;
               this.advance();
+              closedBracket = true;
               break;
             }
           }
           str += c;
           this.advance();
+        }
+        if (!closedBracket) {
+          this.diagnostics.error('Unterminated string interpolation', this.line, this.col);
         }
         continue;
       }
@@ -310,6 +371,64 @@ export class DMLexer {
     return { type, value: str, line: startLine, column: startCol };
   }
 
+  private readTemplateString(): Token {
+    const startLine = this.line;
+    const startCol = this.col;
+    this.advance(); // {
+    this.advance(); // "
+    let str = '';
+    let closed = false;
+    while (this.pos < this.input.length) {
+      const ch = this.input[this.pos];
+      if (ch === '"') {
+        // End only when the quote is followed by the closing '}'.
+        let j = this.pos + 1;
+        while (j < this.input.length && (this.input[j] === ' ' || this.input[j] === '\t')) j++;
+        if (this.input[j] === '}') {
+          this.advance(); // "
+          this.advance(); // }
+          closed = true;
+          break;
+        }
+      }
+      str += ch;
+      this.advance();
+    }
+    if (!closed) {
+      this.diagnostics.error('Unterminated template string literal', startLine, startCol);
+    }
+    return { type: TokenType.StringLiteral, value: str, line: startLine, column: startCol };
+  }
+
+  // DM regex literal: @pattern@ (an inner @@ is an escaped @).
+  private readRegex(): Token {
+    const startLine = this.line;
+    const startCol = this.col;
+    this.advance(); // @
+    let str = '';
+    let closed = false;
+    while (this.pos < this.input.length) {
+      const ch = this.input[this.pos];
+      if (ch === '@') {
+        if (this.input[this.pos + 1] === '@') {
+          str += '@';
+          this.advance();
+          this.advance();
+          continue;
+        }
+        this.advance();
+        closed = true;
+        break;
+      }
+      str += ch;
+      this.advance();
+    }
+    if (!closed) {
+      this.diagnostics.error('Unterminated regex literal', startLine, startCol);
+    }
+    return { type: TokenType.StringLiteral, value: str, line: startLine, column: startCol };
+  }
+
   private readNumber(): Token {
     const startLine = this.line;
     const startCol = this.col;
@@ -317,11 +436,40 @@ export class DMLexer {
 
     while (this.pos < this.input.length) {
       const ch = this.input[this.pos];
-      if (this.isDigit(ch) || ch === '.') {
+      if (this.isDigit(ch)) {
         numStr += ch;
         this.advance();
-      } else {
-        break;
+        continue;
+      }
+      // Only consume a '.' if it is a decimal point (followed by a digit) and
+      // we have not already seen one. This keeps DM range literals like
+      // `1..5` (and `1.5..3`) intact: the range operator `..` is left for
+      // the operator scanner instead of being swallowed by the number.
+      // A trailing `0.` (as in `0. *10`) is a valid float in DM.
+      if (ch === '.' && numStr.indexOf('.') === -1 && (this.isDigit(this.peek()) || this.peek() !== '.')) {
+        numStr += ch;
+        this.advance();
+        continue;
+      }
+      break;
+    }
+
+    // Scientific notation: 1E-4, 2.5e+10 (only when followed by an exponent).
+    if ((this.input[this.pos] === 'e' || this.input[this.pos] === 'E')) {
+      const next1 = this.input[this.pos + 1];
+      const isSign = next1 === '+' || next1 === '-';
+      const expStart = isSign ? this.pos + 2 : this.pos + 1;
+      if (expStart < this.input.length && this.isDigit(this.input[expStart])) {
+        numStr += this.input[this.pos];
+        this.advance();
+        if (isSign) {
+          numStr += this.input[this.pos];
+          this.advance();
+        }
+        while (this.pos < this.input.length && this.isDigit(this.input[this.pos])) {
+          numStr += this.input[this.pos];
+          this.advance();
+        }
       }
     }
 

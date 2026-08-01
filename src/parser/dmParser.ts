@@ -18,7 +18,9 @@ export type ExpressionNode =
   | { type: 'property'; target: ExpressionNode; property: string }
   | { type: 'assignment'; target: string; value: ExpressionNode }
   | { type: 'property_assignment'; target: ExpressionNode; property: string; value: ExpressionNode }
-  | { type: 'index_assignment'; target: ExpressionNode; index: ExpressionNode; value: ExpressionNode };
+  | { type: 'index_assignment'; target: ExpressionNode; index: ExpressionNode; value: ExpressionNode }
+  | { type: 'list'; elements: ExpressionNode[] }
+  | { type: 'range'; start: ExpressionNode; end: ExpressionNode };
 
 export interface DMTypeDeclNode extends ASTNode {
   type: 'DMTypeDecl';
@@ -40,6 +42,13 @@ export interface DMProcDeclNode extends ASTNode {
   name: string;
   args: { name: string; typeHint?: string }[];
   statements: DMStatementNode[];
+}
+
+export interface DMGlobalVarDeclNode extends ASTNode {
+  type: 'GlobalVarDecl';
+  name: string;
+  varType: string;
+  initialValue?: any;
 }
 
 export interface DMStatementNode extends ASTNode {
@@ -78,6 +87,9 @@ export class DMParser {
   private tokens: Token[];
   private pos: number = 0;
   public readonly diagnostics: DiagnosticCollector;
+  // Global variable declarations (/global/var/x = v). Not yet materialized in
+  // IR output — collected so nothing is silently dropped.
+  public globalVars: DMGlobalVarDeclNode[] = [];
 
   constructor(tokens: Token[], collector?: DiagnosticCollector) {
     this.tokens = tokens;
@@ -100,6 +112,58 @@ export class DMParser {
         let rawPath = token.value;
         this.advance();
 
+      // Global variable declaration: /global/var/list/x = value
+      if (rawPath.startsWith('/global/var/') || rawPath.startsWith('/global/')) {
+        const rest = rawPath.startsWith('/global/var/')
+          ? rawPath.slice('/global/var/'.length)
+          : rawPath.slice('/global/'.length);
+        let varName = rest;
+        let varType = '';
+        const varMarker = rest.indexOf('/var/');
+        if (varMarker >= 0) {
+          varName = rest.slice(varMarker + '/var/'.length);
+          varType = rest.slice(0, varMarker + 1);
+        }
+        const lastSlash = varName.lastIndexOf('/');
+        if (lastSlash >= 0) {
+          varType = varName.slice(0, lastSlash) + (varType || '');
+          varName = varName.slice(lastSlash + 1);
+        }
+        let initialValue = '';
+        if (this.matchOperator('=')) {
+          initialValue = this.parseInitialValueText();
+        }
+        const globalNode: DMGlobalVarDeclNode = {
+          type: 'GlobalVarDecl',
+          name: varName,
+          varType,
+          initialValue
+        };
+        this.globalVars.push(globalNode);
+        continue;
+      }
+
+      // Classic BYOND var declaration: /type/path/var/[global/][type/]name = value
+      const varDeclMatch = rawPath.match(/^(.+)\/var\/(global\/)?(.+)$/);
+      if (varDeclMatch) {
+        const ownerPath = varDeclMatch[1];
+        const isGlobal = varDeclMatch[2] !== undefined;
+        const rest = varDeclMatch[3].split('/').filter((s) => s.length > 0);
+        const varName = rest.pop() ?? '';
+        const varType = rest.join('/');
+        let initialValue = '';
+        if (this.matchOperator('=')) {
+          initialValue = this.parseInitialValueText();
+        }
+        if (isGlobal) {
+          this.globalVars.push({ type: 'GlobalVarDecl', name: varName, varType, initialValue });
+        } else {
+          const ownerNode = this.getOrCreateTypeNode(ownerPath, typeDecls);
+          ownerNode.vars.push({ type: 'DMVarDecl', name: varName, varType, initialValue });
+        }
+        continue;
+      }
+
         // Check if path represents a proc definition: e.g. /obj/item/proc/swing
         const procMatch = rawPath.match(/^(.+)\/(proc|verb)\/([^\/]+)$/);
         if (procMatch) {
@@ -107,22 +171,13 @@ export class DMParser {
           const procName = procMatch[3];
           const ownerNode = this.getOrCreateTypeNode(ownerPath, typeDecls);
 
-          const args: { name: string; typeHint?: string }[] = [];
-          if (this.matchPunctuation('(')) {
-            while (!this.matchPunctuation(')') && !this.isType(TokenType.EOF)) {
-              if (this.isType(TokenType.Identifier) || this.isType(TokenType.TypePath)) {
-                const argName = this.advance().value.replace(/^\//, '');
-                if (this.peek().value === 'as') {
-                  this.advance();
-                  if (this.isType(TokenType.Identifier) || this.isType(TokenType.TypePath) || this.isType(TokenType.Keyword)) {
-                    this.advance();
-                  }
-                }
-                args.push({ name: argName });
-              } else {
-                this.advance();
-              }
-              if (this.matchPunctuation(',')) continue;
+          const args = this.parseProcArgs();
+
+          // Optional return type: /proc/foo(...) as /list
+          if (this.peek().value === 'as') {
+            this.advance();
+            if (this.isType(TokenType.TypePath) || this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+              this.advance();
             }
           }
 
@@ -134,13 +189,66 @@ export class DMParser {
           };
 
           this.skipNewlines();
-          if (this.isType(TokenType.Indent)) {
+          if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+            this.advance();
+            procNode.statements = this.parseProcBody(true);
+            this.matchPunctuation('}');
+          } else if (this.isType(TokenType.Indent)) {
             this.advance();
             procNode.statements = this.parseProcBody();
+          } else {
+            // Single-line body: /proc/foo() return expr
+            procNode.statements = this.parseProcBody(false, true);
           }
 
           ownerNode.procs.push(procNode);
           continue;
+        }
+
+        // Path-scoped proc without /proc/ segment (modern /tg/ style):
+        // /mob/living/Initialize(mapload) — a '(' directly after the path
+        // means the last segment is a proc name, not a type.
+        this.skipNewlines();
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '(') {
+          const lastSlash = rawPath.lastIndexOf('/');
+          if (lastSlash > 0) {
+            const ownerPath = rawPath.slice(0, lastSlash);
+            const procName = rawPath.slice(lastSlash + 1);
+            const ownerNode = this.getOrCreateTypeNode(ownerPath, typeDecls);
+
+            const args = this.parseProcArgs();
+
+            // Optional return type: /path/foo(...) as /list
+            if (this.peek().value === 'as') {
+              this.advance();
+              if (this.isType(TokenType.TypePath) || this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+                this.advance();
+              }
+            }
+
+            const procNode: DMProcDeclNode = {
+              type: 'DMProcDecl',
+              name: procName,
+              args,
+              statements: []
+            };
+
+            this.skipNewlines();
+            if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+              this.advance();
+              procNode.statements = this.parseProcBody(true);
+              this.matchPunctuation('}');
+            } else if (this.isType(TokenType.Indent)) {
+              this.advance();
+              procNode.statements = this.parseProcBody();
+            } else {
+              // Single-line body: /mob/living/Initialize() ..
+              procNode.statements = this.parseProcBody(false, true);
+            }
+
+            ownerNode.procs.push(procNode);
+            continue;
+          }
         }
 
         currentTypePath = rawPath;
@@ -156,7 +264,11 @@ export class DMParser {
 
         // Check if inline block follows
         this.skipNewlines();
-        if (this.isType(TokenType.Indent)) {
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+          this.advance();
+          this.parseTypeBlock(currentTypeNode, typeDecls, true);
+          this.matchPunctuation('}');
+        } else if (this.isType(TokenType.Indent)) {
           this.advance();
           this.parseTypeBlock(currentTypeNode, typeDecls);
         }
@@ -175,14 +287,19 @@ export class DMParser {
         const varName = token.value;
         this.advance();
         if (this.matchOperator('=')) {
-          const valToken = this.advance();
           const typeNode = this.getOrCreateTypeNode(currentTypePath, typeDecls);
           typeNode.vars.push({
             type: 'DMVarDecl',
             name: varName,
-            initialValue: valToken.value
+            initialValue: this.parseInitialValueText() || null
           });
         }
+        continue;
+      }
+
+      // Statement separator at top level (macros expand to /global/var/... ; /global/var/...)
+      if (this.peek().value === ';') {
+        this.advance();
         continue;
       }
 
@@ -194,12 +311,21 @@ export class DMParser {
     return Array.from(typeDecls.values());
   }
 
-  private parseTypeBlock(currentTypeNode: DMTypeDeclNode, typeDecls: Map<string, DMTypeDeclNode>): void {
-    while (!this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF)) {
+  private parseTypeBlock(currentTypeNode: DMTypeDeclNode, typeDecls: Map<string, DMTypeDeclNode>, stopAtBrace: boolean = false): void {
+    const atClosingBrace = (): boolean =>
+      stopAtBrace && this.isType(TokenType.Punctuation) && this.peek().value === '}';
+
+    while (!this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !atClosingBrace()) {
       this.skipNewlines();
-      if (this.isType(TokenType.Dedent) || this.isType(TokenType.EOF)) break;
+      if (this.isType(TokenType.Dedent) || this.isType(TokenType.EOF) || atClosingBrace()) break;
 
       const token = this.peek();
+
+      // Statement separators in { } bodies (macro-generated type decls)
+      if (this.isType(TokenType.Punctuation) && this.peek().value === ';') {
+        this.advance();
+        continue;
+      }
 
       // Sub-path under block (e.g. sword)
       if (token.type === TokenType.TypePath || (token.type === TokenType.Identifier && this.peekNext()?.type === TokenType.TypePath)) {
@@ -228,11 +354,10 @@ export class DMParser {
         const varName = token.value;
         this.advance();
         if (this.matchOperator('=')) {
-          const valToken = this.advance();
           currentTypeNode.vars.push({
             type: 'DMVarDecl',
             name: varName,
-            initialValue: valToken.value
+            initialValue: this.parseInitialValueText() || null
           });
         }
         continue;
@@ -246,6 +371,130 @@ export class DMParser {
     if (this.isType(TokenType.Dedent)) {
       this.advance();
     }
+  }
+
+  /**
+   * Parse a proc/verb argument list: `(a, mob/user, var/x, args, ...)`.
+   * DM keyword names (`args`, `usr`, `src`) and `var`-prefixed forms are
+   * accepted; `as <type>` clauses are parsed and dropped (documented
+   * limitation). Type hints are recorded when they appear as a `/type/name`
+   * path segment.
+   */
+  private parseProcArgs(): { name: string; typeHint?: string }[] {
+    const args: { name: string; typeHint?: string }[] = [];
+    if (!this.matchPunctuation('(')) return args;
+
+    // Track parenthesis nesting: defaults like `controller in list("A", "B")`
+    // or `flag = (1<<5)` contain nested parens and commas that must not
+    // terminate or split the argument list.
+    let depth = 0;
+    while (!this.isType(TokenType.EOF)) {
+      const tok = this.peek();
+      if (tok.type === TokenType.Punctuation && tok.value === ')') {
+        if (depth === 0) {
+          this.advance();
+          break;
+        }
+        depth--;
+        this.advance();
+        continue;
+      }
+      if (tok.type === TokenType.Punctuation && tok.value === '(') {
+        depth++;
+        this.advance();
+        continue;
+      }
+      if (depth === 0 && tok.type === TokenType.Punctuation && tok.value === ',') {
+        this.advance();
+        continue;
+      }
+      const arg = this.parseProcArg();
+      if (arg) args.push(arg);
+    }
+    return args;
+  }
+
+  private parseProcArg(): { name: string; typeHint?: string } | null {
+    const tok = this.peek();
+    let name = '';
+    let typeHint: string | undefined;
+
+    const splitPath = (pathVal: string): void => {
+      const lastSlash = pathVal.lastIndexOf('/');
+      if (lastSlash > 0) {
+        typeHint = pathVal.substring(0, lastSlash);
+        name = pathVal.substring(lastSlash + 1);
+      } else {
+        name = pathVal.replace(/^\//, '');
+      }
+    };
+
+    if (tok.type === TokenType.TypePath) {
+      splitPath(this.advance().value);
+    } else if (tok.type === TokenType.Identifier || tok.type === TokenType.Keyword) {
+      this.advance();
+      if (tok.value === 'var') {
+        // var/x or var x — explicit local declaration
+        const next = this.peek();
+        if (next.type === TokenType.TypePath) {
+          splitPath(this.advance().value);
+        } else if (next.type === TokenType.Identifier || next.type === TokenType.Keyword) {
+          name = this.advance().value;
+        }
+      } else if (this.peek().type === TokenType.TypePath) {
+        // mob/user — keyword/identifier type hint followed by /name
+        splitPath(this.advance().value);
+      } else {
+        // Plain name; DM keyword names (args, usr, src) must not be dropped.
+        name = tok.value;
+      }
+    } else {
+      this.advance(); // skip unrecognized junk
+    }
+
+    // Optional `as <type>` clause — parsed and dropped.
+    if (this.peek().value === 'as') {
+      this.advance();
+      if (this.isType(TokenType.Identifier) || this.isType(TokenType.TypePath) || this.isType(TokenType.Keyword)) {
+        this.advance();
+      }
+    }
+    // Optional default value: epsilon = (1E-4 * 20) — consumed and dropped.
+    if (name && this.matchOperator('=')) {
+      this.parseExpression();
+    }
+    if (!name) return null;
+    return { name, typeHint };
+  }
+
+  /**
+   * Capture the remaining tokens of the current line as raw source text.
+   * Used for type-level var initial values, which may be full expressions
+   * (e.g. `var/list/stuff = list(1, 2, 3)`); the text is preserved for the
+   * YAML initialVars rather than silently dropping everything after the
+   * first token.
+   */
+  private parseInitialValueText(): string {
+    const parts: string[] = [];
+    let depth = 0;
+    while (!this.isType(TokenType.EOF)) {
+      const token = this.peek();
+      if (token.type === TokenType.Newline && depth === 0) break;
+      if (token.type === TokenType.Dedent && depth === 0) break;
+      if (token.type === TokenType.Punctuation && token.value === ';' && depth === 0) break;
+      if (token.type === TokenType.Indent || token.type === TokenType.Newline) {
+        // Inside multiline list()/bracket initializers, indentation and
+        // newlines are just whitespace (classic DM allows lists to span lines).
+        if (token.type === TokenType.Newline) parts.push(' ');
+        this.advance();
+        continue;
+      }
+      const value = this.advance().value;
+      if (value === '(' || value === '[' || value === '{') depth++;
+      else if (value === ')' || value === ']' || value === '}') depth--;
+      parts.push(value);
+    }
+    return parts.join(' ').trim();
   }
 
   private parseMemberDecl(targetTypeNode: DMTypeDeclNode): void {
@@ -271,8 +520,14 @@ export class DMParser {
         varName = this.advance().value;
       }
       let initialVal: any = null;
+      // Initialized length: var/list/screen_groups[6] — drop the length expr.
+      if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
+        this.advance();
+        this.parseExpression();
+        this.matchPunctuation(']');
+      }
       if (varName && this.matchOperator('=')) {
-        initialVal = this.advance().value;
+        initialVal = this.parseInitialValueText() || null;
       }
       if (varName) {
         targetTypeNode.vars.push({
@@ -294,23 +549,13 @@ export class DMParser {
       }
 
       if (procName) {
-        const args: { name: string; typeHint?: string }[] = [];
+        const args = this.parseProcArgs();
 
-        if (this.matchPunctuation('(')) {
-          while (!this.matchPunctuation(')') && !this.isType(TokenType.EOF)) {
-            if (this.isType(TokenType.Identifier) || this.isType(TokenType.TypePath)) {
-              const argName = this.advance().value.replace(/^\//, '');
-              if (this.peek().value === 'as') {
-                this.advance();
-                if (this.isType(TokenType.Identifier) || this.isType(TokenType.TypePath) || this.isType(TokenType.Keyword)) {
-                  this.advance();
-                }
-              }
-              args.push({ name: argName });
-            } else {
-              this.advance();
-            }
-            if (this.matchPunctuation(',')) continue;
+        // Optional return type: /proc/foo(...) as /list
+        if (this.peek().value === 'as') {
+          this.advance();
+          if (this.isType(TokenType.TypePath) || this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+            this.advance();
           }
         }
 
@@ -323,9 +568,15 @@ export class DMParser {
 
         // Parse proc body if block exists
         this.skipNewlines();
-        if (this.isType(TokenType.Indent)) {
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+          this.advance();
+          procNode.statements = this.parseProcBody(true);
+          this.matchPunctuation('}');
+        } else if (this.isType(TokenType.Indent)) {
           this.advance();
           procNode.statements = this.parseProcBody();
+        } else {
+          procNode.statements = this.parseProcBody(false, true);
         }
 
         targetTypeNode.procs.push(procNode);
@@ -333,19 +584,118 @@ export class DMParser {
     }
   }
 
-  private parseProcBody(): DMStatementNode[] {
+  private parseProcBody(stopAtBrace: boolean = false, inline: boolean = false): DMStatementNode[] {
     const statements: DMStatementNode[] = [];
+    const atClosingBrace = (): boolean =>
+      stopAtBrace && this.isType(TokenType.Punctuation) && this.peek().value === '}';
 
-    while (!this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF)) {
-      this.skipNewlines();
-      if (this.isType(TokenType.Dedent) || this.isType(TokenType.EOF)) break;
+    while (!this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !atClosingBrace()) {
+      if (!inline) this.skipNewlines();
+      if (this.isType(TokenType.Dedent) || this.isType(TokenType.EOF) || atClosingBrace()) break;
+      if (inline && this.isType(TokenType.Newline)) break;
+
+      // Statement separators: inside { } bodies and single-line statements
+      if (this.isType(TokenType.Punctuation) && this.peek().value === ';') {
+        this.advance();
+        continue;
+      }
+
+      // DM `set` statements: set name = "x" / set hidden = FALSE — parsed
+      // and dropped (they only affect the verb's UI configuration).
+      if (this.peek().value === 'set') {
+        this.advance();
+        if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+          this.advance();
+        }
+        if (this.matchOperator('=')) {
+          this.parseExpression();
+        }
+        if (this.isType(TokenType.Punctuation) && this.peek().value === ';') {
+          this.advance();
+        }
+        continue;
+      }
+
+      // try { ... } catch(var/exception/e) { ... } — exception handling.
+      if (this.peek().value === 'try') {
+        this.advance();
+        this.skipNewlines();
+        const tryBody: DMStatementNode[] = [];
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+          this.advance();
+          tryBody.push(...this.parseProcBody(true));
+          this.matchPunctuation('}');
+        } else if (this.isType(TokenType.Indent)) {
+          this.advance();
+          tryBody.push(...this.parseProcBody());
+        }
+        let catchVar: string | undefined;
+        let catchBody: DMStatementNode[] = [];
+        this.skipNewlines();
+        if (this.peek().value === 'catch') {
+          this.advance();
+          if (this.matchPunctuation('(')) {
+            let catchPath = '';
+            if (this.isType(TokenType.Keyword) && this.peek().value === 'var') {
+              this.advance();
+            }
+            if (this.isType(TokenType.TypePath) || this.isType(TokenType.Identifier)) {
+              catchPath = this.advance().value;
+            }
+            if (catchPath) {
+              const lastSlash = catchPath.lastIndexOf('/');
+              catchVar = lastSlash > 0 ? catchPath.substring(lastSlash + 1) : catchPath.replace(/^\//, '');
+            }
+            this.matchPunctuation(')');
+          }
+          this.skipNewlines();
+          if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+            this.advance();
+            catchBody.push(...this.parseProcBody(true));
+            this.matchPunctuation('}');
+          } else if (this.isType(TokenType.Indent)) {
+            this.advance();
+            catchBody.push(...this.parseProcBody());
+          }
+        }
+        statements.push({ type: 'TryStatement', tryBody, catchVar, catchBody } as any);
+        continue;
+      }
+
+      // continue / break statements (optionally with a label: break set_adj_in_dir)
+      const ctrlToken = this.peek().value;
+      if (ctrlToken === 'continue' || ctrlToken === 'break') {
+        this.advance();
+        let label: string | undefined;
+        if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+          label = this.advance().value;
+        }
+        statements.push({ type: ctrlToken === 'continue' ? 'ContinueStatement' : 'BreakStatement', label });
+        continue;
+      }
+
+      // Labeled block: name: { ... } — break name jumps out (treated as a scope)
+      if (this.isType(TokenType.Identifier) && this.peekNext()?.value === ':') {
+        const labelName = this.peek().value;
+        this.advance();
+        this.advance(); // :
+        let labeled: DMStatementNode[] = [];
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+          this.advance();
+          labeled = this.parseProcBody(true);
+          this.matchPunctuation('}');
+        }
+        statements.push({ type: 'LabeledBlockStatement', label: labelName, body: labeled });
+        continue;
+      }
 
       const token = this.peek();
 
       if (token.value === 'return') {
         this.advance();
         let returnValue: ExpressionNode | undefined;
-        if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent)) {
+        const nextVal = this.peek().value;
+        if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && nextVal !== ';' && nextVal !== '}') {
           returnValue = this.parseExpression();
         }
         statements.push({ type: 'ReturnStatement', returnValue });
@@ -372,22 +722,131 @@ export class DMParser {
             loopVar = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
           } else if (this.isType(TokenType.Identifier)) {
             loopVar = this.advance().value;
+          } else if (this.isType(TokenType.Keyword)) {
+            // for(var/turf in turfs) — type keyword used as the loop variable name
+            loopVar = this.advance().value;
+          } else if (this.isType(TokenType.Operator) && this.peek().value === '/') {
+            this.advance();
+            if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+              loopVar = this.advance().value;
+            }
           }
         }
         this.skipNewlines();
+        // DM multi-var loop: for(var/gas_path, amount in gasmix.moles)
+        while (this.matchPunctuation(',')) {
+          if (this.isType(TokenType.TypePath)) {
+            this.advance();
+          } else if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+            this.advance();
+          }
+        }
+        // for(var/x as anything in list) — 'as' filter clause; parse and drop
+        // the type hint so the 'in' clause below still matches.
+        if (this.peek().value === 'as') {
+          this.advance();
+          while (!this.isType(TokenType.EOF) && this.peek().value !== 'in') {
+            this.advance();
+          }
+        }
         if (this.peek().value === 'in') {
           this.advance();
           const loopRange = this.parseExpression();
+          let step: ExpressionNode | undefined;
+          if (this.peek().value === 'step') {
+            this.advance();
+            step = this.parseExpression();
+          }
           this.matchPunctuation(')');
           this.skipNewlines();
           let loopBody: DMStatementNode[] = [];
           if (this.isType(TokenType.Indent)) {
             this.advance();
             loopBody = this.parseProcBody();
+          } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+            this.advance();
+            loopBody = this.parseProcBody(true);
+            this.matchPunctuation('}');
           }
-          statements.push({ type: 'ForStatement', loopVariable: loopVar, loopRange, loopBody });
+          statements.push({ type: 'ForStatement', loopVariable: loopVar, loopRange, step, loopBody });
           continue;
         }
+        if (loopVar && this.matchOperator('=')) {
+          // DM C-style for: for(var/i = init, cond, incr)
+          const init = this.parseExpression();
+          if (init.type === 'binary' && init.operator === 'to') {
+            // Classic DM form: for(var/i = 1 to 5)
+            let step: ExpressionNode | undefined;
+            if (this.peek().value === 'step') {
+              this.advance();
+              step = this.parseExpression();
+            }
+            this.matchPunctuation(')');
+            this.skipNewlines();
+            let loopBody: DMStatementNode[] = [];
+            if (this.isType(TokenType.Indent)) {
+              this.advance();
+              loopBody = this.parseProcBody();
+            } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+              this.advance();
+              loopBody = this.parseProcBody(true);
+              this.matchPunctuation('}');
+            }
+            const loopRange: ExpressionNode = { type: 'range', start: init.left, end: init.right };
+            statements.push({ type: 'ForStatement', loopVariable: loopVar, loopRange, step, loopBody });
+            continue;
+          }
+          if (this.matchPunctuation(',')) {
+            const condition = this.parseExpression();
+            this.matchPunctuation(',');
+            const increment = this.parseExpression();
+            this.matchPunctuation(')');
+            this.skipNewlines();
+            let loopBody: DMStatementNode[] = [];
+            if (this.isType(TokenType.Indent)) {
+              this.advance();
+              loopBody = this.parseProcBody();
+            } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+              this.advance();
+              loopBody = this.parseProcBody(true);
+              this.matchPunctuation('}');
+            }
+            statements.push({
+              type: 'CForStatement',
+              loopVariable: loopVar,
+              init,
+              condition,
+              increment,
+              loopBody
+            });
+            continue;
+          }
+        }
+      }
+
+      if (token.value === 'do') {
+        this.advance();
+        this.skipNewlines();
+        let loopBody: DMStatementNode[] = [];
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+          this.advance();
+          loopBody = this.parseProcBody(true);
+          this.matchPunctuation('}');
+        } else if (this.isType(TokenType.Indent)) {
+          this.advance();
+          loopBody = this.parseProcBody();
+        }
+        this.skipNewlines();
+        if (this.peek().value === 'while') {
+          this.advance();
+          const condition = this.parseExpression();
+          statements.push({ type: 'DoWhileStatement', condition, loopBody });
+          continue;
+        }
+        const bad = this.peek();
+        this.diagnostics.error(`Expected 'while (condition)' after 'do' block, found '${bad.value}'`, bad.line, bad.column);
+        statements.push({ type: 'DoWhileStatement', condition: undefined, loopBody });
+        continue;
       }
 
       if (token.value === 'while') {
@@ -395,7 +854,11 @@ export class DMParser {
         const condition = this.parseExpression();
         this.skipNewlines();
         let loopBody: DMStatementNode[] = [];
-        if (this.isType(TokenType.Indent)) {
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+          this.advance();
+          loopBody = this.parseProcBody(true);
+          this.matchPunctuation('}');
+        } else if (this.isType(TokenType.Indent)) {
           this.advance();
           loopBody = this.parseProcBody();
         }
@@ -414,7 +877,11 @@ export class DMParser {
         let body: DMStatementNode[] = [];
         if (kind === 'spawn') {
           this.skipNewlines();
-          if (this.isType(TokenType.Indent)) {
+          if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+            this.advance();
+            body = this.parseProcBody(true);
+            this.matchPunctuation('}');
+          } else if (this.isType(TokenType.Indent)) {
             this.advance();
             body = this.parseProcBody();
           }
@@ -472,6 +939,8 @@ export class DMParser {
               if (this.isType(TokenType.Indent)) {
                 this.advance();
                 body = this.parseProcBody();
+              } else if (!this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !this.isType(TokenType.Newline)) {
+                body = [this.parseSingleStatement()];
               }
               cases.push({ values, body });
             } else if (this.peek().value === 'else') {
@@ -480,6 +949,8 @@ export class DMParser {
               if (this.isType(TokenType.Indent)) {
                 this.advance();
                 defaultBody = this.parseProcBody();
+              } else if (!this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !this.isType(TokenType.Newline)) {
+                defaultBody = [this.parseSingleStatement()];
               }
             } else {
               const bad = this.advance();
@@ -503,13 +974,47 @@ export class DMParser {
           const lastSlash = pathVal.lastIndexOf('/');
           varName = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
         } else if (this.isType(TokenType.Identifier)) {
+          // var/list/x — bare type followed by /name (no leading slash)
+          const next = this.peekNext();
+          if (next && next.type === TokenType.Operator && next.value === '/') {
+            this.advance(); // type
+            this.advance(); // /
+            if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+              varName = this.advance().value;
+            }
+          } else {
+            varName = this.advance().value;
+          }
+        } else if (this.isType(TokenType.Keyword)) {
           varName = this.advance().value;
+        }
+        // Initialized length: var/list/x[max(1, 0)] — drop the length expr.
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
+          this.advance();
+          this.parseExpression();
+          this.matchPunctuation(']');
         }
         let varInit: ExpressionNode | undefined;
         if (this.matchOperator('=')) {
           varInit = this.parseExpression();
         }
         statements.push({ type: 'VarDeclStatement', varName, varInit });
+        // DM multi-decl: var/i, ch, len = length(key)
+        while (this.matchPunctuation(',')) {
+          let nextName = '';
+          if (this.isType(TokenType.TypePath)) {
+            const pathVal = this.advance().value;
+            const lastSlash = pathVal.lastIndexOf('/');
+            nextName = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
+          } else if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+            nextName = this.advance().value;
+          }
+          let nextInit: ExpressionNode | undefined;
+          if (this.matchOperator('=')) {
+            nextInit = this.parseExpression();
+          }
+          statements.push({ type: 'VarDeclStatement', varName: nextName, varInit: nextInit });
+        }
         continue;
       }
 
@@ -550,13 +1055,63 @@ export class DMParser {
 
     return statements;
   }
+  private parseSingleStatement(): DMStatementNode {
+    const token = this.peek();
+    if (token.value === 'var') {
+      this.advance();
+      let varName = '';
+      if (this.isType(TokenType.TypePath)) {
+        const pathVal = this.advance().value;
+        const lastSlash = pathVal.lastIndexOf('/');
+        varName = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
+      } else if (this.isType(TokenType.Identifier)) {
+        const next = this.peekNext();
+        if (next && next.type === TokenType.Operator && next.value === '/') {
+          this.advance();
+          this.advance();
+          if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+            varName = this.advance().value;
+          }
+        } else {
+          varName = this.advance().value;
+        }
+      } else if (this.isType(TokenType.Keyword)) {
+        varName = this.advance().value;
+      }
+      let varInit: ExpressionNode | undefined;
+      if (this.matchOperator('=')) {
+        varInit = this.parseExpression();
+      }
+      return { type: 'VarDeclStatement', varName, varInit };
+    }
+    if (token.value === 'return') {
+      this.advance();
+      let returnValue: ExpressionNode | undefined;
+      if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent)) {
+        returnValue = this.parseExpression();
+      }
+      return { type: 'ReturnStatement', returnValue };
+    }
+    if (token.value === 'continue' || token.value === 'break') {
+      this.advance();
+      return { type: token.value === 'continue' ? 'ContinueStatement' : 'BreakStatement' };
+    }
+    if (token.value === 'if') {
+      return this.parseIfStatement();
+    }
+    return { type: 'ExpressionStatement', expression: this.parseExpression() };
+  }
 
   private parseIfStatement(): DMStatementNode {
     this.advance(); // consume 'if'
     const condition = this.parseExpression();
     this.skipNewlines();
     let thenBranch: DMStatementNode[] = [];
-    if (this.isType(TokenType.Indent)) {
+    if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+      this.advance();
+      thenBranch = this.parseProcBody(true);
+      this.matchPunctuation('}');
+    } else if (this.isType(TokenType.Indent)) {
       this.advance();
       thenBranch = this.parseProcBody();
     }
@@ -568,6 +1123,10 @@ export class DMParser {
       if (this.peek().value === 'if') {
         // else if chain: represent as nested if statement
         elseBranch = [this.parseIfStatement()];
+      } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+        this.advance();
+        elseBranch = this.parseProcBody(true);
+        this.matchPunctuation('}');
       } else if (this.isType(TokenType.Indent)) {
         this.advance();
         elseBranch = this.parseProcBody();
@@ -577,7 +1136,7 @@ export class DMParser {
   }
 
   // Expression parser using Pratt parsing / precedence climbing
-  private parseExpression(minPrec: number = 0): ExpressionNode {
+  private parseExpression(minPrec: number = 0, stopAtColon: boolean = false): ExpressionNode {
     let left = this.parsePrimary();
 
     while (true) {
@@ -585,8 +1144,18 @@ export class DMParser {
       if (token.type === TokenType.EOF || token.type === TokenType.Newline || token.type === TokenType.Dedent) {
         break;
       }
+      if (stopAtColon && token.value === ':') break;
 
       const op = token.value;
+
+      // x/type — a TypePath token directly after a complete expression is
+      // division by a type constant (the lexer cannot distinguish these).
+      if (token.type === TokenType.TypePath) {
+        this.advance();
+        const right: ExpressionNode = { type: 'literal', value: token.value, literalType: 'string' };
+        left = { type: 'binary', operator: '/', left, right };
+        continue;
+      }
 
       // Postfix increment/decrement: x++ / x--
       if ((op === '++' || op === '--') && (left.type === 'variable' || left.type === 'property' || left.type === 'index')) {
@@ -620,6 +1189,48 @@ export class DMParser {
       const precedence = this.getOperatorPrecedence(op);
       if (precedence < minPrec) break;
 
+      // DM range operator: 1..5, a..b (for(x in 1..5) etc.)
+      if (op === '..') {
+        this.advance();
+        const end = this.parseExpression(precedence + (this.isRightAssociative(op) ? 0 : 1));
+        left = { type: 'range', start: left, end };
+        continue;
+      }
+
+      // Static access: sometype::abstract_type — treated as a property read.
+      if (op === '::') {
+        this.advance();
+        const propToken = this.advance();
+        left = { type: 'property', target: left, property: propToken.value } as any;
+        continue;
+      }
+
+      // Dynamic access: found_turf:type — treated as a property read.
+      if (op === ':') {
+        this.advance();
+        const propToken = this.advance();
+        left = { type: 'property', target: left, property: propToken.value } as any;
+        continue;
+      }
+
+      // Legacy DM null-conditional access: x?:prop — treated as a property read.
+      if (op === '?' && this.peekNext()?.value === ':') {
+        this.advance();
+        this.advance();
+        const propToken = this.advance();
+        left = { type: 'property', target: left, property: propToken.value } as any;
+        continue;
+      }
+
+      // Index: a::b[1] (parsePostfix handles plain a[1] already)
+      if (op === '[') {
+        this.advance(); // consume [
+        const index = this.parseExpression();
+        this.matchPunctuation(']');
+        left = { type: 'index', target: left, index } as any;
+        continue;
+      }
+
       // Handle right-associative operators
       const nextMinPrec = precedence + (this.isRightAssociative(op) ? 0 : 1);
 
@@ -627,17 +1238,17 @@ export class DMParser {
 
       // Special handling for ternary
       if (op === '?') {
-        const trueExpr = this.parseExpression();
+        const trueExpr = this.parseExpression(0, true);
         if (!this.matchOperator(':')) {
           const t = this.peek();
           this.diagnostics.error("Expected ':' in ternary expression", t.line, t.column);
         }
-        const falseExpr = this.parseExpression();
+        const falseExpr = this.parseExpression(0, stopAtColon);
         left = { type: 'ternary', condition: left, trueExpr, falseExpr };
         continue;
       }
 
-      const right = this.parseExpression(nextMinPrec);
+      const right = this.parseExpression(nextMinPrec, stopAtColon);
 
       // Handle assignment specially
       if (op === '=') {
@@ -652,7 +1263,7 @@ export class DMParser {
       }
 
       // Handle compound assignment: a += 5  ->  a = a + 5
-      if (['+=', '-=', '*=', '/=', '%=', '<<=', '>>='].includes(op)) {
+      if (['+=', '-=', '*=', '/=', '%=', '<<=', '>>=', '&=', '|=', '^=', '||=', '&&='].includes(op)) {
         const baseOp = op.slice(0, -1);
         if (left.type === 'variable') {
           left = {
@@ -693,7 +1304,30 @@ export class DMParser {
     if (this.matchPunctuation('(')) {
       const expr = this.parseExpression();
       this.matchPunctuation(')');
-      return expr;
+      return this.parsePostfix(expr);
+    }
+
+    // DM list literal: {1, 2, 3} (also covers {"multi\nline"} string lists)
+    if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+      this.advance();
+      const elements: ExpressionNode[] = [];
+      let closed = false;
+      while (!this.isType(TokenType.EOF) && !this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent)) {
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '}') {
+          this.advance();
+          closed = true;
+          break;
+        }
+        if (this.isType(TokenType.Punctuation) && this.peek().value === ',') {
+          this.advance();
+          continue;
+        }
+        elements.push(this.parseExpression());
+      }
+      if (!closed) {
+        this.diagnostics.error("Expected '}' to close list literal", this.peek().line, this.peek().column);
+      }
+      return this.parsePostfix({ type: 'list', elements });
     }
 
     // String literal
@@ -734,10 +1368,15 @@ export class DMParser {
         this.advance();
         return { type: 'literal', value: false, literalType: 'bool' };
       }
-      // usr, src, args
-      if (['usr', 'src', 'args'].includes(token.value)) {
+      // usr, src, args, and common type keywords used as identifiers
+      if (['usr', 'src', 'args', 'global', 'world', 'turf', 'mob', 'obj', 'area', 'datum', 'atom', 'client', 'proc', 'verb', 'icon', 'sound', 'tmp', 'qdel'].includes(token.value)) {
         this.advance();
-        return { type: 'variable', name: token.value };
+        return this.parsePostfix({ type: 'variable', name: token.value });
+      }
+      // Builtin keyword calls: istype(), ispath(), locate(), prob() ...
+      if (['istype', 'ispath', 'locate', 'prob', 'step', 'vars'].includes(token.value)) {
+        this.advance();
+        return this.parsePostfix({ type: 'variable', name: token.value });
       }
       // new /obj/item(x) or new/obj/item(x)
       if (token.value === 'new') {
@@ -770,11 +1409,50 @@ export class DMParser {
       return this.parsePostfix({ type: 'variable', name });
     }
 
-    // Unary operators
-    if (token.type === TokenType.Operator && ['!', '-', '+'].includes(token.value)) {
+    // Unary operators (and prefix ++/--, rewritten as assignment)
+    if (token.type === TokenType.Operator && ['!', '-', '+', '~', '++', '--'].includes(token.value)) {
       const op = this.advance().value;
       const operand = this.parsePrimary();
+      if (op === '++' || op === '--') {
+        const one: ExpressionNode = { type: 'literal', value: 1, literalType: 'number' };
+        const baseOp = op === '++' ? '+' : '-';
+        const value: ExpressionNode = { type: 'binary', operator: baseOp, left: operand, right: one };
+        if (operand.type === 'variable') {
+          return { type: 'assignment', target: operand.name, value } as any;
+        }
+        if (operand.type === 'property') {
+          return { type: 'property_assignment', target: operand.target, property: operand.property, value } as any;
+        }
+      }
       return { type: 'unary', operator: op, operand };
+    }
+
+    // Implicit return value: '.' is DM's per-proc return variable
+    if (token.type === TokenType.Operator && token.value === '.') {
+      this.advance();
+      // .proc/name — path-dot proc reference used by nameof() and PROC_REF()
+      if (this.peek().value === 'proc' || this.peek().value === 'verb') {
+        const kind = this.advance().value;
+        let path = '';
+        if (this.isType(TokenType.TypePath)) {
+          path = this.advance().value;
+        }
+        return this.parsePostfix({ type: 'literal', value: `.${kind}${path}`, literalType: 'string' });
+      }
+      return this.parsePostfix({ type: 'variable', name: '.' });
+    }
+
+    // Parent call: ..() / ..(args) dispatches to the parent proc
+    if (token.type === TokenType.Operator && token.value === '..') {
+      this.advance();
+      const args: ExpressionNode[] = [];
+      if (this.matchPunctuation('(')) {
+        while (!this.matchPunctuation(')') && !this.isType(TokenType.EOF)) {
+          args.push(this.parseExpression());
+          if (this.matchPunctuation(',')) continue;
+        }
+      }
+      return this.parsePostfix({ type: 'call', name: '..', arguments: args });
     }
 
     // Fallback: report and recover (treat as null literal)
@@ -786,8 +1464,10 @@ export class DMParser {
   // Postfix chain: a.b.c, obj.method(x), arr[i].x, foo().bar
   private parsePostfix(node: ExpressionNode): ExpressionNode {
     while (true) {
-      // '.' is tokenized as an Operator (not Punctuation), so match by value
-      if (this.peek().value === '.') {
+      // '.' is tokenized as an Operator (not Punctuation), so match by value.
+      // '?.' is DM's null-conditional access; treated as plain access (the
+      // runtime already returns Null for missing properties).
+      if (this.peek().value === '.' || this.peek().value === '?.') {
         this.advance();
         const propToken = this.peek();
         if (propToken.type === TokenType.Identifier || propToken.type === TokenType.Keyword) {
@@ -801,14 +1481,31 @@ export class DMParser {
         const args: ExpressionNode[] = [];
         while (!this.matchPunctuation(')') && !this.isType(TokenType.EOF)) {
           args.push(this.parseExpression());
+          // Weighted pick: pick(20;"brown", 30;"grey") — parse weight;value pairs.
+          if (this.peek().value === ';') {
+            this.advance();
+            args.push(this.parseExpression());
+          }
           if (this.matchPunctuation(',')) continue;
         }
         if (node.type === 'variable') {
           node = { type: 'call', name: node.name, arguments: args };
+        } else if (node.type === 'property') {
+          // obj.method(x) — the method name is the last property segment and
+          // the receiver is the chain before it. Previously this emitted a
+          // call with an empty name targeting the property lookup itself.
+          node = { type: 'call', name: node.property, target: node.target, arguments: args };
         } else {
           node = { type: 'call', name: '', target: node, arguments: args };
         }
       } else if (this.matchPunctuation('[')) {
+        const index = this.parseExpression();
+        this.matchPunctuation(']');
+        node = { type: 'index', target: node, index };
+      } else if (this.peek().value === '?' && this.peekNext()?.value === '[') {
+        // Null-conditional index: x?[key] — treated as plain indexing.
+        this.advance();
+        this.advance();
         const index = this.parseExpression();
         this.matchPunctuation(']');
         node = { type: 'index', target: node, index };
@@ -821,21 +1518,25 @@ export class DMParser {
 
   private getOperatorPrecedence(op: string): number {
     switch (op) {
-      case '||': return 1;
+      case '||': case 'as': return 1;
       case '<<': case '>>': return 1;
       case '&&': return 2;
-      case '==': case '!=': return 3;
+      case 'in': case 'to': return 2;
+      case '==': case '!=': case '~=': case '~!': return 3;
       case '<': case '<=': case '>': case '>=': return 4;
+      case '&': case '|': case '^': return 4;
       case '+': case '-': return 5;
-      case '*': case '/': case '%': return 6;
+      case '..': return 5; // range literal (1..5)
+      case '*': case '/': case '%': case '%%': case '**': return 6;
+      case '::': case ':': case '[': return 12; // static / dynamic member access, index
       case '?': return 7; // ternary
-      case '=': case '+=': case '-=': case '*=': case '/=': case '%=': case '<<=': case '>>=': return 0; // lowest (right-associative)
+      case '=': case '+=': case '-=': case '*=': case '/=': case '%=': case '<<=': case '>>=': case '&=': case '|=': case '^=': case '||=': case '&&=': return 0; // lowest (right-associative)
       default: return -1;
     }
   }
 
   private isRightAssociative(op: string): boolean {
-    return ['=', '?', '+=', '-=', '*=', '/=', '%=', '<<=', '>>='].includes(op);
+    return ['=', '?', '+=', '-=', '*=', '/=', '%=', '<<=', '>>=', '&=', '|=', '^=', '||=', '&&='].includes(op);
   }
 
   private getOrCreateTypeNode(path: string, map: Map<string, DMTypeDeclNode>): DMTypeDeclNode {

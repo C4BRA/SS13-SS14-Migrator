@@ -100,18 +100,23 @@ export class DMIParser {
       }
     } else if (chunkType === 'iTXt') {
       // iTXt: keyword\0compressionFlag\0compressionMethod\0languageTag\0translatedKeyword\0text (UTF-8)
-      const parts: Buffer[] = [];
-      let start = 0;
-      for (let i = 0; i < data.length; i++) {
-        if (data[i] === 0) {
-          parts.push(data.slice(start, i));
-          start = i + 1;
-        }
+      const nulls: number[] = [];
+      for (let i = 0; i < data.length && nulls.length < 5; i++) {
+        if (data[i] === 0) nulls.push(i);
       }
-      if (parts.length >= 5) {
-        const keyword = parts[0].toString('utf8');
+      if (nulls.length === 5) {
+        const keyword = data.toString('utf8', 0, nulls[0]);
         if (keyword === 'DMI' || keyword === 'Description') {
-          return parts[4].toString('utf8');
+          const compressionFlag = data[nulls[0] + 1];
+          const textStart = nulls[4] + 1;
+          if (compressionFlag === 1) {
+            try {
+              return zlib.inflateSync(data.subarray(textStart)).toString('utf8');
+            } catch {
+              return '';
+            }
+          }
+          return data.toString('utf8', textStart);
         }
       }
     } else if (chunkType === 'zTXt') {
