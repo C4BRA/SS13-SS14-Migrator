@@ -10,7 +10,9 @@
     "build": "tsc",
     "start": "node dist/cli.js",
     "test": "node dist/tests/runTests.js",
-    "audit:repo": "node dist/tests/repoAudit.js"
+    "audit:repo": "node dist/tests/repoAudit.js",
+    "audit:fidelity": "node dist/audit/fidelityAudit.js",
+    "audit:semantics": "node dist/tests/fidelityDifferential.test.js"
   },
   "keywords": [
     "ss13",

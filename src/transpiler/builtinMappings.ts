@@ -1,5 +1,13 @@
 // Shared mapping of DM builtin proc calls to generated C#.
 // Returns the C# expression string, or null for user-defined procs.
+
+export const MAPPED_BUILTINS = [
+  'sleep', 'spawn', 'qdel', 'locate', 'istype', 'ispath', 'prob', 'pick', 'rand',
+  'list', 'length', 'text', 'text2num', 'num2text', 'copytext', 'findtext',
+  'clamp', 'max', 'min', 'round', 'abs', 'uppertext', 'lowertext', 'hascall',
+  'alert', 'input', 'icon'
+];
+
 export function transpileBuiltinCall(name: string, args: string): string | null {
   switch (name) {
     case 'sleep':
