@@ -1,28 +1,54 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import AdmZip from 'adm-zip';
 import { DM2SS14Transpiler } from '../index.js';
 
 export class GUIServer {
   private port: number;
+  private authToken: string;
+  private convertInFlight = false;
+  private server: http.Server | null = null;
 
   constructor(port: number = 3456) {
     this.port = port;
+    this.authToken = crypto.randomBytes(32).toString('hex');
+  }
+
+  public stop(): void {
+    if (this.server) {
+      this.server.close();
+      this.server = null;
+    }
   }
 
   public start(): void {
     const server = http.createServer(async (req, res) => {
       const url = req.url || '/';
-
       if (req.method === 'GET' && (url === '/' || url === '/index.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(this.getHTMLContent());
+        res.end(this.getHTMLContent(this.authToken));
         return;
       }
 
       if (req.method === 'POST' && url === '/api/convert') {
-        await this.handleConvertRequest(req, res);
+        if (!this.isAuthorized(req)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden: invalid Host/Origin or missing session token.' }));
+          return;
+        }
+        if (this.convertInFlight) {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'A conversion is already in progress. Wait for it to finish.' }));
+          return;
+        }
+        this.convertInFlight = true;
+        try {
+          await this.handleConvertRequest(req, res);
+        } finally {
+          this.convertInFlight = false;
+        }
         return;
       }
 
@@ -30,12 +56,48 @@ export class GUIServer {
       res.end('Not Found');
     });
 
+    this.server = server;
     server.listen(this.port, '127.0.0.1', () => {
       console.log(`\n==================================================`);
       console.log(`\u{1F680} dm2ss14 macOS Desktop App launched!`);
       console.log(`\u{1F449} Open http://localhost:${this.port} in your browser`);
+      console.log(`Session token (required for /api/convert): ${this.authToken}`);
       console.log(`==================================================\n`);
     });
+  }
+
+  // CSRF / DNS-rebinding protection: the server only ever binds loopback, and
+  // a conversion must come from a same-origin page carrying the session token
+  // (a hostile website can fire a cross-site POST at localhost:3456, but it
+  // cannot read the token to pass the X-Auth-Token check).
+  private isAuthorized(req: http.IncomingMessage): boolean {
+    const host = req.headers.host || '';
+    const hostOk =
+      host === `localhost:${this.port}` || host === `127.0.0.1:${this.port}` ||
+      host === 'localhost' || host === '127.0.0.1';
+    if (!hostOk) return false;
+
+    const origin = req.headers.origin;
+    if (origin) {
+      const originOk =
+        origin === `http://localhost:${this.port}` || origin === `http://127.0.0.1:${this.port}`;
+      if (!originOk) return false;
+    }
+
+    const token = req.headers['x-auth-token'];
+    const tokenStr = Array.isArray(token) ? token[0] : token;
+    return tokenStr === this.authToken;
+  }
+
+  // Restrict output paths to the user's home directory so a crafted
+  // outputPath field cannot make the server write outside the sandbox.
+  public static validateOutputPath(outputDirPath: string): string | null {
+    if (!outputDirPath) return null;
+    if (outputDirPath.includes('\0')) return null;
+    const resolved = path.resolve(outputDirPath);
+    const homeRoot = path.resolve(process.env.HOME || '/tmp');
+    if (resolved !== homeRoot && !resolved.startsWith(homeRoot + path.sep)) return null;
+    return resolved;
   }
 
   private static readonly MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
@@ -75,7 +137,15 @@ export class GUIServer {
             const outputPart = parts.find(p => p.name === 'outputPath');
 
             if (filePart) zipBuffer = filePart.data;
-            if (outputPart) outputDirPath = outputPart.data.toString('utf-8').trim() || outputDirPath;
+            if (outputPart) {
+              const candidate = GUIServer.validateOutputPath(outputPart.data.toString('utf-8').trim() || outputDirPath);
+              if (!candidate) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid outputPath: must resolve inside your home directory.' }));
+                return;
+              }
+              outputDirPath = candidate;
+            }
           }
         }
 
@@ -159,7 +229,7 @@ export class GUIServer {
     return parts;
   }
 
-  private getHTMLContent(): string {
+  private getHTMLContent(authToken: string): string {
     const defaultOutputPath = path.join(process.env.HOME || '', 'Downloads', 'SS14-Converted-Server');
     const lines = [
 '<!DOCTYPE html>',
@@ -277,6 +347,7 @@ export class GUIServer {
 '</div>',
 '<script>',
 '(function() {',
+'  var AUTH_TOKEN = "' + authToken + '";',
 '  var dropzone = document.getElementById("dropzone");',
 '  var fileInput = document.getElementById("fileInput");',
 '  var dropzoneText = document.getElementById("dropzoneText");',
@@ -363,7 +434,7 @@ export class GUIServer {
 '      log("[4/5] Converting DMI icon assets to RSI...");',
 '      log("[5/5] Building SS14 Grid maps & SS13.DM.Runtime...");',
 '',
-'      var res = await fetch("/api/convert", { method: "POST", body: formData });',
+'      var res = await fetch("/api/convert", { method: "POST", headers: { "X-Auth-Token": AUTH_TOKEN }, body: formData });',
 '      var data = await res.json();',
 '',
 '      if (data.success) {',

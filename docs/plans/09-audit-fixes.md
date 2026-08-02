@@ -44,12 +44,12 @@ until the wave closes and the audit is re-run for a corrected baseline.
 - [x] Trailing-slash base-type check: normalize path before comparing (`dmIRGenerator.ts:133-145`)
 
 ### B5 — Harness
-- [ ] Remove `numUnresolvedCalls` double-add from `totalLossSites` (`fidelityAudit.ts:400-414`)
-- [ ] Drop stale break/continue loss counter (`fidelityAudit.ts:231-232`)
-- [ ] Drop stale `numCompileBreak` (`!=`/`~!`/`**`) counter (`fidelityAudit.ts:269-270`)
+- [x] Remove `numUnresolvedCalls` double-add from `totalLossSites` (`fidelityAudit.ts:398-411`)
+- [x] Drop stale break/continue loss counter (emitter handles both since B2) (`fidelityAudit.ts:229-230`)
+- [x] Drop stale `numCompileBreak` (`!=`/`~!`/`**`) counter (`fidelityAudit.ts:266-268`)
 
 ### B6 — Security
-- [ ] `/api/convert`: Origin/Host validation + session token + `outputPath` root validation + request concurrency + decompressed-size enforcement (`gui/server.ts:24-27,66-78`)
+- [x] `/api/convert`: session token (X-Auth-Token) + Origin/Host validation + `outputPath` home-root validation + 429 concurrency lock; zip entry/size limits already enforced (`gui/server.ts`)
 
 ### B7 — Media
 - [ ] DMI state regex: `state = "x"` (`dmiParser.ts:164-166`)

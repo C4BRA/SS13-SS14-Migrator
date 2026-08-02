@@ -152,6 +152,56 @@ async function runTests() {
   assert(harnessCounters.numUnresolvedCalls === 1, "Unresolved call counted exactly once");
   assert(harnessCounters.totalLossSites === 1, "totalLossSites counts unresolved calls once (no double-add, no stale break/continue/!= losses)");
 
+  // Test 5f (Plan 09 B6): GUI server security — session token + Host/Origin
+  // validation + outputPath confinement (concurrency lock is exercised by
+  // the handler's own inFlight guard, not probed here).
+  {
+    const { GUIServer } = await import('../gui/server.js');
+    const net = await import('net');
+    const freePort = await new Promise<number>((resolve) => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address() as any;
+        srv.close(() => resolve(addr.port));
+      });
+    });
+    const gui = new GUIServer(freePort);
+    gui.start();
+    await new Promise(r => setTimeout(r, 300));
+
+    const rawRequest = (raw: string) => new Promise<string>((resolve) => {
+      const sock = net.createConnection(freePort, '127.0.0.1', () => sock.write(raw));
+      let data = '';
+      sock.on('data', d => { data += d.toString(); });
+      sock.on('end', () => resolve(data));
+      sock.on('error', () => resolve(data));
+    });
+
+    const badHost = await rawRequest(`POST /api/convert HTTP/1.1\r\nHost: evil.com\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+    assert(badHost.includes('403'), "Request with foreign Host header rejected (403)");
+
+    const noToken = await rawRequest(`POST /api/convert HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+    assert(noToken.includes('403'), "Request without session token rejected (403)");
+
+    const index = await rawRequest(`GET / HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+    assert(index.includes(' 200 '), "Index page served (200)");
+    const tokenMatch = index.match(/AUTH_TOKEN = "([0-9a-f]+)"/);
+    assert(tokenMatch !== null, "Index page embeds the session token");
+    const token = tokenMatch![1];
+
+    const badOrigin = await rawRequest(`POST /api/convert HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nOrigin: http://evil.com\r\nX-Auth-Token: ${token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+    assert(badOrigin.includes('403'), "Request with foreign Origin rejected despite valid token");
+
+    const authed = await rawRequest(`POST /api/convert HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nX-Auth-Token: ${token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+    assert(authed.includes('400'), "Authed request reaches the handler (400 for missing zip, not 403)");
+
+    const homeRoot = process.env.HOME || '/tmp';
+    assert(GUIServer.validateOutputPath(path.join(homeRoot, 'Downloads', 'out')) === path.join(homeRoot, 'Downloads', 'out'), "Output path inside home accepted");
+    assert(GUIServer.validateOutputPath('/etc/passwd') === null, "Absolute output path outside home rejected");
+    assert(GUIServer.validateOutputPath('../../../../etc/evil') === null, "Traversal output path rejected");
+    gui.stop();
+  }
+
   // Test 5: End-to-End Transpilation to temporary directory
   const tmpInputDir = path.join(process.cwd(), 'temp_test_ss13');
   const tmpOutputDir = path.join(process.cwd(), 'temp_test_ss14');
