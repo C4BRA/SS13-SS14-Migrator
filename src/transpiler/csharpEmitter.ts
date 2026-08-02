@@ -334,20 +334,35 @@ namespace Content.Server.DM
         return doCode;
 
       case 'CForStatement':
-        let cforCode = `${pad}{\n`;
-        if (stmt.loopVariable) {
-          cforCode += `${pad}    comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.init)});\n`;
-          cforCode += `${pad}    while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}    {\n`;
-          this.loopDepth++;
-          for (const s of stmt.loopBody || []) {
-            cforCode += this.transpileStatement(s, indent + 8);
+        {
+          let cforCode = `${pad}{\n`;
+          if (stmt.loopVariable) {
+            cforCode += `${pad}    comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.init)});\n`;
+            cforCode += `${pad}    while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}    {\n`;
+            this.loopDepth++;
+            for (const s of stmt.loopBody || []) {
+              cforCode += this.transpileStatement(s, indent + 8);
+            }
+            this.loopDepth--;
+            cforCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.increment)});\n`;
+            cforCode += `${pad}    }\n`;
+          } else if (stmt.condition) {
+            // Bare-init C-style loop (for(words, words > 0, words--)): the
+            // init was a plain expression; only the condition/increment apply.
+            cforCode += `${pad}    while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}    {\n`;
+            this.loopDepth++;
+            for (const s of stmt.loopBody || []) {
+              cforCode += this.transpileStatement(s, indent + 8);
+            }
+            this.loopDepth--;
+            if (stmt.increment) {
+              cforCode += `${pad}        ${this.transpileExpression(stmt.increment)};\n`;
+            }
+            cforCode += `${pad}    }\n`;
           }
-          this.loopDepth--;
-          cforCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.increment)});\n`;
-          cforCode += `${pad}    }\n`;
+          cforCode += `${pad}}\n`;
+          return cforCode;
         }
-        cforCode += `${pad}}\n`;
-        return cforCode;
 
       case 'ForStatement':
         // DM for(x in list) -> real iteration over list elements. The iterator

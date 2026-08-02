@@ -80,7 +80,8 @@ export class DMPreprocessor {
     for (let i = 0; i < lines.length; i++) {
       const raw = lines[i];
       const trimmed = raw.trim();
-      if (trimmed.startsWith('#')) {
+      const startsInComment = this.blockCommentState.inBlockComment;
+      if (!startsInComment && trimmed.startsWith('#')) {
         const dirLine = this.stripComment(trimmed);
         const m = dirLine.match(/^#(\w+)(.*)$/);
         const name = m ? m[1] : '';
@@ -160,6 +161,13 @@ export class DMPreprocessor {
               this.collector.error(`#include file not found: '${im[1]}'`, i + 1, 1);
               break;
             }
+            // Only DM sources are inlined. Map data (.dmm) and other assets
+            // (.txt/.html/.json/...) are not DM syntax; inlining them produces
+            // cascading parse errors (map keys like "aaa" at top level).
+            const incExt = path.extname(incPath).toLowerCase();
+            if (incExt !== '.dm' && incExt !== '.dme' && incExt !== '') {
+              break;
+            }
             const incCode = this.processFile(incPath);
             if (incCode.length > 0) {
               out.push(incCode);
@@ -181,6 +189,11 @@ export class DMPreprocessor {
               this.collector.warning(`Unknown preprocessor directive '#${name}' ignored`, i + 1, 1);
             }
           }
+        }
+        // Directives skip expandMacros, so advance the block-comment state
+        // here for comment markers inside the directive text.
+        if (isActive()) {
+          this.updateBlockCommentState(raw);
         }
         continue;
       }
@@ -218,15 +231,23 @@ export class DMPreprocessor {
   private joinParenBlocks(lines: string[]): string[] {
     const out: string[] = [];
     let i = 0;
-    const state: { inBlockComment: boolean } = { inBlockComment: false };
+    const state: { inBlockComment: boolean; inString: boolean; inIcon: boolean; inTemplate: boolean; inInterp: boolean; innerStr: boolean; innerIcon: boolean; inRaw: boolean } = { inBlockComment: false, inString: false, inIcon: false, inTemplate: false, inInterp: false, innerStr: false, innerIcon: false, inRaw: false };
     while (i < lines.length) {
       let line = lines[i];
       let balance = DMPreprocessor.parenBalance(line, state);
-      while (balance > 0 && i + 1 < lines.length) {
+      // Join while parens are open OR a {"..."} template string is open
+      // (multi-line #define js_byjax {"..."} bodies). Inline comments are
+      // stripped only outside template strings — JS // comments inside the
+      // template content must survive.
+      while ((balance > 0 || state.inTemplate) && i + 1 < lines.length) {
         const nextLine = lines[i + 1];
         if (nextLine.trim().startsWith('#')) break;
-        line = DMPreprocessor.stripInlineComment(line);
-        line += ' ' + DMPreprocessor.stripInlineComment(nextLine).trim();
+        if (!state.inTemplate) {
+          line = DMPreprocessor.stripInlineComment(line);
+          line += ' ' + DMPreprocessor.stripInlineComment(nextLine).trim();
+        } else {
+          line += ' ' + nextLine.trim();
+        }
         balance += DMPreprocessor.parenBalance(nextLine, state);
         i++;
       }
@@ -236,19 +257,77 @@ export class DMPreprocessor {
     return out;
   }
 
-  // Count unbalanced '(' and '[' (string/icon literal aware; stops at //).
-  // Block-comment state is carried across lines via `state`.
-  private static parenBalance(line: string, state?: { inBlockComment: boolean }): number {
-    const blockComment = state ?? { inBlockComment: false };
+  // Count unbalanced '(', '[' and '{' (string/icon literal aware; stops at //).
+  // Block-comment and string/icon state is carried across lines via `state`
+  // (DM strings may span lines).
+  private static parenBalance(
+    line: string,
+    state?: { inBlockComment: boolean; inString: boolean; inIcon: boolean; inTemplate: boolean; inInterp: boolean; innerStr: boolean; innerIcon: boolean; inRaw: boolean }
+  ): number {
+    const blockComment = state ?? { inBlockComment: false, inString: false, inIcon: false, inTemplate: false, inInterp: false, innerStr: false, innerIcon: false, inRaw: false };
     let balance = 0;
-    let inString = false;
-    let inIcon = false;
+    let inString = blockComment.inString;
+    let inIcon = blockComment.inIcon;
+    let interpDepth = blockComment.inInterp ? 1 : 0;
+    let innerStr = blockComment.innerStr;
+    let innerIcon = blockComment.innerIcon;
     for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
+      const c0 = line[i];
+      if (blockComment.inRaw) {
+        // Inside a @@ raw string spanning lines: only a lone '@' closes it
+        // ('@@' is an escaped @).
+        if (c0 === '@') {
+          if (line[i + 1] === '@') {
+            i += 2;
+            continue;
+          }
+          blockComment.inRaw = false;
+        }
+        continue;
+      }
+      const ch = c0;
+      if (blockComment.inTemplate) {
+        // DM template string {"..."}: only the '"' followed by '}' closes it;
+        // quotes and brackets inside are content.
+        if (ch === '"') {
+          let j = i + 1;
+          while (j < line.length && (line[j] === ' ' || line[j] === '\t')) j++;
+          if (line[j] === '}') {
+            blockComment.inTemplate = false;
+            i = j;
+          }
+        }
+        continue;
+      }
       if (blockComment.inBlockComment) {
         if (ch === '*' && line[i + 1] === '/') {
           blockComment.inBlockComment = false;
           i++;
+        }
+        continue;
+      }
+      if (interpDepth > 0) {
+        // A string interpolation [code] spanning lines: scan with inner
+        // literal tracking so quotes/apostrophes inside it don't corrupt
+        // the outer string state.
+        if (ch === '\\' && (innerStr || innerIcon)) {
+          i++;
+          continue;
+        }
+        if (!innerStr && !innerIcon) {
+          if (ch === '"') innerStr = true;
+          else if (ch === "'") innerIcon = true;
+          else if (ch === '[') interpDepth++;
+          else if (ch === ']') interpDepth--;
+        } else if (innerStr && ch === '"') {
+          innerStr = false;
+        } else if (innerIcon && ch === "'") {
+          innerIcon = false;
+        }
+        if (interpDepth === 0) {
+          blockComment.inInterp = false;
+          blockComment.innerStr = false;
+          blockComment.innerIcon = false;
         }
         continue;
       }
@@ -263,33 +342,131 @@ export class DMPreprocessor {
         inIcon = !inIcon;
       } else if (!inString && !inIcon) {
         if (ch === '/' && line[i + 1] === '/') break;
-        if (ch === '(' || ch === '[') balance++;
-        else if (ch === ')' || ch === ']') balance--;
+        if (ch === '@' && line[i + 1] === '{') {
+          // DM braced verbatim string @{...}: skip to the matching '}'.
+          let depth = 1;
+          i += 2;
+          while (i < line.length && depth > 0) {
+            const c = line[i];
+            if (c === '{') depth++;
+            else if (c === '}') depth--;
+            i++;
+          }
+          i--;
+        } else if (ch === '@') {
+          // DM raw string / regex literal: @pattern@, or @@raw...@ (an inner
+          // @@ is an escaped @); may span lines. `@"..."` / `@'...'` are
+          // regex strings — a plain '@' prefix, so the quote handles the rest.
+          const nextCh = line[i + 1];
+          const isRaw = nextCh === '@';
+          const isRegex = nextCh !== '"' && nextCh !== "'" && !/[\s]/.test(nextCh ?? '');
+          if (isRaw || isRegex) {
+            let j = i + (isRaw ? 2 : 1);
+            while (j < line.length) {
+              if (line[j] === '@') {
+                if (line[j + 1] === '@') {
+                  j += 2;
+                  continue;
+                }
+                break;
+              }
+              j++;
+            }
+            if (j >= line.length) blockComment.inRaw = true;
+            i = j;
+          }
+        } else if (ch === '{' && line[i + 1] === '"') {
+          // DM template string opener {" — handled by the inTemplate state
+          // above (may span lines).
+          blockComment.inTemplate = true;
+          i++;
+        } else {
+          if (ch === '(' || ch === '[' || ch === '{') balance++;
+          else if (ch === ')' || ch === ']' || ch === '}') balance--;
+        }
       } else if (inString && ch === '[') {
         // DM string interpolation [code] may contain nested brackets and
-        // quotes; scan to the matching ']' like the lexer does.
+        // inner string literals; scan to the matching ']' tracking quotes so
+        // inner strings and apostrophes don't corrupt the outer state.
         let depth = 1;
+        let str = false;
+        let icon = false;
         i++;
         while (i < line.length && depth > 0) {
           const c = line[i];
-          if (c === '[') depth++;
-          else if (c === ']') depth--;
+          if (c === '\\' && (str || icon)) {
+            i += 2; // escaped char inside an inner literal
+            continue;
+          }
+          if (!str && !icon) {
+            if (c === '"') str = true;
+            else if (c === "'") icon = true;
+            else if (c === '[') depth++;
+            else if (c === ']') depth--;
+          } else if (str && c === '"') {
+            str = false;
+          } else if (icon && c === "'") {
+            icon = false;
+          }
           i++;
         }
         i--;
+        if (depth > 0) {
+          // Interpolation not closed on this line: carry the state so the
+          // next line's inner strings don't corrupt the outer string.
+          interpDepth = 1;
+          innerStr = str;
+          innerIcon = icon;
+        }
       } else if (inString && ch === '\\') {
         // Escaped quote inside a string: skip the escaped char.
         i++;
       }
     }
+    blockComment.inString = inString;
+    blockComment.inIcon = inIcon;
+    blockComment.inInterp = interpDepth > 0;
+    blockComment.innerStr = innerStr;
+    blockComment.innerIcon = innerIcon;
     return balance;
   }
 
   private static stripInlineComment(line: string): string {
     let inString = false;
     let inIcon = false;
+    let inBlock = false;
     for (let i = 0; i < line.length - 1; i++) {
       const ch = line[i];
+      if (inBlock) {
+        if (ch === '*' && line[i + 1] === '/') {
+          inBlock = false;
+          i++;
+        }
+        continue;
+      }
+      if (!inString && !inIcon && ch === '/' && line[i + 1] === '*') {
+        inBlock = true;
+        i++;
+        continue;
+      }
+      if (ch === '{' && line[i + 1] === '"' && !inString && !inIcon) {
+        // DM template string {"..."}: skip to the closing '"}' so // inside
+        // the content is not mistaken for an inline comment.
+        let j = i + 2;
+        while (j < line.length) {
+          if (line[j] === '"') {
+            let k = j + 1;
+            while (k < line.length && (line[k] === ' ' || line[k] === '\t')) k++;
+            if (line[k] === '}') {
+              j = k;
+              break;
+            }
+          }
+          j++;
+        }
+        i = j;
+        continue;
+      }
       if (ch === '"' && !inIcon) {
         inString = !inString;
       } else if (ch === "'" && !inString) {
@@ -361,6 +538,50 @@ export class DMPreprocessor {
         i++;
         continue;
       }
+      if ((inString || inIcon) && ch === '\\') {
+        const esc = line[i + 1] ?? '';
+        result += ch + esc;
+        i += 2;
+        continue;
+      }
+      if (inString || inIcon) {
+        result += ch;
+        i++;
+        continue;
+      }
+      if (ch === '{' && line[i + 1] === '"') {
+        // DM template string {"..."}: copy verbatim to the closing '"}' —
+        // quotes, brackets and // inside the content are not macro-relevant.
+        let j = i + 2;
+        while (j < line.length) {
+          if (line[j] === '"') {
+            let k = j + 1;
+            while (k < line.length && (line[k] === ' ' || line[k] === '\t')) k++;
+            if (line[k] === '}') {
+              j = k;
+              break;
+            }
+          }
+          j++;
+        }
+        result += line.slice(i, j + 1);
+        i = j + 1;
+        continue;
+      }
+      if (ch === '@' && line[i + 1] === '{') {
+        // DM braced verbatim string @{...}: copy through to the matching '}'.
+        let depth = 1;
+        let j = i + 2;
+        while (j < line.length && depth > 0) {
+          const c = line[j];
+          if (c === '{') depth++;
+          else if (c === '}') depth--;
+          j++;
+        }
+        result += line.slice(i, j);
+        i = j;
+        continue;
+      }
       if (!inString && !inIcon && /[A-Za-z_]/.test(ch)) {
         let j = i;
         while (j < line.length && /[A-Za-z0-9_]/.test(line[j])) j++;
@@ -406,6 +627,38 @@ export class DMPreprocessor {
       i++;
     }
     return result;
+  }
+
+  // Advance the shared block-comment state for lines that skip expandMacros
+  // (preprocessor directives), so /* */ spans that include directive lines
+  // still close correctly. Mirrors expandMacros' comment scanning rules.
+  private updateBlockCommentState(line: string): void {
+    let inString = false;
+    let inIcon = false;
+    const cmt = this.blockCommentState;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (cmt.inBlockComment) {
+        if (ch === '*' && line[i + 1] === '/') {
+          cmt.inBlockComment = false;
+          i++;
+        }
+        continue;
+      }
+      if (!inString && !inIcon && ch === '/' && line[i + 1] === '*') {
+        cmt.inBlockComment = true;
+        i++;
+        continue;
+      }
+      if (!inString && !inIcon && ch === '/' && line[i + 1] === '/') {
+        return;
+      }
+      if (ch === '"' && !inIcon) {
+        inString = !inString;
+      } else if (ch === "'" && !inString) {
+        inIcon = !inIcon;
+      }
+    }
   }
 
   private expandFunctionMacro(macro: FunctionMacro, args: string[]): string {
@@ -506,8 +759,21 @@ export class DMPreprocessor {
     let depth = 0;
     let inString = false;
     let inIcon = false;
+    let inBlock = false;
     for (let i = open; i < line.length; i++) {
       const ch = line[i];
+      if (inBlock) {
+        if (ch === '*' && line[i + 1] === '/') {
+          inBlock = false;
+          i++;
+        }
+        continue;
+      }
+      if (!inString && !inIcon && ch === '/' && line[i + 1] === '*') {
+        inBlock = true;
+        i++;
+        continue;
+      }
       if (ch === '"' && !inIcon) {
         inString = !inString;
         continue;
@@ -516,7 +782,64 @@ export class DMPreprocessor {
         inIcon = !inIcon;
         continue;
       }
+      if ((inString || inIcon) && ch === '\\') {
+        i++;
+        continue;
+      }
+      if ((inString || inIcon) && ch === '[') {
+        // String interpolation: skip to the matching ']' so quotes/brackets
+        // inside it cannot break the outer string state or paren balance.
+        let depth = 1;
+        let nested = false;
+        i++;
+        while (i < line.length && depth > 0) {
+          const c = line[i];
+          if (c === '\\') {
+            i += 2;
+            continue;
+          }
+          if (!nested) {
+            if (c === '"' || c === "'") nested = true;
+            else if (c === '[') depth++;
+            else if (c === ']') depth--;
+          } else if (c === '"' || c === "'") {
+            nested = false;
+          }
+          i++;
+        }
+        i--; // loop's i++ would otherwise skip the char after ']'
+        continue;
+      }
       if (inString || inIcon) continue;
+      if (ch === '@' && line[i + 1] === '{') {
+        // DM braced verbatim string @{...}: skip to the matching '}'.
+        let depth = 1;
+        i += 2;
+        while (i < line.length && depth > 0) {
+          const c = line[i];
+          if (c === '{') depth++;
+          else if (c === '}') depth--;
+          i++;
+        }
+        i--;
+        continue;
+      }
+      if (ch === '{' && line[i + 1] === '"') {
+        // DM template string {"..."}: skip to the '"' followed by '}'.
+        let j = i + 2;
+        while (j < line.length) {
+          if (line[j] === '"') {
+            let k = j + 1;
+            while (k < line.length && (line[k] === ' ' || line[k] === '\t')) k++;
+            if (line[k] === '}') {
+              i = k;
+              break;
+            }
+          }
+          j++;
+        }
+        continue;
+      }
       if (ch === '(') depth++;
       else if (ch === ')') {
         depth--;
@@ -526,14 +849,34 @@ export class DMPreprocessor {
     return -1;
   }
 
-  // Split on top-level commas (respecting (), [], {} and string/icon literals).
+  // Split on top-level commas (respecting (), [], {}, string/icon literals and
+  // block comments).
   private splitArgs(text: string): string[] {
     const parts: string[] = [];
     let depth = 0;
     let current = '';
     let inString = false;
     let inIcon = false;
-    for (const ch of text) {
+    let inBlock = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (inBlock) {
+        if (ch === '*' && next === '/') {
+          inBlock = false;
+          current += ch + next;
+          i++;
+          continue;
+        }
+        current += ch;
+        continue;
+      }
+      if (!inString && !inIcon && ch === '/' && next === '*') {
+        inBlock = true;
+        i++;
+        current += ch + next;
+        continue;
+      }
       if (ch === '"' && !inIcon) {
         inString = !inString;
         current += ch;
@@ -544,8 +887,75 @@ export class DMPreprocessor {
         current += ch;
         continue;
       }
+      if ((inString || inIcon) && ch === '\\') {
+        current += ch + (text[i + 1] ?? '');
+        i++;
+        continue;
+      }
+      if ((inString || inIcon) && ch === '[') {
+        // DM string interpolation [expr]: copy verbatim to the matching ']'.
+        // Quotes inside the interpolation are part of nested string literals
+        // and must not toggle the outer string state (e.g. span_danger("...
+        // [damage ? "." : "..."]") arguments would otherwise split mid-string).
+        let depth = 1;
+        let nested = false;
+        i++;
+        current += ch;
+        while (i < text.length && depth > 0) {
+          const c = text[i];
+          current += c;
+          if (c === '\\') {
+            i++;
+            current += text[i] ?? '';
+          } else if (!nested) {
+            if (c === '"' || c === "'") nested = true;
+            else if (c === '[') depth++;
+            else if (c === ']') depth--;
+          } else if (c === '"' || c === "'") {
+            nested = false;
+          }
+          i++;
+        }
+        i--; // loop's i++ would otherwise skip the char after ']'
+        continue;
+      }
       if (inString || inIcon) {
         current += ch;
+        continue;
+      }
+      if (ch === '@' && next === '{') {
+        // DM braced verbatim string @{...}: skip to the matching '}'.
+        let depth = 1;
+        i += 2;
+        current += '@{';
+        while (i < text.length && depth > 0) {
+          const c = text[i];
+          if (c === '{') depth++;
+          else if (c === '}') depth--;
+          current += c;
+          i++;
+        }
+        i--;
+        continue;
+      }
+      if (ch === '{' && next === '"') {
+        // DM template string {"..."}: skip to the '"' followed by '}'.
+        i++;
+        current += ch;
+        while (i < text.length) {
+          const c = text[i];
+          current += c;
+          if (c === '"') {
+            let j = i + 1;
+            while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+            if (text[j] === '}') {
+              current += text.slice(i + 1, j + 1);
+              i = j;
+              break;
+            }
+          }
+          i++;
+        }
         continue;
       }
       if (ch === '(' || ch === '[' || ch === '{') {

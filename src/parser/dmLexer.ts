@@ -81,13 +81,22 @@ export class DMLexer {
           }
         }
 
-        // If line is empty or a //-comment, ignore indentation changes
-        // (a //-comment consumes the rest of the line). A /* */ comment may
-        // be followed by code on the same line, so those lines must affect
-        // indentation normally — otherwise the indent stack never unwinds
-        // and following code is parsed inside the previous block.
+        // If line is empty, a //-comment, or a /* */ comment that spans the
+        // whole line, ignore indentation changes (a //-comment consumes the
+        // rest of the line). A /* */ comment followed by code on the same
+        // line must affect indentation normally — otherwise the indent stack
+        // never unwinds and following code is parsed inside the previous
+        // block.
         if (this.pos < this.input.length && (this.input[this.pos] === '\n' || (this.input[this.pos] === '/' && this.peek() === '/'))) {
           continue;
+        }
+        if (this.pos < this.input.length && this.input[this.pos] === '/' && this.peek() === '*') {
+          const commentEnd = this.input.indexOf('*/', this.pos + 2);
+          if (commentEnd !== -1) {
+            let i = commentEnd + 2;
+            while (i < this.input.length && (this.input[i] === ' ' || this.input[i] === '\t' || this.input[i] === '\r')) i++;
+            if (i >= this.input.length || this.input[i] === '\n') continue;
+          }
         }
 
         const currentIndent = indentStack[indentStack.length - 1];
@@ -138,6 +147,14 @@ export class DMLexer {
       // `@'...'` / `@"..."` are handled earlier as regex strings. A
       // standalone `@` operator is followed by whitespace, so require a
       // non-whitespace next char here.
+      if (ch === '@' && this.peek() === '@') {
+        // DM raw string literal: @@raw...@ — readRegex consumes the 2nd @
+        // opener and scans to the closing single @ (an inner @@ is an
+        // escaped @). Lexed as a plain string token.
+        this.advance();
+        tokens.push(this.readRegex());
+        continue;
+      }
       if (ch === '@' && this.peek() !== '"' && this.peek() !== "'" && !/[\s]/.test(this.peek())) {
         tokens.push(this.readRegex());
         continue;
@@ -275,6 +292,11 @@ export class DMLexer {
 
     while (this.pos < this.input.length) {
       const ch = this.input[this.pos];
+      if (ch === '/' && this.input[this.pos + 1] === '/') {
+        // `//` always starts a comment, even directly after a path
+        // (e.g. /datum/action/lung_punch//comment).
+        break;
+      }
       if (ch === '/' || this.isAlpha(ch) || this.isDigit(ch) || ch === '_') {
         path += ch;
         this.advance();
@@ -288,6 +310,11 @@ export class DMLexer {
         } else {
           break;
         }
+      } else if (ch === '"' && path.endsWith('operator') && this.input[this.pos + 1] === '"') {
+        // operator"" — the stringify operator overload is part of the proc name.
+        path += '""';
+        this.advance();
+        this.advance();
       } else {
         break;
       }
@@ -473,6 +500,15 @@ export class DMLexer {
       }
     }
 
+    // Special float values: 1.#INF (infinity), 1.#QNAN (NaN), -1.#IND.
+    const specialMatch = this.input.slice(this.pos).match(/^#(INF|QNAN|IND)/);
+    if (specialMatch) {
+      numStr += specialMatch[0];
+      for (let i = 0; i < specialMatch[0].length; i++) {
+        this.advance();
+      }
+    }
+
     return { type: TokenType.Number, value: numStr, line: startLine, column: startCol };
   }
 
@@ -489,6 +525,13 @@ export class DMLexer {
       } else {
         break;
       }
+    }
+
+    // operator"" — the stringify operator overload is a single proc name.
+    if (id === 'operator' && this.input[this.pos] === '"' && this.input[this.pos + 1] === '"') {
+      id += '""';
+      this.advance();
+      this.advance();
     }
 
     return { type: TokenType.Identifier, value: id, line: startLine, column: startCol };
