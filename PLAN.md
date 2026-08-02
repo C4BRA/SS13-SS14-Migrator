@@ -1,185 +1,174 @@
-# DM2SS14 Transpiler — Submission Plan
+# DM2SS14 — Universal Plan (single linear tracker)
 
-Goal: address every item in the audit's "cons" list so the project is a complete, self-contained,
-verifiable deliverable. All code fixes are paired with tests; the repo is cleaned and documented.
+One plan, one sequence, linear progression. Everything — history and open work — is a
+numbered item; progress is simply "the highest numbered `[ ]` we are working on".
+Open findings live in **`AUDIT.md`** (single source of truth); per-wave implementation
+notes are archived in `docs/plans/` (appendices, not trackers).
 
-Status legend: [ ] not started · [~] in progress · [x] done
+**Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
----
+## Progress summary (2026-08-02)
 
-## Phase 0 — Real Engine Ground Truth (re-foundation)
-
-The fabricated `Robust.Shared` shim is gone. Generated solutions now build against the **real
-RobustToolbox** (`engine.pin`, verified commit `9cefa116`), and `SS13.DM.Runtime` is a pure,
-engine-free datum runtime. "Compiles" now means compiles against the real engine.
-
-- [x] Clone + pin real RobustToolbox (`scripts/setup-engine.sh`, `engine.pin`); `dotnet build
-      Robust.Shared` clean with dotnet 10 SDK (net10.0)
-- [x] `SS13.DM.Runtime` decoupled from the engine: `DMRuntime` datum (vars, `CallProc`,
-      `ProcRegistry`) with zero RobustToolbox references; `DMNew` allocates a real object
-      (identity probe now passes)
-- [x] Generated output split: `ConvertedDMProcs.cs` (engine-free procs + registry) and
-      `ConvertedDMSystem.cs` (real `EntitySystem` adapter — `SubscribeLocalEvent` with
-      `ComponentEventRefHandler`, `ComponentInit : EntityEventArgs`, `[RegisterComponent]`
-      component with `[DataField]`s, all verified against the cloned engine source)
-- [x] `ss14Template` emits a solution referencing real RobustToolbox via `EngineDir`
-      MSBuild property (`-p:EngineDir=` / `SS14_ENGINE_DIR`); fake shim project deleted
-- [x] Semantic probes run engine-free (pure runtime console project) — 24 probes,
-      count **24/24** (7/24 at Phase 0; Phase 0.5 semantic core completed below)
-- [x] Build loop: `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes)
-- [x] Corpus-scale compile proof against the real engine (fidelity audit `--build` path;
-      **tgstation: 44,826 sampled procs from 45,502 types → 0 C# errors**, real-engine
-      `dotnet build` green; all error classes fixed — CS1061/CS0201/CS0136/CS7036/CS1501/
-      CS1503/CS0029/CS1632/CS1026)
-- [x] Builtin expansion (~43 more: `isnull`/`isnum`/`istext`, type predicates,
-      `CRASH`, `nameof`, `typesof`, `initial`, `call()` proc refs, `turn`, position
-      builtins `get_step`/`get_dist`/`get_dir`/`get_turf`/`range`/`view`/`oview`/`block`,
-      `splittext`/`jointext`/`params2list`/`rgb`/`json_decode`/...) + `/proc` registry
-      fallback for bare global proc calls → unknown-builtin sites drop **−88…−91%**
-      across the 4 corpora; probes **24 → 40/40**
-- [x] GLOB statics: `/global/var/` declarations materialized as a `GlobalVars` registry
-      (lazy `EnsureInit`, declaration order; `GLOB.x` reads/writes → `Get`/`Set`;
-      global-initializer context bridges `src`/bare calls/`new`); 21,872 GLOB.x sites
-      resolved, loss drops **−29,230…−43,173** per corpus; probes **40 → 49/49**;
-      compile proof still green at 44,826 procs (0 C# errors)
+| Gate | Value |
+|---|---|
+| Items done / open | **54 / 13** (items 1-54 done; 55-67 open, in progression order) |
+| Semantic probes | **151 / 151** (`npm run audit:semantics`) |
+| Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
+| Loss sites (reported / corrected) | tg **54,160** / ~**30,020** · tgmc 26,928 · paradise 39,362 · bee 45,043 |
+| Unresolved bare calls (tg) | **572** |
+| Parse diagnostics (tg) | **3,746** (item 15 — triage open) |
 
 ---
 
-## Phase 0.5 — Semantic core (from FIDELITY-AUDIT.md fix backlog)
+## Part A — Completed progression
 
-Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
+### Foundation (Phase 0 — real engine ground truth)
 
-- [x] `DMValue` text semantics: case-insensitive `==`, lexicographic `<`, `null == ""`
-- [x] `&&`/`||` short-circuit returning operands (emitted ternaries)
-- [x] `DMList`: `len`, negative indices, element-wise equality, `+=` append
-- [x] `break`/`continue` emission (loop nesting in the emitter; switches wrapped
-      in `while(true)` so case-body `break` is valid and correct)
-- [x] `..()` parent dispatch (registry walk with current-proc context)
-- [x] `world` datum, `text2num` hex, `replacetext`, `islist`, `as` casts
-- [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0,
-      IR + `new`-expression trailing-slash normalization
+1. [x] Clone + pin real RobustToolbox (`scripts/setup-engine.sh`, `engine.pin`, commit `9cefa116`); `dotnet build Robust.Shared` clean (net10.0).
+2. [x] `SS13.DM.Runtime` decoupled from the engine: `DMRuntime` datum (vars, `CallProc`, `ProcRegistry`), zero RobustToolbox references; `DMNew` allocates a real object.
+3. [x] Generated output split: `ConvertedDMProcs.cs` (engine-free procs + registry) + `ConvertedDMSystem.cs` (real `EntitySystem` adapter, `[RegisterComponent]`).
+4. [x] `ss14Template` emits a solution referencing real RobustToolbox via `EngineDir` / `SS14_ENGINE_DIR`; fabricated shim deleted.
+5. [x] Engine-free semantic probes — 24/24 (was 7/24).
+6. [x] Build loop: `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes).
+7. [x] Corpus-scale compile proof: tgstation 44,826 sampled procs → **0 C# errors** (all CS classes fixed).
+8. [x] Builtin expansion (~43: predicates, `CRASH`, `nameof`, `typesof`, `initial`, `call`, movement/position, text/json/params helpers) + `/proc` registry fallback — unknown-builtin sites **−88…−91%**; probes 24 → 40/40.
+9. [x] GLOB statics: `/global/var/` → `GlobalVars` registry (lazy `EnsureInit`, `GLOB.x` → Get/Set); 21,872 sites resolved; probes 40 → 49/49.
 
-Remaining (Phase 2+/Tier 3): remaining builtins (`filter`, `test`/unit-test
-helpers, `print_language_list`-class user procs), `world.*` (live-server
-statics), appearance system. Plan 09 (adversarial audit RED/ORANGE fix wave) is
-**done** — all B1-B7 complete (git 075d91f). Plan 10 (ORANGE wave) is **done** —
-B1-B6 complete (2026-08-02, `FIDELITY-AUDIT.md` §3i). Plan 11 (full-codebase
-adversarial audit) is **complete and its fix wave 11.1-11.13 has shipped** —
-200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢) in `docs/audit/11-findings.md`;
-probes 129/134 → **139/139**; tgstation loss sites 105,097 → **54,457**;
-hostile-name corpus and 1,500-proc real-engine compile-proof both **0 C# errors**
-(`FIDELITY-AUDIT.md` §3j). Tier-3 builtin wave (§3k): probes → **151/151**,
-unresolved bare calls → **572** (tgstation), loss sites → **54,160**.
+### Semantic core (Phase 0.5)
 
----
+10. [x] `DMValue` text semantics: case-insensitive `==`, lexicographic `<`, `null == ""`.
+11. [x] `&&`/`||` short-circuit returning operands (emitted ternaries).
+12. [x] `DMList`: `len`, negative indices, element-wise equality, `+=` append.
+13. [x] `break`/`continue` emission (loop nesting; switch `while(true)` wrappers).
+14. [x] `..()` parent dispatch (registry walk with current-proc context).
+15. [x] `world` datum, `text2num` hex, `replacetext`, `islist`, `as` casts.
+16. [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0, IR + `new` trailing-slash normalization.
 
-## Phase 0 — Repo Hygiene & Submission Readiness
+### Repo hygiene & submission readiness
 
-Repo is submittable as-is from a clean checkout.
+17. [x] `.gitignore` (`node_modules/`, `dist/`, `temp_*`, `.DS_Store`, `*.log`).
+18. [x] Stray artifacts deleted (`temp_test_dmi.png`, temp dirs).
+19. [x] `package.json`: devDependencies split, `engines.node`, tidy scripts.
+20. [x] `README.md` (overview, install/build/test, CLI + GUI, architecture, limitations).
+21. [x] `LICENSE` (MIT).
+22. [x] Clean-checkout flow verified: `npm ci && npm run build && npm test` green.
 
-- [x] `.gitignore`: `node_modules/`, `dist/`, `temp_test_*`, `temp_gui_input_*`, `.DS_Store`, `*.log`
-- [x] Delete stray artifacts (`temp_test_dmi.png`, temp dirs)
-- [x] `package.json`: move `@types/adm-zip` to `devDependencies`, add `engines.node`, tidy scripts
-- [x] `README.md`: overview, install/build/test, CLI + GUI usage, architecture, known limitations
-- [x] `LICENSE` (MIT — matches `package.json`)
-- [x] Verify clean-checkout flow: `npm ci && npm run build && npm test` passes
-- [x] Commit (or leave staged) per phase
+### Phase 1 — Diagnostics & no silent data loss
 
-## Phase 1 — Diagnostics & No Silent Data Loss
+23. [x] `src/diagnostics.ts`: `DMCompileError` + `DiagnosticCollector` (file/line/col).
+24. [x] Lexer error recovery: error tokens for unknown chars / unterminated strings.
+25. [x] Parser error statements with source positions; aggregate + non-zero exit in CLI.
+26. [x] Compound assignment (`a += 5` → `assignment(binary(+))`).
+27. [x] Chained access (`a.b.c`, `obj.var.method()`, `list[i].x`) → `DMCallProc(target, name, args)`.
+28. [x] `world << x` / `usr << x` / `<<=` → `DMOutput()` helper.
+29. [x] `new /obj/item(x)` → `new` node + `DMNew()` helper.
+30. [x] `del x` / `qdel(x)` → `DMDelete()` helper.
+31. [x] `switch` with BYOND `if (vals)` / `else` cases → `SwitchStatement` + `DMValue.In`.
+32. [x] Preprocessor: recursive `#include` (cycle-guarded), `#if/#ifdef/#ifndef/#else/#endif` with `defined()`, object-like `#define`.
+33. [x] Builtin mappings (~20 core: `pick`, `rand`, `list`, `length`, `text`, `text2num`, `num2text`, `copytext`, `findtext`, `clamp`, `max`, `min`, `round`, `abs`, `uppertext`, `lowertext`, `hascall`, `alert`, `input`, `icon`).
+34. [x] Verbs parsed + registered in a runtime verb list (documented limitation).
 
-Everything unrecognized is reported, not dropped.
+### Phase 2 — Generated C# compiles
 
-- [x] `src/diagnostics.ts`: `DMCompileError` + `DiagnosticCollector` (errors, warnings, file/line/col)
-- [x] Lexer: error tokens for unknown chars / unterminated strings (recover, keep tokenizing)
-- [x] Parser: error statement for unparseable constructs; errors carry source position
-- [x] `index.ts`/CLI: aggregate diagnostics per file, print summary, non-zero exit on errors
-- [x] Compound assignment `a += 5` → `assignment(binary(+))` (currently emits `DMValue.Null`)
-- [x] Chained access `a.b.c`, `obj.var.method()`, `list[i].x` — postfix loop in `parsePrimary`; `call` node gains optional `target`; emitter `DMCallProc(target, name, args)`
-- [x] `world << "text"` / `usr << x` / `<<=` → binary `<<` op + `DMOutput()` runtime helper
-- [x] `new /obj/item(x)` / `new/type` → `new` expression node + `DMNew()` runtime helper
-- [x] `del x` / `qdel(x)` → `DeleteStatement` + `DMDelete()` helper
-- [x] `switch (x)` with BYOND `if (vals)` / `else` case syntax → `SwitchStatement` (emitted as if/else chain with `DMValue.In`)
-- [x] Preprocessor: `#include "file.dm"` recursive resolution (cycle-guarded, relative paths); `#if/#ifdef/#ifndef/#else/#endif` skipping with simple `defined()` eval; object-like `#define` substitution
-- [x] Builtin proc mappings (~20): `pick`, `rand`, `list`, `length`, `text`, `text2num`, `num2text`, `copytext`, `findtext`, `clamp`, `max`, `min`, `round`, `abs`, `uppertext`, `lowertext`, `hascall`, `alert`, `input`, `icon` — each with runtime helper
-- [x] Verbs: parsed, emitted as procs, registered in a runtime verb list (documented limitation)
+35. [x] Runtime template fixes (`Sleep(DMValue)`, `DMProb`, `DMLocate`, `DMIsType`, `DMListGet`, `DMListSet`, `DMValue.In`, `DMNew`, `DMDelete`, `DMCallProc`, `DMOutput`).
+36. [x] Vendored `Robust.Shared` shim (later **replaced** by the real engine — item 1).
+37. [x] `ExecuteNew` dispatch + runtime proc registry routing for `CallProc`.
+38. [x] Build-check test in `npm test` (dotnet build of generated solution; skipped gracefully).
 
-## Phase 2 — Generated C# Compiles
+### Phase 3 — Semantic fidelity (done subset)
 
-`dotnet build` of the generated solution succeeds.
+39. [x] `DMValue` coercion & truthiness; `+` text concat when left is text.
+40. [x] `for(x in list)` real iteration; `spawn(n) body` keeps its body.
+41. [x] DMI zTXt decompression + per-direction delays; DMM orphan keys + rectangularity; `{attr=val}` parsed.
+42. [x] YAML: `Fixtures`/`initialVars`, SS14 parent mapping (`/obj→BaseItem`, `/turf→BaseWall/BaseFloor`, `/mob→BaseMobDummy`).
+43. [x] `ensureBaseTypes` non-mutation; `usr`/`src`/`args` semantics through `CallProc`.
+44. [x] Proc args stored on the datum (`comp.SetVar`) — C# keyword-safe arg names.
+45. [x] `1..5` ranges (incl. descending), `{1,2,3}` list literals, `do/while`, C-style `for`.
+46. [x] Zero-arg calls, `rand()` semantics, multi-Z DMM grids, DMI iTXt, GUI upload caps + loopback bind, BOM/indent-warning/block-comment lexer fixes; duplicate `expressionTranspiler.ts` removed.
 
-- [x] Runtime template fixes: `Sleep(DMValue)` overload; `ToNumber()` public; define `DMProb`, `DMLocate`, `DMIsType`, `DMIsPath`, `DMListGet`, `DMListSet`, `DMValue.In`, `DMNew`, `DMDelete`, `DMCallProc`, `DMOutput` and builtin helpers
-- [x] Vendor minimal `Robust.Shared` shim project (EntityUid, EntitySystem, Component, ComponentInit, RegisterComponent, EntityManager stubs) — NuGet `Robust.*` packages do not exist, solution must build standalone
-- [x] `ExecuteNew` dispatches to `New()` procs via a runtime proc registry
-- [x] `CallProc` routes through registry: generated code registers `(typePath, procName) -> Task<DMValue> method`
-- [x] Build-check test: if `dotnet` is available, `dotnet build` the generated solution and assert success (skipped otherwise)
+### Phase 4 — Verification & submission
 
-## Phase 3 — Semantic Fidelity
+47. [x] Unit tests for parser/emitter constructs; integration fixture (types/procs/DMI/DMM → full transpile → dotnet build).
+48. [x] `npm test` green, `npm run build` clean, per-phase commits.
 
-Behavior matches DM semantics for the supported subset.
+### Audit waves (2026-08-02)
 
-- [ ] Symbol resolution pass: verify proc call targets exist (type + ancestors + globals), `new`/`istype`/`ispath` type paths exist; unresolved → warnings. **Not implemented** — the runtime `CallProc` registry resolves by (typePath, procName) at runtime; unknown targets silently produce `DMValue.Null` (see `AUDIT.md`).
-- [x] `DMValue` coercion: `+` string-concats when left is text (DM rule); numeric strings compare equal to numbers; `IsTrue` matches DM truthiness (`0`, `""`, `"0"`, null, empty list are falsy); `Equals` uses 1e-9 tolerance + cross-type rules
-- [x] `for(x in list)` emits real iteration: `foreach (var __v in DMListItems(range)) { comp.SetVar("x", __v); body }`
-- [x] `spawn(n) body` keeps its body: `DMTickScheduler.Spawn(n, async () => { body })` with `Func<Task>` support
-- [x] DMI: `zTXt` chunk decompression (node:zlib); per-direction delay arrays; validate frames vs delays
-- [x] DMM: orphan-key detection, rectangular-grid validation (errors via diagnostics); `{attr = val}` prefab attributes parsed and emitted
-- [x] YAML: emit `Fixtures` content and `initialVars`; replace `Name`/`Description`/`Sprite` components with SS14-correct forms; parent mapping `/obj→BaseItem`, `/turf→BaseFloor/BaseWall`, `/mob→BaseMobDummy`, `/area→none`; synthesized types named from path basename, not `"datum"`
-- [x] `ensureBaseTypes` stops mutating caller arrays
-- [x] `usr`/`src`/`args` semantics documented and consistent through `CallProc`
-- [x] Proc args are stored on the component (`comp.SetVar("name", args[i])`) instead of emitting `var name = ...` locals, so DM identifiers that are C# keywords (`event`, `object`, ...) no longer break the generated C#
-- [x] `1..5` range operator (lexer no longer swallows `..` into the number token; `MakeRange` helper; descending ranges supported) and `{1, 2, 3}` list literals
-- [x] `do { } while (cond)` and C-style `for(var/i = init, cond, incr)` parsed and emitted
-- [x] Zero-arg method calls no longer emit a trailing comma; method name and target propagated correctly
-- [x] `rand()` semantics: `rand()` → float in [0,1), `rand(a)` → 1..a, `rand(a,b)` → closed interval [a,b]
-- [x] Multi-Z DMM maps: every z-level emitted as its own grid with origin-aware world coordinates; definition-less maps warned and skipped
-- [x] DMI `iTXt` chunks parsed (5-NUL header, compression flag, zlib payload); RSI per-direction delays sliced to frame count
-- [x] GUI server: 2 GiB upload cap, zip entry / total-size limits (zip-bomb guard), temp dir cleanup on error, binds to `127.0.0.1`
-- [x] Lexer: UTF-8 BOM stripped, unterminated block-comment diagnostic, inconsistent-indent warning, duplicate TypePath branch removed
-- [x] Removed duplicate `expressionTranspiler.ts` (only used by tests); regression suite moved to golden-string tests against the real emitter (`src/tests/csharpEmitter.test.ts`)
-
-## Phase 4 — Verification & Submission
-
-- [x] Unit tests for every Phase 1/3 parser construct (lexer, parser, emitter golden strings)
-- [x] Integration test: small realistic SS13-style module (types, procs with if/else/for/switch/spawn/sleep/`world <<`/`new`/`del`, one DMI, one DMM) → full transpile → assert artifacts; dotnet build if available
-- [x] `npm test` green, `npm run build` clean
-- [x] README/PLAN final pass; per-phase git commits; final submission checklist
+49. [x] **Plan 09** — adversarial audit RED/ORANGE fix wave: all B1-B7 landed.
+50. [x] **Plan 10** — ORANGE wave B1-B6: runtime value semantics, emitter control flow, parser literals, harness accounting, media validation, preprocessor conditionals (incl. numeric `#if`, `#elif`, `#error`, include-once, interpolation macro expansion, text macros).
+51. [x] **Plan 11** — full-codebase adversarial audit: **200 findings** (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢) + fix wave 11.1–11.13 shipped: parser/lexer REDs, emitter compile-breakers (name sanitization, try/catch, bitwise, spawn-expr), GlobalVars production wiring, runtime value semantics (`IsInt` division provenance, JsonEscape, code-point unicode), 20 builtins, YAML quoting, RSI direction remap + PNG CRC/IHDR, map chunk serialization, GUI realpath/429, harness truth (prop-read split, stub buckets), case-insensitive IR identity + `parent_type`. Probes **129/134 → 139/139**; loss 105,097 → 54,457; hostile-name + full compile-proof **0 errors**.
+52. [x] **Tier-3 builtins** — regex datum (Find/Match/Replace/FindAll), `regex_quote`, `astype`, `isicon`, `icon_states`, `arctan`, `findlasttext`, `values_sum/dot/min/max`, `roll`; UI stubs → STUBBED bucket; `world.*` statics. Probes → **151/151**; unresolved 1,012 → **572**; loss → 54,160.
+53. [x] **Plan 12 re-audit** — post-11 findings-only audit: **48 findings (8 🔴 / 22 🟠 / 10 🟡 / 8 🟢)** → `AUDIT.md` §1; baselines `docs/audit/12-baseline-{before,after}.json` (src untouched).
+54. [x] **Universal plan consolidation** — this document: one linear tracker replacing per-plan status tables (folded in: Plan-12 batch 12.8 "PLAN status rows consistency").
 
 ---
 
-## Big-ticket implementation plans
+## Part B — Open progression (next work, in order)
 
-Detailed, code-grounded implementation plans for the remaining loss classes
-(baseline: tgstation audit re-run 2026-08-01, 118,030 total loss sites; current
-measured baseline 2026-08-02: **105,097** — see `FIDELITY-AUDIT.md` §3h) live in
-`docs/plans/`:
+Work the lowest-numbered open item. Each is dependency-ordered: measurement honesty
+(55) and parse-error triage (56) come first because every later number is measured
+against them.
 
-| Plan | Item | TG sites | Status |
-|---|---|---|---|
-| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls (2026-08-02 final: **572 unresolved bare calls** on tgstation) | in progress (2026-08-02: pure + file + movement batches + Tier-3 wave landed; probes 151/151) |
-| [02-symbol-resolution.md](docs/plans/02-symbol-resolution.md) | Symbol resolution + global procs | 36,911 bare global calls (runtime fallback) | in progress (2026-08-02: milestone 1 — symbol table + audit triage; 93,573 verified) |
-| [03-bitwise.md](docs/plans/03-bitwise.md) | Bitwise operators | 19,009 binary + 1,083 unary → Null (2026-08-02 re-run) | not started |
-| [04-live-server.md](docs/plans/04-live-server.md) | Live-server integration | whole-verification gap | not started |
-| [05-appearance.md](docs/plans/05-appearance.md) | Appearance/icon/overlay system | animate 939, image 678, overlays 126, ... (2026-08-02 re-run) | not started |
-| [06-parse-errors.md](docs/plans/06-parse-errors.md) | Parse-error reduction | 2,473 errors (+ silent classes) | in progress (2026-08-02 Plan 11 re-run: tgstation **170** errors; audit caveats: silent misparse classes + `tools/` fixture noise are excluded from the count) |
-| [07-props.md](docs/plans/07-props.md) | Builtin property reads | 13,144 prop reads (6,837 runtime-handled `.len/.x/.y/.z` miscounted — WS13-1) + 6,384 GLOB.x | not started |
-| [08-new-type.md](docs/plans/08-new-type.md) | `new /type(...)` semantics | 13,060 sites (2026-08-02 re-run) | not started |
-| [09-audit-fixes.md](docs/plans/09-audit-fixes.md) | Adversarial audit fixes (Plan 09) | audit REDs 29 + ORANGEs 44 | **done** (2026-08-02: all B1-B7 complete) |
-| [10-oranges.md](docs/plans/10-oranges.md) | ORANGE fix wave (runtime value semantics, emitter control flow, parser literals, harness accounting, media validation, preprocessor conditionals) | Plan 09 deferred ORANGEs | **done** (2026-08-02: B1-B6 complete — unresolved bare calls 3,360 → 1,018; probes 138/133; see `FIDELITY-AUDIT.md` §3i) |
-| [11-adversarial-audit.md](docs/plans/11-adversarial-audit.md) | Full-codebase adversarial audit → fix batches 11.1-11.13 | **200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢)** — `docs/audit/11-findings.md` | audit done; **fix wave 11.1-11.13 done** (2026-08-02: probes 129/134 → 139/139; loss sites 105,097 → 54,457; see `FIDELITY-AUDIT.md` §3j) |
+55. [ ] **12.1 — Harness truth.** Drop false-loss counters from `totalLossSites` now
+      that the pipeline handles them: `..()` 23,040 (emits `CallParentProc`), unary `~`
+      1,048 (`BitwiseNot`), try/label/parent_type 52 (emitted/handled); fix stale
+      `numNew` label ("returns caller as placeholder"). → corrected loss ≈ **30,020**.
+      Files: `src/audit/fidelityAudit.ts`.
+56. [ ] **12.9 — Parse-error triage (3,746).** Explain + reduce. Known composition:
+      197 files; ~111 from interpolation-macro-expansion corrupting strings whose
+      interpolation contains quoted/HTML expansions (e.g. `<span class='examine_hint'>`
+      inside `[...]` — the span_* fix side effect); ~86 residual incl. unit-test
+      macro chains (activated because `UNIT_TESTS` is seeded). Fix must validate
+      quote balance — a naive revert of the expansion deepens ASTs 1,225 → 9,386 and
+      crashes the audit (verified). Files: `src/preprocessor.ts`, `src/parser/dmLexer.ts`.
+57. [ ] **12.2 — Builtin case-fold.** Lowercase `name` before `MAPPED_BUILTINS` /
+      `transpileBuiltinCall` (DM is case-insensitive: `Pick`/`crash`/`replacetextex`
+      currently → Null). Files: `builtinMappings.ts`, `fidelityAudit.ts`.
+58. [ ] **12.3 — Proc default arguments + identifier assoc keys.** `proc/test(a = 1)`
+      must apply the default; `list(a = 1)` must emit an assoc pair, not
+      `comp.SetVar("a", ...)`. Files: `dmParser.ts`, `csharpEmitter.ts`.
+59. [ ] **12.4 — Registry keys + escaping + labels.** Preserve `operator[]` in
+      registration keys (sanitize only the C# member name); `escapeString` handle
+      `\0`/control chars; emit C# labels for DM labels instead of `// label:` comments.
+      Files: `csharpEmitter.ts`.
+60. [ ] **12.5 — Lexer edge literals.** `.5` as a float; `{"a","b"}` brace-list of
+      strings vs one template token; `1...5` orphan-dot diagnostics. File: `dmLexer.ts`.
+61. [ ] **12.10 — CLI output-path validation.** Reject `--output` outside the user's
+      home (parity with the GUI's realpath check). File: `src/cli.ts`.
+62. [ ] **12.6 — Builtin property reads** (Plan 07): `.loc` 3,070 · `.type` 2,021 ·
+      `.dir` 589 · `.contents` 449 · `.overlays` 122 → 6,251 sites. Files: runtime +
+      emitter.
+63. [ ] **12.7 — `new` / New() / loc / entity semantics** (Plan 08): 12,872 sites —
+      fresh datum today; complete `New()` arg propagation, `loc`, entity integration.
+      Files: runtime + emitter.
+64. [ ] **Symbol resolution pass in production** (Plan 02): audit-only `SymbolTable`
+      today; make the emitter resolve proc targets + warn on unknown (runtime registry
+      remains the fallback).
+65. [ ] **12.11 — Appearance stubs** (Plan 05): `animate`, `image`, `flick`, `sound`,
+      `matrix`, `icon`, `overlays` — 5,352 stubbed sites → real SS14 components.
+66. [ ] **Live-server integration** (Plan 04): generated solution boots Robust.Server /
+      Robust.Client — turns "compiles" into "runs".
+67. [ ] **Remaining builtins:** `filter`, unit-test helpers, `print_language_list`-class
+      user procs, `stack_trace`, `winset`-family UI — 572 unresolved sites.
 
 ---
 
-## Out of scope (documented limitations)
+## Appendices (archive, not trackers)
 
-- Full DM macro system (`#define` with arguments, conditional `*` blocks), `procmacro`
-- Screen objects / appearance handling, icon overlays, and UI widgets
-- Networked verbs (`set hidden`, `set category`) mapping to SS14 commands
-- RobustToolbox interop beyond: Content.Server builds against `Robust.Shared` (real engine);
-  running a live server (Robust.Server) and client (Robust.Client) integration is Phase 3
+- `AUDIT.md` — findings, fidelity measurement, fix history (single source of truth).
+- `docs/plans/*.md` — per-wave implementation detail (01-builtins … 12-adversarial-audit).
+- `docs/audit/*.json` — machine baselines / corpus snapshots.
+- `engine.pin` — pinned RobustToolbox commit + API notes.
+
+## Out of scope (accepted, phased)
+
+- Full DM macro system (argument macros, conditional `*` blocks), `procmacro`.
+- Screen objects / appearance / overlays / UI widgets (items 65-66).
+- Networked verbs (`set hidden`, `set category`) → SS14 command mapping (stubbed).
+- RobustToolbox interop beyond: Content.Server builds against real `Robust.Shared`;
+  live server/client is item 66.
 
 ## Risks
 
-- Real-engine API drift on engine updates → mitigated by `engine.pin` + `scripts/build-loop.sh`
-- `dotnet` CLI may be absent on the submission machine → build-check tests degrade gracefully
-- Corpus-scale build against the real engine is heavier (NuGet restore + source generators);
-  run via `npm run audit:fidelity -- <repo> --build` with `SS14_ENGINE_DIR` set
+- Real-engine API drift → mitigated by `engine.pin` + `scripts/build-loop.sh`.
+- `dotnet` absent → build-check tests degrade gracefully; probes skip (fixed in 11.12).
+- Corpus-scale builds are heavy (NuGet restore + source generators) → `--build-max-procs`.

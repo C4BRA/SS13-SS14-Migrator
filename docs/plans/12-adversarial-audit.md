@@ -1,10 +1,11 @@
 # Plan 12 — Full Agentic Adversarial Re-Audit (post Plan-11 fix wave)
 
-Status: **planned, not executed** · ~16 parallel agent workstreams · findings-only
-Target artifacts: `docs/audit/12-findings.md`, `docs/audit/12-baseline-{before,after}.json`
+Status: **executed 2026-08-02** · findings-only · **report consolidated into `AUDIT.md` §1**
+(48 findings: 8 🔴 / 22 🟠 / 10 🟡 / 8 🟢-fixed) · baselines
+`docs/audit/12-baseline-{before,after}.json` (before == after; src untouched).
 Predecessor: Plan 11 (`docs/plans/11-adversarial-audit.md`, 200 findings, fix wave
 11.1–11.13 shipped) — probes **139/139**, tgstation loss sites **54,457**, full-scale
-45,183-proc real-engine compile **0 C# errors** (`FIDELITY-AUDIT.md` §3j).
+45,183-proc real-engine compile **0 C# errors** (`AUDIT.md` §3j).
 
 Mode: **findings report only** — no `src/` edits during the audit. Every finding is
 proven with evidence (repro + observed vs expected) and ranked for a future fix wave
@@ -60,7 +61,7 @@ a ranked fix-wave input.
    patches.
 3. **Triage every Plan-11 finding** (200 rows) into: still-broken / fixed-and-locked /
    fixed-but-incomplete / fixed-but-wrong / no-longer-applicable.
-4. Produce a ranked findings report (`docs/audit/12-findings.md`) that is the sole
+4. Produce a ranked findings report (`AUDIT.md`) that is the sole
    input to fix batches 12.1+.
 5. Leave the repo **untouched** (evidence only in `$TMPDIR`); prove via before/after
    baselines.
@@ -469,7 +470,7 @@ a harness bug is found (then it's a WS13 finding, still no fix during audit).
                     │ Synthesis agent             │
                     │ dedupe · cross-verify 🔴/🟠 │
                     │ severity · fix-batch ids    │
-                    │ 12-findings.md              │
+                    │ AUDIT.md §1              │
                     └─────────────┬───────────────┘
                                   ▼
                     ┌─────────────────────────────┐
@@ -496,9 +497,9 @@ a harness bug is found (then it's a WS13 finding, still no fix during audit).
 3. Launch Wave A (4 agents).
 4. Launch Wave B (5 agents) as A results stream in (emitter benefits from parser REDs).
 5. Launch Wave C (6 agents) overlapping B; corpus sweeps early for long tail.
-6. Synthesis → `docs/audit/12-findings.md`.
+6. Synthesis → `AUDIT.md`.
 7. Baseline-after; assert equality; write `12-baseline-*.json`.
-8. Append summary stubs to `AUDIT.md` / `FIDELITY-AUDIT.md` only after acceptance
+8. Append summary stubs to `AUDIT.md` / `AUDIT.md` only after acceptance
    (still no src fixes).
 
 ---
@@ -526,7 +527,7 @@ Corpus JSON snapshots: `docs/audit/12-{tgstation,tgmc,paradise,beestation}-audit
 
 **Deliverables**
 1. This plan: `docs/plans/12-adversarial-audit.md`.
-2. `docs/audit/12-findings.md` — ranked findings; Plan-11 triage appendix (200 rows);
+2. `AUDIT.md` — ranked findings; Plan-11 triage appendix (200 rows);
    fix-batch proposal § (12.1, 12.2, … dependency-ordered).
 3. `docs/audit/12-baseline-{before,after}.json` + 4 corpus snapshots.
 4. Appendices (inline or linked from findings):
@@ -539,7 +540,7 @@ Corpus JSON snapshots: `docs/audit/12-{tgstation,tgmc,paradise,beestation}-audit
    - Plan-11 disposition matrix (fixed / residual / wrong-fix / n/a)
    - loss-class scoreboard (WS14)
    - live-engine boundary note (WS15)
-5. Post-acceptance: short entries in `AUDIT.md` + `FIDELITY-AUDIT.md` §3k.
+5. Post-acceptance: short entries in `AUDIT.md` + `AUDIT.md` §3k.
 6. `PLAN.md` row for Plan 12 + status corrections for 01–08 drift if confirmed.
 
 **Acceptance ("full agentic adversarial audit complete")**
@@ -606,7 +607,7 @@ npm run audit:semantics
 
 # 3. Launch WS16 infra, then Waves A → B → C agents per §6
 
-# 4. Synthesis → docs/audit/12-findings.md
+# 4. Synthesis → AUDIT.md
 
 # 5. Baseline-after; assert equality; commit plan+audit artifacts only when asked
 ```
@@ -615,7 +616,7 @@ npm run audit:semantics
 
 ## 12. Success definition (one paragraph)
 
-Plan 12 is successful when a skeptical reviewer can open `docs/audit/12-findings.md`,
+Plan 12 is successful when a skeptical reviewer can open `AUDIT.md`,
 see every pipeline module adversarially attacked with evidence, see every Plan-11 claim
 dispositioned, see residual product gaps (Plans 01–08/04) scored by real corpus impact,
 and hand the ranked batches to a fix wave without re-doing discovery — while

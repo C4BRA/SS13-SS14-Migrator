@@ -1,0 +1,42 @@
+{
+  "audit": "Plan 12 adversarial re-audit",
+  "captured_at": "2026-08-02",
+  "git_head": "4699c83",
+  "git_head_message": "Tier-3 wave: remaining builtins + world.* statics — probes 139/139 -> 151/151",
+  "engine_pin": "9cefa1167c9ac45f7258094129daf46b6c3516d3",
+  "SS14_ENGINE_DIR": "/Users/russellrozario/Documents/antigravity/RobustToolbox",
+  "metrics": {
+    "npm_run_build": "clean",
+    "npm_test": "ALL TESTS PASSED (real-engine build exit 0)",
+    "audit_semantics": "151/151",
+    "tgstation": {
+      "files": 7440,
+      "parse_errors": 3746,
+      "parse_warnings": 38,
+      "types": 46995,
+      "procs": 64794,
+      "totalLossSites": 54160,
+      "unresolved_bare_calls": 572,
+      "stubbed_builtins": 5352,
+      "numNew": 12872,
+      "numParentCall": 23040,
+      "numUnaryTilde": 1048,
+      "numTry": 17,
+      "numLabeledBlock": 32,
+      "numParentTypeDecls": 3,
+      "numBrokenPropRead": 6251,
+      "numRuntimeResolvedProps": 6747
+    },
+    "tgmc": { "totalLossSites": 26928, "parse_errors": 1249, "unresolved_bare_calls": 328 },
+    "paradise": { "totalLossSites": 39362, "parse_errors": 10306, "unresolved_bare_calls": 552 },
+    "beestation": { "totalLossSites": 45043, "parse_errors": 2339, "unresolved_bare_calls": 468 },
+    "compile_proof": {
+      "sampled_procs": 45183,
+      "types": 45183,
+      "dotnet_build": "SUCCESS",
+      "errors": 0,
+      "warnings": 13
+    }
+  },
+  "note": "Findings-only audit; src/ not modified by Plan 12."
+}

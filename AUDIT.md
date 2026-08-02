@@ -1,123 +1,292 @@
-# dm2ss14 — Code Audit & Fix Log
+# dm2ss14 — Audit (single source of truth)
 
-Audit performed against the full pipeline: DM source → preprocessor → lexer/parser
-→ DM-IR → YAML prototypes + embedded C# runtime → `dotnet build` of the generated
-solution. A 4-construct repro DM file produced **21+ C# build errors** before the
-fixes below; the same constructs now compile cleanly and are covered by regression
-tests in `src/tests/csharpEmitter.test.ts` plus the integration fixture in
-`src/tests/runTests.ts`.
+**Last updated:** 2026-08-02 · **HEAD baseline:** `4699c83` (Tier-3 builtins) + Plan 12 re-audit  
+**Severity:** 🔴 Critical · 🟠 High (silent wrong) · 🟡 Medium · 🟢 Fixed / low  
 
-Severity: 🔴 Critical (generated output broken) · 🟠 High (silent wrong behavior) ·
-🟡 Medium · 🟢 Low/Info.
+This file replaces the former split of `AUDIT.md`, `FIDELITY-AUDIT.md`,
+`docs/audit/11-findings.md`, and `docs/audit/12-findings.md`. Machine-readable
+corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
+`docs/plans/`.
 
 ---
 
-## 🔴 CRITICAL — generated C# does not compile for common constructs
+## 0. Current status (read this first)
 
-| # | Finding | Evidence (before) | Fix |
-|---|---------|-------------------|-----|
-| 1 | Index read emits a type-mismatched call | `comp.GetVar("stuff")).AsList()?.Get(DMValue.FromNumber(1))` — `DMList.Get` takes `int` → CS1503 | New `DMListGet(comp, key)` helper; emitted as `DMListGet(comp.GetVar("stuff"), DMValue.FromNumber(1))` |
-| 2 | Index assignment emits an invalid lvalue | `(comp.GetVar("stuff")).AsList()?.Set(...)` assigned to → CS0131/CS0200 | New `DMListSet(comp, key, value)` statement |
-| 3 | Zero-arg method calls emit empty name + trailing comma | `DMCallProc((comp.GetVar("stuff")).AsComponent()?.GetVar("zero") ?? DMValue.Null, "", )` → CS1002/CS1525 | `transpileCall` emits `"zero"` as the proc name with `comp.GetVar("stuff")` as target; no trailing comma |
-| 4 | Proc args named after C# keywords break the build | `var event = args.Length > 0 ? args[0] : DMValue.Null;` (`event`, `object`, `args`, `src`, `usr`) → CS1041/CS1001 | Args stored on the component: `comp.SetVar("event", args.Length > 0 ? args[0] : DMValue.Null);` |
-| 5 | `rand()` emits a runtime method that doesn't exist | `DMRuntimeHelpers.Rand()` → CS0103 | `Rand(DMValue a = default, DMValue b = default)` with DM semantics: `rand()` → float `[0,1)`, `rand(a)` → `1..a`, `rand(a,b)` → closed interval |
-
-All five verified by `dotnet build` of the generated solution before/after.
-Files: `src/transpiler/csharpEmitter.ts`, `src/runtimeTemplate/dmRuntimeCS.ts`.
-
----
-
-## 🟠 HIGH — silent wrong behavior (no error, wrong output)
-
-| # | Finding | Evidence (before) | Fix |
-|---|---------|-------------------|-----|
-| 6 | `1..5` lexed as the single number `1` (`readNumber` consumed `.` even when not followed by a digit) | `for(x in 1..5)` iterated once, no diagnostics | `readNumber` only consumes `.` when the next char is a digit; `..` now lexes as an operator; `MakeRange` helper (ascending + descending); range precedence 5 |
-| 7 | `{1, 2, 3}` list literals rejected | 4 parser errors ("Unexpected token '{'") | `parsePrimary` list-literal branch with proper `}` tracking; `MakeList(...)` emission |
-| 8 | `do/while` rejected | 8 parser errors | `DoWhileStatement` parsed; emitted as `do { } while (...)` |
-| 9 | Type-level vars with expression values rejected | `var/list/stuff = list(1,2,3)` → "Unexpected token '(' in type block" | `parseInitialValueText` consumed at all three type-level var-value sites |
-| 10 | `usr`/`src`/`args` skipped `parsePostfix` | `src.zero()` → "Unexpected token 'zero'" | Keyword operands now flow through `parsePostfix`; `src.method()` emits `DMCallProc(DMValue.FromComponent(comp), "method")` |
-| 11 | `spawn(n) { body }` emitted an invalid call | `await DMCallProc(...)` with no matching overload; body lost | Emits `async () => { /* body */ }` (valid `Func<Task>` for the scheduler). Note: `x = spawn(2)` (spawn as *expression*) is still rejected — spawn is a statement in DM; documented limitation |
-| 12 | Multi-Z DMM maps silently dropped | Only `grids[0]` was converted; z>1 levels and their origin cells lost with no warning | `mapConverter` rewritten: every grid emitted as its own `MapGrid` entity; world coords origin-aware (`x + originX`, `originY + height - 1 - y`); definition-less maps warned and skipped |
-
-## 🟡 MEDIUM
-
-| # | Finding | Fix |
-|---|---------|-----|
-| 13 | DMI `iTXt` chunks unparsed: 5-NUL header skipped, compressed payload fed raw to tag map | Full parse: NUL-separated fields, `compressionFlag` byte, `zlib.inflateSync` payload |
-| 14 | RSI delays not sliced per direction | `rsiWriter` slices `s.delays` to `s.frames` per direction |
-| 15 | Lexer: UTF-8 BOM broke first token of Windows files; unterminated block comments silently dropped; inconsistent indentation silently treated as full dedent; duplicate TypePath branch | BOM stripped in constructor; "Unterminated block comment" error; inconsistent-indent warning; dead branch removed |
-| 16 | GUI server: unbounded request body (memory DoS), no zip entry/compressed-size limits (zip-bomb), temp input dir leaked when transpile threw, bound to all interfaces | 2 GiB upload cap, 50k-entry / 4 GiB-uncompressed limits, `finally` cleanup, binds `127.0.0.1` |
-| 17 | Duplicate expression transpiler: `expressionTranspiler.ts` shadowed the real `csharpEmitter` and was used only by tests → divergent behavior, dead weight | Deleted; regression tests now assert golden strings against the real emitter (`src/tests/csharpEmitter.test.ts`) |
-
-## 🟢 LOW / Info
-
-| # | Finding | Resolution |
-|---|---------|-----------|
-| 18 | `DMNew()` is a placeholder returning `comp` while docs claimed full `new` support | Doc comment corrected to state the limitation honestly |
-| 19 | `findFiles` crashed on broken symlinks in the input tree | `statSync` wrapped in try/catch; symlinks skipped |
-| 20 | PLAN.md claimed "Symbol resolution pass" complete | Marked not-implemented in `PLAN.md`; runtime registry resolves `(typePath, procName)` at runtime; unknown targets → `DMValue.Null` (documented limitation) |
-| 21 | Zip-slip (`zip.extractAllTo` path traversal) | Verified adm-zip 0.6 sanitizes paths — already mitigated, no action needed |
-| 22 | Stray artifacts (`temp_test_dmi.png`, `src/tests/debugParser.ts`) | Deleted |
-
----
-
-## Verification
-
-- `npm run build` — clean (tsc strict, TS 7.0.2)
-- `npm test` — all suites green: DMI parser (32), DMM parser (36), C# emitter regression (40), preprocessor (20), integration (transpile real fixture + ZIP flow + **`dotnet build` of generated solution, exit 0**)
-- Regression coverage added for every 🔴/🟠 item in `src/tests/csharpEmitter.test.ts`; the `runTests.ts` integration fixture now exercises index access, `rand()`, brace lists, ranges, `do/while`, C-style `for`, `spawn`, and keyword-named args end-to-end through the C# compiler
-- New behavior documented in `README.md` (feature list, multi-Z maps, architecture) and `PLAN.md` (completed items + honest "not implemented" markers)
-
-## Remaining limitations (accepted)
-
-- No symbol-resolution pass — unknown proc targets resolve to `DMValue.Null` at runtime
-- `x = spawn(2)` (spawn as expression) unsupported; `DMNew` is a placeholder
-- Argument macros, screen/overlay/appearance, verb→command mapping, real RobustToolbox interop (vendored shim only) — see `PLAN.md` "Out of scope"
-
----
-
-## Phase 0 — Real Engine Ground Truth (re-foundation, 2026-08)
-
-The fabricated `Robust.Shared` shim is **deleted** and the runtime is decoupled from the engine.
-
-| Change | Detail |
+| Gate | Result |
 |---|---|
-| Real engine reference | Generated solutions reference `Robust.Shared` from the real RobustToolbox (`engine.pin`, commit `9cefa116`, net10.0). `dotnet build Robust.Shared` clean; `npm test` now includes a real-engine build of the generated solution (exit 0) |
-| Engine-free runtime | `SS13.DM.Runtime` no longer references RobustToolbox: new `DMRuntime` datum (vars, `CallProc`, `ProcRegistry`) replaces the old `DMRuntimeComponent`; `DMNew` allocates a **fresh** datum — object-identity probe (`two new /type()` distinct) now passes |
-| Generated output split | `ConvertedDMProcs.cs` (engine-free procs, used by the probe harness) + `ConvertedDMSystem.cs` (real `EntitySystem` adapter: `SubscribeLocalEvent` with `ComponentEventRefHandler` `(uid, comp, ref args)`, `ComponentInit : EntityEventArgs`, verified against engine source) |
-| Engine component | `DMRuntimeComponent : Component` (`[RegisterComponent]`, `[DataField]`s) holds a datum on a real entity; YAML `type: DMRuntime` maps to it |
-| Probes | Engine-free now (standalone console project, no RobustToolbox needed): 24 probes, honest baseline **7/24** (was 6/24); **24/24** after Phase 0.5 semantic core |
-| Scripts | `scripts/setup-engine.sh` (pin fetch), `scripts/build-loop.sh` (npm ci → build → test incl. real-engine build → probes); `EngineDir` MSBuild property / `SS14_ENGINE_DIR` env |
+| `npm run build` | clean (tsc strict) |
+| `npm test` | green; generated solution builds vs real RobustToolbox |
+| Semantic probes | **151 / 151** (`npm run audit:semantics`) |
+| Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
+| Reported loss sites | tg **54,160** · tgmc **26,928** · paradise **39,362** · bee **45,043** |
+| Corrected loss (approx) | tg **~30,020** after removing ~24k harness-false sites |
+| Unresolved bare calls (tg) | **572** |
+| Parse diagnostics (tg) | **3,746** errors (needs class triage — §2) |
+| Open fix wave | **Plan 12.1–12.11** (not started) |
 
-**API facts discovered against the real engine** (recorded in `engine.pin`):
-`Component` has no public virtual `Initialize()` — lifecycle is event-driven;
-component YAML type = class name minus "Component" suffix; `SpawnEntity` takes
-`EntityCoordinates`/`MapCoordinates` + optional overrides.
+**Bottom line:** The converter is semantically healthier than its own harness
+admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
+(2) a short list of proven silent bugs, (3) large product gaps (`new`, props,
+stubs, live server).
 
 ---
 
-## Plan 11 — Full-Codebase Adversarial Audit (2026-08-02, findings-only)
+## 1. Open findings — Plan 12 (latest adversarial re-audit)
 
-13 parallel workstreams, 200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢). Full report:
-`docs/audit/11-findings.md`; baselines: `docs/audit/11-baseline-{before,after}.json`
-(identical — the repo was not modified). Highlights:
+Findings-only audit 2026-08-02. Methodology: `docs/plans/12-adversarial-audit.md`.  
+**48 findings: 8 🔴 / 22 🟠 / 10 🟡 / 8 🟢-confirmed-fixed.**  
+Baselines: `docs/audit/12-baseline-{before,after}.json` (src untouched).
 
-- 🔴 Emitter breaks on legal DM names (`operator""`, dot-paths, case-colliding procs →
-  CS1003/CS0246/CS0111); `initial(x,"name")` unescaped; default-only switch → CS8641;
-  spawn-as-expression → CS1503. Hostile corpus: 11 CS error classes.
-- 🔴 `/global/var/` dropped in production (globals never passed to the emitter);
-  case-insensitive type identity ignored (duplicate YAML ids/registries).
-- 🔴 Runtime: `7.0/2`→3, `7.5%2`→1.5, div-by-zero→0, `"a"+list`, assoc arglist/list2params,
-  `json_encode` invalid JSON, `rgb()` no clamp, text `<` case, `"0"` truthiness.
-- 🔴 Media/maps: RSI N/E sprite swap; PNG no CRC/IHDR checks (hostile PNG hangs the
-  process); map chunk tiles emitted outside `chunks:` (all tiles lost); `TurfFloor`
-  prototypes don't exist in SS14.
-- 🟠 Security: GUI symlink escape proven (write outside $HOME), 429 guard a no-op,
-  500 path leak, forged zip sizes, shell-in-string spawn in the audit harness.
-- 🟠 Harness: semantic probes actually 129/134 (5 failing, root-caused); stub builtins
-  (~4,500 tgstation sites) counted as zero loss; 52% of "broken prop reads" are
-  runtime-handled; 3 hangs found (macro expansion, PNG decode, step-range continue).
-- The 5 failing semantic probes: GlobalVars assoc CS0201, step_away max, float division
-  provenance, copytext negative end (dead branch), step-range `continue` infinite loop.
+### 1.1 Headlines (fix first)
 
-Fix batches proposed in `docs/audit/11-findings.md` §5 (11.1-11.13, dependency-ordered).
+#### 🔴 Harness overstates loss by ~24k (tgstation)
+
+`src/audit/fidelityAudit.ts` `totalLossSites` still charges ops the pipeline handles:
+
+| Counter | tg count | Reality |
+|---|---:|---|
+| `numParentCall` (`..()`) | **23,040** | emits `await comp.CallParentProc(...)` |
+| `numUnaryTilde` | **1,048** | emits `DMValue.BitwiseNot(...)` |
+| `numTry` / `numLabeledBlock` | 17 / 32 | try/catch emitted; label body kept |
+| `numParentTypeDecls` | 3 | IR sets `parentPath` from `parent_type` |
+
+`numNew` label still says “returns caller as placeholder”; emission is
+`await DMNew(comp, path)` (fresh datum). Residual: no full `New()`/loc/entity.
+
+**Corrected ballpark:** 54,160 − 24,140 ≈ **30,020**.
+
+#### 🔴 Builtin map is case-sensitive
+
+`MAPPED_BUILTINS.includes(name)` is exact-match; DM is case-insensitive.
+`Pick` / `crash` / `replacetextex` → `DMCallProc` → Null. (`pick` / `findtextEx` work.)
+
+#### 🔴 Identifier assoc keys miscompile
+
+`list("a" = 1, b = 2)` emits `MakeListAssoc(..., comp.SetVar("b", ...))` — mutates
+locals instead of assoc entries. String keys OK.
+
+#### 🔴 Proc default arguments dropped
+
+`proc/test(a = 1)` → `args.Length > 0 ? args[0] : DMValue.Null` — default never applied.
+
+#### 🔴 `operator[]` registry key stripped
+
+```
+operator""  → Register(..., "operator\"\"", ...)
+operator[]  → Register(..., "operator", ...)   // [] lost
+```
+C# method names dedupe (`Operator` / `Operator_2`) so **build** stays green.
+
+#### 🔴 Parse-error count unexplained
+
+Measured **3,746** tgstation parse errors vs older docs (~170). Counter is real
+`collector.errors.length`. Types still parse at scale (46,995 types / 64,794 procs).
+Needs class triage before treating as fidelity collapse.
+
+### 1.2 Residual product loss (real, after harness correction)
+
+| Class | tgstation | Notes |
+|---|---:|---|
+| Partial `new /type` | 12,872 | fresh datum; New()/loc/entity incomplete |
+| Broken prop reads | 6,251 | `.loc` 3070 · `.type` 2021 · `.dir` 589 · `.contents` 449 · `.overlays` 122 |
+| Stubbed builtins | 5,352 | animate/sound/image/winset/… → Null (honest) |
+| Unresolved bare calls | 572 | span_*, unit_test helpers, filter, winget, oviewers, stack_trace… |
+| `as` casts | 247 | dynamic no-op (often OK) |
+| Appearance / verbs / client | — | Plans 05; stubbed / folded |
+| Symbol resolution | — | Plan 02; audit-only `SymbolTable` |
+| Live Robust.Server/Client | — | Plan 04; Content.Server builds only |
+
+### 1.3 Findings by module
+
+**WS1 Lexer** — 🟠 `.5` not float; `{"a","b"}` one raw token; `1...5` orphan dot · 🟢 nested comments OK  
+
+**WS2 Parser** — 🔴 assoc id keys · 🟠 default args dropped; `set`/verb meta dropped; `in` precedence lock needed  
+
+**WS3 Preprocessor** — 🟢 `//` in define strings, `#if` numeric, `##` paste OK  
+
+**WS4 IR** — 🟢 `parent_type` + case-fold OK · 🟠 SymbolTable not in production  
+
+**WS5 Emitter** — 🔴 `operator[]` key · 🟢 try/catch, bitwise, `CallParentProc`, name dedupe · 🟠 label=`//` only; `escapeString` raw `\0`; `new` partial  
+
+**WS6 YAML** — 🟢 yes/123 quoted; pathToId dedupe (`a_b` vs `a/b`)  
+
+**WS7 Builtins** — 🔴 case fold · 🟠 572 bare · 🟡 MAPPED=133 STUBBED=21  
+
+**WS8/9 Runtime** — 🟢 IsInt/Divide, JsonEscape, probes · 🟠 world.time not live clock · 🟡 `new Random()` ×7  
+
+**WS10 Media** — 🟢 PNG CRC + IHDR bomb reject; RSI `[0,2,1,3]`  
+
+**WS11 Maps** — 🟢 chunk list items + real turfs (integration tests)  
+
+**WS12 GUI/CLI** — 🟢 429 single-flight, realpath, lexer diags merged · 🟠 CLI `--output` unvalidated  
+
+**WS13 Harness** — 🔴 false losses + stale labels + parse/doc drift  
+
+**WS15 Live engine** — 🟠 builds vs `Robust.Shared`; no live server/client boot  
+
+### 1.4 Plan 11 → Plan 12 disposition
+
+| Plan-11 RED | Status now |
+|---|---|
+| Hostile names break C# | **Fixed** compile; residual registry-key strip |
+| `/global/var/` dropped | **Fixed** |
+| Type path case-insensitivity | **Fixed** |
+| JsonEscape invalid | **Fixed** |
+| RSI N/E swap | **Fixed** |
+| Map chunks lost / fake turfs | **Fixed** |
+| Divide / step-continue / copytext | **Fixed** (151/151) |
+| PNG hang / no CRC | **Fixed** |
+| YAML scalar traps | **Fixed** |
+| GUI symlink / 429 / shell spawn | **Fixed** |
+| try/catch + labels dropped | **Fixed** emit; harness still counts loss |
+| bitwise / `~` → Null | **Fixed** emit; harness still counts `~` |
+| parent_type ignored | **Fixed** IR; harness label stale |
+| `..()` → Null | **Fixed** `CallParentProc`; harness +23k false |
+| Harness undercount stubs | Flipped to **overcount** of handled ops |
+
+### 1.5 Fix batches (12.x)
+
+| Batch | Theme | Impact |
+|---|---|---|
+| **12.1** | Harness truth (drop false counters/labels) | −24k fake loss; restore trust |
+| **12.2** | Builtin case-fold + top bare calls | stop silent Null on `Pick`/`crash` |
+| **12.3** | Default args + assoc identifier keys | correctness |
+| **12.4** | operator registry keys, `escapeString` `\0`, label break | dispatch + safety |
+| **12.5** | Lexer `.5` / brace-lists / `1...5` | parse fidelity |
+| **12.6** | Props `.loc/.type/.dir` (Plan 07) | −6k sites |
+| **12.7** | `new`/New()/entity (Plan 08) | −12k semantic hole |
+| **12.8** | PLAN status rows consistency | **done** — folded into the universal linear plan (`PLAN.md`) |
+| **12.9** | Parse-error class triage (3746) | explain noise vs real |
+| **12.10** | CLI output path validation | security parity w/ GUI |
+| **12.11** | Appearance stubs / live-server prep (05/04) | product |
+
+The 12.1–12.11 batches are tracked linearly as items 55–67 in `PLAN.md` (universal plan).
+
+---
+
+## 2. Fidelity measurement
+
+### How we measure
+
+1. **Semantic differential probes** — DM snippets with known BYOND behavior, converted, compiled, executed (`npm run audit:semantics`).
+2. **Loss-site instrumentation** — `npm run audit:fidelity -- <repo>` walks preprocessor → parser → IR → emitter (`src/audit/fidelityAudit.ts`).
+3. **Compile-proof** — `dotnet build` of generated solution vs pinned RobustToolbox (`engine.pin`, commit `9cefa116`).
+
+Corpora (master @ 2026-07): tgstation 7,440 .dm · tgmc 2,612 · paradise 3,779 · beestation 5,195  
+under `~/Documents/antigravity/ss13-audit-corpora/`.
+
+### Latest corpus snapshot (Plan 12)
+
+| | tgstation | tgmc | paradise | beestation |
+|---|---:|---:|---:|---:|
+| Parse errors | 3,746 | 1,249 | 10,306 | 2,339 |
+| Types / procs | 46,995 / 64,794 | 26,853 / 23,519 | 28,849 / 38,763 | 34,803 / 44,822 |
+| Reported loss | **54,160** | **26,928** | **39,362** | **45,043** |
+| Unresolved bare | 572 | 328 | 552 | 468 |
+| Stubbed builtins | 5,352 | 2,939 | 3,584 | 4,564 |
+
+JSON history: `docs/audit/10-tgstation-audit.json`, `11-tgstation-audit-post.json`,
+`12-baseline-*.json`.
+
+### Probe suite
+
+**151/151 passing.** Core semantics (truthiness, lists, `..()`, short-circuit,
+ranges, text, json_encode escapes, float division provenance, step-range continue)
+plus builtin batches and Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …).
+
+### Loss scoreboard (tgstation, honest view)
+
+```
+reported totalLossSites          54,160
+  − false ..()                   −23,040
+  − false unary ~                 −1,048
+  − false try/label/parent_type      −52
+≈ corrected                      ~30,020
+  heavy real buckets:
+    new (partial)                 12,872
+    broken props                   6,251
+    stubs                          5,352
+    unresolved bare                  572
+    as / set / client / verb / …    rest
+```
+
+---
+
+## 3. Shipped fix history (condensed)
+
+### Early pipeline audit (pre–Plan 09)
+
+Compile breakers fixed: index get/set, zero-arg calls, keyword arg names, `rand()`.
+Semantics: ranges `1..5`, brace lists, do/while, `usr`/`src` postfix, multi-Z maps,
+DMI iTXt, GUI upload caps / loopback bind. Duplicate `expressionTranspiler` removed.
+
+### Phase 0 — Real engine
+
+Fabricated Robust.Shared shim deleted. Generated solutions reference real
+RobustToolbox via `EngineDir` / `SS14_ENGINE_DIR`. `SS13.DM.Runtime` engine-free.
+Probes engine-free. `scripts/setup-engine.sh`, `build-loop.sh`, `engine.pin`.
+
+### Phase 0.5 — Semantic core
+
+24 core probes → green: text `==`/`<`, `&&`/`||` operands, DMList, break/continue,
+`..()`, world, hex text2num, etc.
+
+### Plans 09–10
+
+Adversarial RED/ORANGE waves: runtime value semantics, emitter control flow,
+preprocessor `#if`/`#elif`/include-once, media validation, harness accounting.
+Probes 24 → 129+; large builtin expansion; GLOB/GlobalVars.
+
+### Plan 11 (200 findings) + fix wave 11.1–11.13 — **done**
+
+Shipped: identifier sanitize, GlobalVars in production, case-insensitive IR,
+JsonEscape rewrite, RSI dir remap, map chunk YAML, PNG CRC/IHDR, GUI realpath +
+429, try/catch + labels emitted, bitwise ops, `CallParentProc`, parent_type IR,
+float `IsInt` division, etc. Probes → **139/139**; tg loss 105k → ~54k; hostile
+names + full compile-proof 0 errors.
+
+### Tier-3 builtins (§ post-11) — **done** (`4699c83`)
+
+regex/astype/isicon/icon_states/arctan/roll/values_*/findlasttext/regex_quote;
+UI stubs → STUBBED bucket; world.* statics. Probes → **151/151**; bare calls
+1,012 → **572**.
+
+### Plan 12 re-audit — **findings done; fix wave open**
+
+This document §1. No src changes during audit.
+
+---
+
+## 4. Verification commands
+
+```bash
+npm ci && npm run build && npm test
+export SS14_ENGINE_DIR=../RobustToolbox   # or scripts/setup-engine.sh
+npm run audit:semantics
+npm run audit:fidelity -- /path/to/tgstation
+npm run audit:fidelity -- /path/to/tgstation --build /tmp/cp --build-max-procs 45000
+bash scripts/build-loop.sh
+```
+
+---
+
+## 5. Known limitations (accepted / phased)
+
+- Full arg macros / procmacro; screen/overlay/appearance (Plan 05)
+- Verb → SS14 command mapping stubbed
+- Live Robust.Server / Robust.Client (Plan 04) — Content.Server builds only
+- Static symbol-resolution pass not in production (Plan 02)
+- See `PLAN.md` for open big-ticket plans 01–08 and 12.x batches
+
+---
+
+## 6. Document map
+
+| Path | Role |
+|---|---|
+| **`AUDIT.md`** (this file) | Sole human audit report |
+| **`PLAN.md`** | **Universal plan — single linear tracker** (items 1-54 done, 55-67 open, in progression order) |
+| `docs/plans/*.md` | Archived per-wave implementation detail (incl. 11/12 audit playbooks) |
+| `docs/audit/*.json` | Machine baselines / corpus snapshots |
+| `engine.pin` | RobustToolbox commit + API notes |
+| `README.md` | User-facing summary (points here) |

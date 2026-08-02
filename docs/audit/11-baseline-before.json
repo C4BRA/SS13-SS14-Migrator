@@ -46,6 +46,6 @@
     "errors": 0,
     "warnings": 46374,
     "warn_class": "CS0162 unreachable code (emitter trailing return, WS5-18)",
-    "full_scale_prior": "0 errors @ 44,826 procs (FIDELITY-AUDIT.md 3b-3e)"
+    "full_scale_prior": "0 errors @ 44,826 procs (AUDIT.md 3b-3e)"
   }
 }

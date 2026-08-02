@@ -2,7 +2,7 @@
 
 Status: **done** (2026-08-02 — B1-B6 complete; verification: 133/138 probes, tgstation
 loss sites 105,097 → 104,933, unresolved bare calls 3,360 → 1,018, compile-proof 1,500
-procs 0 errors; see `FIDELITY-AUDIT.md` §3i) · Owner: wave-10 of the adversarial audit
+procs 0 errors; see `AUDIT.md` §3i) · Owner: wave-10 of the adversarial audit
 
 ## Why this exists
 
@@ -146,7 +146,7 @@ Ground truth: BYOND reference (byond.com/docs/ref), NOT the current C# runtime.
 
 - All B1-B6 checks ticked ✅; tgstation parse errors: **170** (no new errors introduced)
 - Differential probes: **138 probes, 133/138** (134 + 4 new; the same 5 pre-existing
-  failures remain — root-caused in `FIDELITY-AUDIT.md` §3h; they are Plan 11 fix-wave
+  failures remain — root-caused in `AUDIT.md` §3h; they are Plan 11 fix-wave
   items: GlobalVars assoc CS0201, step_away max, float division, copytext negative end,
   step-range continue)
 - `totalLossSites` dropped by the handled preprocessor counters + span_* resolution:

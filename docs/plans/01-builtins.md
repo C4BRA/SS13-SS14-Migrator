@@ -7,7 +7,7 @@ the arg order of the pre-existing range/view/oview mappers to BYOND's (dist, cen
 2026-08-02 Plan 11 re-run: **3,360 unresolved bare calls** — the §3e-era 708 did not
 reproduce; the re-run counts unexpanded fn-macro call sites again (`span_*`, `EXAMINE_HINT`,
 `AREACOORD`, `ADMIN_*`, `FORMAT_*` ≈ 2,400 of 3,360). Miscount analysis is a Plan 10 B4 /
-Plan 11.12 item. See `FIDELITY-AUDIT.md` §3h.)
+Plan 11.12 item. See `AUDIT.md` §3h.)
 
 ## Goal
 

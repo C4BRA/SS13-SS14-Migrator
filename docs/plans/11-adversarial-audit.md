@@ -1,11 +1,9 @@
 # Plan 11 — Full-Codebase Adversarial Audit
 
 Status: **executed + fix wave 11.1-11.13 shipped** (2026-08-02) · 13 parallel workstreams ·
-findings in `docs/audit/11-findings.md` (200 findings: 56 🔴 / 64 🟠 / 56 🟡 / 24 🟢) +
-baselines `docs/audit/11-baseline-{before,after}.json`.
-Fix-wave verification: semantic probes 129/134 → **139/139**; tgstation loss sites
-105,097 → **54,457**; hostile-name corpus + 1,500-proc real-engine compile-proof both
-**0 C# errors** (`FIDELITY-AUDIT.md` §3j).
+Historical findings absorbed into **`AUDIT.md`** (Plan 11 disposition §1.4; shipped
+history §3). Baselines: `docs/audit/11-baseline-{before,after}.json`. Fix wave
+11.1–11.13 shipped; Plan 12 re-audit superseded open items.
 Mode: **findings report only** — no source fixes during the audit; every finding is proven
 with evidence (repro + observed vs expected) and ranked for a future fix wave.
 Verification depth: **full** — semantic differential probes under dotnet 10, real-engine
@@ -30,7 +28,7 @@ Produce a defensible, evidence-backed adversarial audit that:
    fuzzing, round-trip checks, pathological inputs, and an HTTP attack harness.
 3. Triages **every pre-seeded suspect** below (≈60 items, all with `file:line`) to one of:
    confirmed-with-evidence / refuted / documented-nonissue.
-4. Produces a ranked findings report (`docs/audit/11-findings.md`) with repro snippets,
+4. Produces a ranked findings report (`AUDIT.md`) with repro snippets,
    severity, and fix recommendations — the direct input to a future Plan 11 fix wave.
 5. Leaves the repo **untouched** (no src edits; evidence scaffolding only in `$TMPDIR`),
    and proves that via before/after baseline metrics.
@@ -634,9 +632,9 @@ Full machine-readable snapshots: `docs/audit/11-baseline-{before,after}.json`.
 |---|---|---|---|
 | `npm run build` | clean (tsc strict) | clean | clean |
 | `npm test` | green | green (engine-build step skips without repo-relative RobustToolbox; green with `SS14_ENGINE_DIR`) | green |
-| `npm run audit:semantics` | 91/91 probes | **129/134** — suite has 134; 5 pre-existing failures root-caused (§3 of `docs/audit/11-findings.md`) | 129/134 (same 5) |
+| `npm run audit:semantics` | 91/91 probes | **129/134** — suite has 134; 5 pre-existing failures root-caused (§3 of `AUDIT.md`) | 129/134 (same 5) |
 | Parse errors, tgstation | 178 | **170** | 170 |
-| Unresolved builtins, tgstation | ~593 | **3,360 unresolved bare calls** (≈2,400 are unexpanded fn-macros — §3g "~113" estimate disproved; counter-rebaseline note in `FIDELITY-AUDIT.md` §3h) | 3,360 |
+| Unresolved builtins, tgstation | ~593 | **3,360 unresolved bare calls** (≈2,400 are unexpanded fn-macros — §3g "~113" estimate disproved; counter-rebaseline note in `AUDIT.md` §3h) | 3,360 |
 | `totalLossSites`, tgstation | ~105,198 | **105,097** | 105,097 |
 | Other corpora | tgmc/paradise/beestation baselines (§2) | tgmc 44,745 · paradise 58,493 · beestation 72,900 | — |
 | Compile-proof | 0 C# errors @ 44,826 procs (prior published) | 1,500-proc fresh re-run: **0 errors, 46,374 CS0162 warnings** (confirms WS5-18) | unchanged |
@@ -647,13 +645,13 @@ Captured to `docs/audit/11-baseline-before.json` and `-after.json`.
 
 **Deliverables**
 1. `docs/plans/11-adversarial-audit.md` (this document).
-2. `docs/audit/11-findings.md` — ranked findings table (severity → fix-batch), every
+2. `AUDIT.md` — ranked findings table (severity → fix-batch), every
    finding with repro + observed-vs-expected + `file:line` + fix/test-lock suggestions.
 3. `docs/audit/11-baseline-before.json` / `docs/audit/11-baseline-after.json`.
 4. Appendices: precedence-table verification, per-builtin verdict table (112), probe
    veracity table (91), PNG decode matrix, hostile-compile CS-error class list,
    counter-correction arithmetic.
-5. One entry appended to `FIDELITY-AUDIT.md` §3h and `AUDIT.md` summarizing the audit
+5. One entry appended to `AUDIT.md` §3h and `AUDIT.md` summarizing the audit
    (post-acceptance of findings).
 
 **Acceptance ("all bases covered")**
