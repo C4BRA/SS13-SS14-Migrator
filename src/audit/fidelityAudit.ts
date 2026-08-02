@@ -410,16 +410,18 @@ export function runAudit(dir: string, name: string): CodebaseResult {
   }
   counters.numUnresolvedCalls = [...counters.unknownBuiltins.values()].reduce((a, v) => a + v.count, 0);
   counters.numUnknownBuiltin = counters.numUnresolvedCalls;
+  // Plan 12.1 (item 55): only genuine losses are counted. `..()`, unary `~`,
+  // try/catch, labeled blocks and parent_type are all HANDLED by the pipeline
+  // (CallParentProc / BitwiseNot / emitted try-catch / kept label bodies /
+  // parentPath from parent_type) — they stay printed for visibility but no
+  // longer inflate totalLossSites (previous overcount ≈ 24k).
   counters.totalLossSites =
     counters.numGoto + counters.numSetModifiers + counters.numSwitchBraceForm +
     counters.numWeightedPick + counters.numMultiVarFor +
     counters.numVerbDecls + counters.numClientDecls +
-    counters.numWorldDecls + counters.numParentTypeDecls +
-    counters.numClassicGlobalVars +
-    counters.numTry + counters.numLabeledBlock +
-    counters.numNew + counters.numParentCall +
-    counters.numAsCast +
-    counters.numUnaryTilde + counters.numSpawnExpr + counters.numWorldRef +
+    counters.numWorldDecls + counters.numClassicGlobalVars +
+    counters.numNew + counters.numAsCast +
+    counters.numSpawnExpr + counters.numWorldRef +
     counters.numPathConstPropRead + counters.numBrokenPropRead +
     counters.numStubbedBuiltin +
     counters.numUnknownBuiltin;
@@ -454,17 +456,17 @@ function printResult(r: CodebaseResult): void {
   line('verb declarations', c.numVerbDecls, 'folded into procs');
   line('client declarations', c.numClientDecls);
   line('world declarations', c.numWorldDecls);
-  line('parent_type decls', c.numParentTypeDecls, 'IR ignores (WS4-3)');
+  line('parent_type decls', c.numParentTypeDecls, 'handled since P11 B13 (IR parentPath)');
   console.log('-- Emitter loss (statement drops) --');
-  line('try/catch', c.numTry, '-> // Unknown statement');
-  line('labeled blocks', c.numLabeledBlock, '-> // Unknown statement');
+  line('try/catch', c.numTry, 'handled since P11 B6 (emitted)');
+  line('labeled blocks', c.numLabeledBlock, 'handled since P11 B6 (body kept)');
   console.log('-- Emitter loss (expression) --');
-  line('new /type(...)', c.numNew, 'returns caller as placeholder');
-  line('..() parent calls', c.numParentCall, '-> CallProc("..") -> Null');
+  line('new /type(...)', c.numNew, 'fresh datum; New()/loc/entity incomplete (item 63)');
+  line('..() parent calls', c.numParentCall, 'handled since P11 B6 (CallParentProc)');
   line('bitwise & | ^ ~ >>', c.numBinaryNull, 'handled since P11 B6');
   line('<< (shift/output)', c.numBinaryOutput, 'handled since P11 B6');
   line('as casts', c.numAsCast, '-> DMValue.Null');
-  line('unary ~', c.numUnaryTilde, '-> DMValue.Null');
+  line('unary ~', c.numUnaryTilde, 'handled since P11 B6 (BitwiseNot)');
   line('spawn() as expression', c.numSpawnExpr, 'empty body');
   line('world references', c.numWorldRef, '-> Null');
   line('path-const reads /path.x', c.numPathConstPropRead, 'GLOB.x style, dead literal');

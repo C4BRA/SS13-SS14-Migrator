@@ -11,12 +11,12 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **54 / 13** (items 1-54 done; 55-67 open, in progression order) |
+| Items done / open | **55 / 12** (items 1-55 done; 56-67 open, in progression order) |
 | Semantic probes | **151 / 151** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
-| Loss sites (reported / corrected) | tg **54,160** / ~**30,020** · tgmc 26,928 · paradise 39,362 · bee 45,043 |
+| Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **572** |
-| Parse diagnostics (tg) | **3,746** (item 15 — triage open) |
+| Parse diagnostics (tg) | **3,746** (item 56 — triage open) |
 
 ---
 
@@ -104,15 +104,17 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 ## Part B — Open progression (next work, in order)
 
-Work the lowest-numbered open item. Each is dependency-ordered: measurement honesty
-(55) and parse-error triage (56) come first because every later number is measured
-against them.
+Work the lowest-numbered open item. Each is dependency-ordered: parse-error triage
+(56) comes next because every later number is measured against the (now honest)
+counters.
 
-55. [ ] **12.1 — Harness truth.** Drop false-loss counters from `totalLossSites` now
-      that the pipeline handles them: `..()` 23,040 (emits `CallParentProc`), unary `~`
-      1,048 (`BitwiseNot`), try/label/parent_type 52 (emitted/handled); fix stale
-      `numNew` label ("returns caller as placeholder"). → corrected loss ≈ **30,020**.
-      Files: `src/audit/fidelityAudit.ts`.
+55. [x] **12.1 — Harness truth.** False-loss counters removed from `totalLossSites`
+      (handled by the pipeline, kept printed for visibility): `..()` 23,040
+      (`CallParentProc`), unary `~` 1,048 (`BitwiseNot`), try/label/parent_type 52
+      (emitted/handled); stale `numNew` label fixed ("fresh datum; New()/loc/entity
+      incomplete — item 63"). **Result: reported == corrected — tg 54,160 → 30,020,
+      tgmc 26,928 → 17,982, paradise 39,362 → 25,635, beestation 45,043 → 27,758.**
+      File: `src/audit/fidelityAudit.ts`.
 56. [ ] **12.9 — Parse-error triage (3,746).** Explain + reduce. Known composition:
       197 files; ~111 from interpolation-macro-expansion corrupting strings whose
       interpolation contains quoted/HTML expansions (e.g. `<span class='examine_hint'>`

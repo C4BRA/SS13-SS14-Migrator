@@ -18,11 +18,10 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 | `npm test` | green; generated solution builds vs real RobustToolbox |
 | Semantic probes | **151 / 151** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
-| Reported loss sites | tg **54,160** · tgmc **26,928** · paradise **39,362** · bee **45,043** |
-| Corrected loss (approx) | tg **~30,020** after removing ~24k harness-false sites |
+| Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **572** |
-| Parse diagnostics (tg) | **3,746** errors (needs class triage — §2) |
-| Open fix wave | **Plan 12.1–12.11** (not started) |
+| Parse diagnostics (tg) | **3,746** errors (needs class triage — §2 / item 56) |
+| Open fix wave | **Plan 12.2–12.11** (12.1 done — item 55 in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
@@ -39,9 +38,10 @@ Baselines: `docs/audit/12-baseline-{before,after}.json` (src untouched).
 
 ### 1.1 Headlines (fix first)
 
-#### 🔴 Harness overstates loss by ~24k (tgstation)
+#### 🔴 Harness overstates loss by ~24k (tgstation) — **RESOLVED (item 55, 12.1)**
 
-`src/audit/fidelityAudit.ts` `totalLossSites` still charges ops the pipeline handles:
+~~`src/audit/fidelityAudit.ts` `totalLossSites` still charges ops the pipeline handles:~~
+Removed from `totalLossSites` (kept printed for visibility); reported == corrected now:
 
 | Counter | tg count | Reality |
 |---|---:|---|
@@ -50,10 +50,9 @@ Baselines: `docs/audit/12-baseline-{before,after}.json` (src untouched).
 | `numTry` / `numLabeledBlock` | 17 / 32 | try/catch emitted; label body kept |
 | `numParentTypeDecls` | 3 | IR sets `parentPath` from `parent_type` |
 
-`numNew` label still says “returns caller as placeholder”; emission is
-`await DMNew(comp, path)` (fresh datum). Residual: no full `New()`/loc/entity.
+`numNew` label now says "fresh datum; New()/loc/entity incomplete (item 63)".
 
-**Corrected ballpark:** 54,160 − 24,140 ≈ **30,020**.
+**Result:** 54,160 − 24,140 ≈ **30,020** (tg) — matches the estimate exactly; tgmc 17,982 · paradise 25,635 · beestation 27,758.
 
 #### 🔴 Builtin map is case-sensitive
 
@@ -148,7 +147,7 @@ Needs class triage before treating as fidelity collapse.
 
 | Batch | Theme | Impact |
 |---|---|---|
-| **12.1** | Harness truth (drop false counters/labels) | −24k fake loss; restore trust |
+| **12.1** | Harness truth (drop false counters/labels) | **done** (item 55) — tg 54,160 → 30,020, reported == corrected |
 | **12.2** | Builtin case-fold + top bare calls | stop silent Null on `Pick`/`crash` |
 | **12.3** | Default args + assoc identifier keys | correctness |
 | **12.4** | operator registry keys, `escapeString` `\0`, label break | dispatch + safety |
@@ -194,14 +193,10 @@ JSON history: `docs/audit/10-tgstation-audit.json`, `11-tgstation-audit-post.jso
 ranges, text, json_encode escapes, float division provenance, step-range continue)
 plus builtin batches and Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …).
 
-### Loss scoreboard (tgstation, honest view)
+### Loss scoreboard (tgstation, honest view — post-12.1)
 
 ```
-reported totalLossSites          54,160
-  − false ..()                   −23,040
-  − false unary ~                 −1,048
-  − false try/label/parent_type      −52
-≈ corrected                      ~30,020
+totalLossSites (12.1: false counters removed)    30,020
   heavy real buckets:
     new (partial)                 12,872
     broken props                   6,251
