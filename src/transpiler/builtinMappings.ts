@@ -17,7 +17,12 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
   'time2text', 'list2params', 'arglist', 'alist', 'SpacemanDMM_unlint', 'file',
   'isfile', 'fdel', 'fcopy', 'fcopy_rsc', 'flist', 'ref', 'refcount',
   'step', 'step_towards', 'step_away', 'get_step_away', 'get_step_towards',
-  'orange', 'viewers', 'hearers'
+  'orange', 'viewers', 'hearers',
+  // Tier-3 wave (2026-08-02): remaining corpus backlog
+  'regex', 'regex_quote', 'astype', 'isicon', 'icon_states', 'arctan',
+  'findlasttext', 'values_sum', 'values_dot', 'values_min', 'values_max',
+  'roll', 'winset', 'link', 'gradient', 'vector', 'openToolTip',
+  'closeToolTip', 'browse_rsc', 'ftp'
 ];
 
 // Builtins whose runtime helpers are recognized stubs returning Null/0
@@ -25,7 +30,9 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
 // they are NOT "resolved" just because the name is mapped (WS7-16).
 export const STUBBED_BUILTINS = [
   'animate', 'image', 'flick', 'sound', 'matrix', 'browse', 'call_ext',
-  '__detect_rust_g', 'alert', 'input', 'icon', 'locate', 'refcount'
+  '__detect_rust_g', 'alert', 'input', 'icon', 'locate', 'refcount',
+  'winset', 'link', 'gradient', 'vector', 'openToolTip', 'closeToolTip',
+  'browse_rsc', 'ftp'
 ];
 
 export function transpileBuiltinCall(name: string, args: string): string | null {
@@ -197,6 +204,30 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.ArcCos(${args})`;
     case 'log':
       return `DMRuntimeHelpers.Log(${args})`;
+    case 'arctan':
+      return `DMRuntimeHelpers.Arctan(${args})`;
+    case 'regex_quote':
+      return `DMRuntimeHelpers.RegexQuote(${args})`;
+    case 'findlasttext':
+      return `DMRuntimeHelpers.FindLastText(${args})`;
+    case 'values_sum':
+      return `DMRuntimeHelpers.ValuesSum(${args})`;
+    case 'values_dot':
+      return `DMRuntimeHelpers.ValuesDot(${args})`;
+    case 'values_min':
+      return `DMRuntimeHelpers.ValuesMin(${args})`;
+    case 'values_max':
+      return `DMRuntimeHelpers.ValuesMax(${args})`;
+    case 'roll':
+      return `DMRuntimeHelpers.Roll(${args})`;
+    case 'astype':
+      return `DMRuntimeHelpers.Astype(${args})`;
+    case 'isicon':
+      return `DMRuntimeHelpers.IsIcon(${args})`;
+    case 'icon_states':
+      return `DMRuntimeHelpers.IconStates(${args})`;
+    case 'regex':
+      return `DMRuntimeHelpers.DMRegex(${args})`;
     case 'sign':
       return `DMRuntimeHelpers.Sign(${args})`;
     case 'copytext_char':

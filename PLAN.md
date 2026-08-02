@@ -59,16 +59,17 @@ Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
 - [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0,
       IR + `new`-expression trailing-slash normalization
 
-Remaining (Phase 2+/Tier 3): remaining builtins (`regex`, `astype`, `winset`,
-`icon_states`, `findtextEx` is mapped, `arctan`, `isicon`, `link`), `world.*`
-statics. Plan 09 (adversarial audit RED/ORANGE fix wave) is
+Remaining (Phase 2+/Tier 3): remaining builtins (`filter`, `test`/unit-test
+helpers, `print_language_list`-class user procs), `world.*` (live-server
+statics), appearance system. Plan 09 (adversarial audit RED/ORANGE fix wave) is
 **done** — all B1-B7 complete (git 075d91f). Plan 10 (ORANGE wave) is **done** —
 B1-B6 complete (2026-08-02, `FIDELITY-AUDIT.md` §3i). Plan 11 (full-codebase
 adversarial audit) is **complete and its fix wave 11.1-11.13 has shipped** —
 200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢) in `docs/audit/11-findings.md`;
 probes 129/134 → **139/139**; tgstation loss sites 105,097 → **54,457**;
 hostile-name corpus and 1,500-proc real-engine compile-proof both **0 C# errors**
-(`FIDELITY-AUDIT.md` §3j).
+(`FIDELITY-AUDIT.md` §3j). Tier-3 builtin wave (§3k): probes → **151/151**,
+unresolved bare calls → **572** (tgstation), loss sites → **54,160**.
 
 ---
 
@@ -154,7 +155,7 @@ measured baseline 2026-08-02: **105,097** — see `FIDELITY-AUDIT.md` §3h) live
 
 | Plan | Item | TG sites | Status |
 |---|---|---|---|
-| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls (2026-08-02 Plan 11 re-run: **3,360 unresolved bare calls** — dominated by unexpanded tgstation fn-macros, see `FIDELITY-AUDIT.md` §3h) | in progress (2026-08-02: pure + file + movement batches landed) |
+| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls (2026-08-02 final: **572 unresolved bare calls** on tgstation) | in progress (2026-08-02: pure + file + movement batches + Tier-3 wave landed; probes 151/151) |
 | [02-symbol-resolution.md](docs/plans/02-symbol-resolution.md) | Symbol resolution + global procs | 36,911 bare global calls (runtime fallback) | in progress (2026-08-02: milestone 1 — symbol table + audit triage; 93,573 verified) |
 | [03-bitwise.md](docs/plans/03-bitwise.md) | Bitwise operators | 19,009 binary + 1,083 unary → Null (2026-08-02 re-run) | not started |
 | [04-live-server.md](docs/plans/04-live-server.md) | Live-server integration | whole-verification gap | not started |

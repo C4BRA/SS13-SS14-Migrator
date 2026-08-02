@@ -514,3 +514,27 @@ All 13 fix batches from `docs/audit/11-findings.md` §5 executed. Headline delta
   loss sites: tgstation **54,457** · tgmc **27,001** · paradise **39,475** ·
   beestation **45,277**; unresolved bare calls: tgstation 1,012 · tgmc 496 ·
   paradise 766 · beestation 849.
+
+### 3k. Tier-3 wave: remaining builtins + world.* statics (VERIFIED, 2026-08-02)
+
+The post-wave backlog (regex, astype, winset, icon_states, isicon, link, arctan,
+gradient, filter, vector, values_*, roll, findlasttext, regex_quote + the UI
+stubs) is mapped. **Probes 139/139 → 151/151**; unresolved bare calls (tgstation)
+**1,012 → 572**; loss sites tgstation 54,457 → **54,160** (tgmc 26,928 · paradise
+39,362 · beestation 45,043); compile-proof 1,500 procs real engine **0 errors**.
+
+- **New real builtins**: `regex()` (engine-free .NET Regex datum — Find/Match/
+  Replace/FindAll dispatch lazily under `/regex` via the proc registry),
+  `regex_quote`, `astype` (datum type path), `isicon`, `icon_states` (DMI text
+  chunks parsed in-runtime: tEXt/zTXt via ZLibStream/iTXt), `arctan` (degrees),
+  `findlasttext`, `values_sum`/`values_dot`/`values_min`/`values_max`, `roll`
+  ("NdM" dice).
+- **UI/engine stubs moved to the STUBBED bucket** (honest accounting instead of
+  "unresolved"): `winset`, `link`, `gradient`, `vector`, `openToolTip`,
+  `closeToolTip`, `browse_rsc`, `ftp` — stubbed bucket tgstation 5,209 → 5,352.
+- **world.\* statics**: `world.view` (5), `world.tick_lag` (1), `world.system_type`
+  (2=UNIX), `world.byond_version`/`byond_build`, `world.host`, `world.cpu`,
+  `world.fps` initialized on the world datum; `world.timeofday` is wall-clock at
+  access (world.time stays the static startup value — no tick loop exists).
+- 12 new differential probes (regex find/match/replace, astype, regex_quote,
+  findlasttext, values_sum/dot, roll, isicon, world.view+tick_lag, arctan).

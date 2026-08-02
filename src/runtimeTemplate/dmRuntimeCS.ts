@@ -443,8 +443,10 @@ namespace SS13.DM.Runtime
         content: `using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO.Compression;
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace SS13.DM.Runtime
@@ -707,9 +709,11 @@ namespace SS13.DM.Runtime
         content: `using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO.Compression;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace SS13.DM.Runtime
@@ -762,6 +766,17 @@ namespace SS13.DM.Runtime
             // these (WS9-5 — previously never set, so step() walked off-map).
             world.SetVar("xmax", DMValue.FromNumber(100));
             world.SetVar("ymax", DMValue.FromNumber(100));
+            // world.* statics: tick_lag (deciseconds), view (BYOND default 5),
+            // system_type (1=MS_WINDOWS, 2=UNIX — this host), byond_version,
+            // host, cpu (usage placeholder), fps.
+            world.SetVar("tick_lag", DMValue.FromNumber(1));
+            world.SetVar("view", DMValue.FromNumber(5));
+            world.SetVar("system_type", DMValue.FromNumber(2));
+            world.SetVar("byond_version", DMValue.FromNumber(516));
+            world.SetVar("byond_build", DMValue.FromNumber(1605));
+            world.SetVar("host", DMValue.FromString("localhost"));
+            world.SetVar("cpu", DMValue.FromNumber(0));
+            world.SetVar("fps", DMValue.FromNumber(0));
             return DMValue.FromDatum(world);
         }
 
@@ -893,7 +908,23 @@ namespace SS13.DM.Runtime
                 if (target.Type == DMValueType.String) return DMValue.FromNumber(DMValue.CpLength(target.StringValue));
             }
             if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
+            {
+                // world.* statics: timeofday is wall-clock at access time
+                // (world.time stays the static startup value — there is no
+                // tick loop to advance it, and the probe locks it at 0).
+                if (ReferenceEquals(datum, WorldValue.DatumRef))
+                {
+                    switch (name)
+                    {
+                        case "timeofday":
+                            return DMValue.FromNumber((DateTime.UtcNow - DateTime.UtcNow.Date).TotalMilliseconds / 100.0);
+                        case "tick_lag":
+                            return DMValue.FromNumber(datum.GetVar("tick_lag").Type == DMValueType.Number && datum.GetVar("tick_lag").NumberValue > 0
+                                ? datum.GetVar("tick_lag").NumberValue : 1);
+                    }
+                }
                 return datum.GetVar(name);
+            }
             return DMValue.Null;
         }
 
@@ -2195,6 +2226,279 @@ namespace SS13.DM.Runtime
         }
 
         public static DMValue Abs(DMValue value) => DMValue.FromNumber(Math.Abs(value.ToNumber()));
+
+        // ===== Tier-3 builtins (2026-08-02 wave) =====
+
+        // arctan in degrees (BYOND trig is degree-based).
+        public static DMValue Arctan(DMValue value) => DMValue.FromNumber(Math.Atan(value.ToNumber()) * 180.0 / Math.PI, true);
+
+        // regex_quote(text): escape regex metacharacters (REGEX_QUOTE macro).
+        public static DMValue RegexQuote(DMValue value) => DMValue.FromString(Regex.Escape(value.ToString()));
+
+        // findlasttext(haystack, needle, start, end): findtext scanning from
+        // the end; returns the 1-based code-point index of the LAST match.
+        public static DMValue FindLastText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)
+        {
+            var s = text.ToString();
+            var n = needle.ToString();
+            if (n.Length == 0) return DMValue.FromNumber(0);
+            var lastIdx = s.LastIndexOf(n, StringComparison.OrdinalIgnoreCase);
+            if (lastIdx < 0) return DMValue.FromNumber(0);
+            return DMValue.FromNumber(DMValue.CpLength(s.Substring(0, lastIdx)) + 1);
+        }
+
+        // values_sum(list): sum of the elements (vector/stat helpers).
+        public static DMValue ValuesSum(DMValue value)
+        {
+            var list = value.AsList();
+            if (list == null) return DMValue.FromNumber(0);
+            double sum = 0;
+            for (var i = 1; i <= list.PositionalCount; i++) sum += list.Get(i).ToNumber();
+            return DMValue.FromNumber(sum, false);
+        }
+
+        public static DMValue ValuesDot(DMValue a, DMValue b)
+        {
+            var la = a.AsList();
+            var lb = b.AsList();
+            if (la == null || lb == null) return DMValue.FromNumber(0);
+            double sum = 0;
+            var n = Math.Min(la.PositionalCount, lb.PositionalCount);
+            for (var i = 1; i <= n; i++) sum += la.Get(i).ToNumber() * lb.Get(i).ToNumber();
+            return DMValue.FromNumber(sum, false);
+        }
+
+        // values_min/values_max(list1, list2): element-wise min/max list.
+        public static DMValue ValuesMin(DMValue a, DMValue b) => ValuesMinMax(a, b, true);
+        public static DMValue ValuesMax(DMValue a, DMValue b) => ValuesMinMax(a, b, false);
+
+        private static DMValue ValuesMinMax(DMValue a, DMValue b, bool min)
+        {
+            var la = a.AsList();
+            var lb = b.AsList();
+            var result = new DMList();
+            if (la == null || lb == null) return DMValue.FromList(result);
+            var n = Math.Min(la.PositionalCount, lb.PositionalCount);
+            for (var i = 1; i <= n; i++)
+            {
+                var x = la.Get(i).ToNumber();
+                var y = lb.Get(i).ToNumber();
+                result.Add(DMValue.FromNumber(min ? Math.Min(x, y) : Math.Max(x, y)));
+            }
+            return DMValue.FromList(result);
+        }
+
+        // roll("2d6"): sum of N rolls of a dM die; roll("d6") = 1d6.
+        public static DMValue Roll(DMValue value)
+        {
+            var s = value.ToString().Trim().ToLowerInvariant();
+            var m = Regex.Match(s, @"^(\\d*)d(\\d+)$");
+            if (!m.Success) return DMValue.FromNumber(0);
+            var n = m.Groups[1].Value.Length == 0 ? 1 : int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            var sides = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+            if (n <= 0 || sides <= 0) return DMValue.FromNumber(0);
+            var rng = new Random();
+            double sum = 0;
+            for (var i = 0; i < n; i++) sum += rng.Next(sides) + 1;
+            return DMValue.FromNumber(sum);
+        }
+
+        // astype(x): the DM type path of a datum, as a path value.
+        public static DMValue Astype(DMValue value)
+        {
+            if (value.Type == DMValueType.DatumRef && value.DatumRef is DMRuntime datum)
+                return DMValue.FromPath(datum.DMTypePath);
+            return DMValue.Null;
+        }
+
+        // isicon(x): true when the value is an icon asset (path/file ending
+        // .dmi) — the icon() builtin itself is engine-integrated (stub).
+        public static DMValue IsIcon(DMValue value)
+        {
+            if (value.Type == DMValueType.Path || value.Type == DMValueType.File)
+                return DMValue.FromNumber(value.ToString().EndsWith(".dmi", StringComparison.OrdinalIgnoreCase) ? 1 : 0);
+            return DMValue.FromNumber(0);
+        }
+
+        // icon_states('x.dmi'): the state names declared in a DMI file,
+        // parsed from its PNG text chunks (tEXt/zTXt/iTXt).
+        public static DMValue IconStates(DMValue value)
+        {
+            var list = new DMList();
+            var path = value.Type == DMValueType.File || value.Type == DMValueType.Path ? value.ToString() : null;
+            if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)) return DMValue.FromList(list);
+            try
+            {
+                var bytes = System.IO.File.ReadAllBytes(path);
+                var text = ExtractDmiText(bytes);
+                if (text == null) return DMValue.FromList(list);
+                foreach (Match m in Regex.Matches(text, "state\\\\s*=\\\\s*\\\\x22([^\\\\x22]+)\\\\x22"))
+                    list.Add(DMValue.FromString(m.Groups[1].Value));
+            }
+            catch
+            {
+                // unreadable/corrupt file -> empty list
+            }
+            return DMValue.FromList(list);
+        }
+
+        private static string ExtractDmiText(byte[] buffer)
+        {
+            var sb = new StringBuilder();
+            int offset = 8;
+            while (offset + 8 <= buffer.Length)
+            {
+                var length = (int)((buffer[offset] << 24) | (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3]);
+                var type = System.Text.Encoding.ASCII.GetString(buffer, offset + 4, 4);
+                if (offset + 8 + length > buffer.Length) break;
+                if (type == "tEXt" || type == "zTXt" || type == "iTXt")
+                {
+                    var data = buffer.AsSpan(offset + 8, length);
+                    try
+                    {
+                        if (type == "tEXt")
+                        {
+                            var nul = data.IndexOf((byte)0);
+                            if (nul >= 0) sb.Append(System.Text.Encoding.UTF8.GetString(data.Slice(nul + 1)));
+                        }
+                        else if (type == "zTXt")
+                        {
+                            var nul = data.IndexOf((byte)0);
+                            if (nul >= 0 && nul + 2 < data.Length)
+                            {
+                                using var z = new ZLibStream(new MemoryStream(data.Slice(nul + 2).ToArray()), CompressionMode.Decompress);
+                                using var r = new StreamReader(z, System.Text.Encoding.UTF8);
+                                sb.Append(r.ReadToEnd());
+                            }
+                        }
+                        else if (type == "iTXt")
+                        {
+                            // keyword \0 compressionFlag \0 lang \0 translated \0 text
+                            var nul1 = data.IndexOf((byte)0);
+                            if (nul1 >= 0)
+                            {
+                                var rest = data.Slice(nul1 + 1);
+                                if (rest.Length >= 1 && rest[0] == 1 && rest.Length >= 2 && rest[1] == 0)
+                                {
+                                    var textStart = FindITextTextStart(rest);
+                                    if (textStart > 0)
+                                    {
+                                        using var z = new ZLibStream(new MemoryStream(rest.Slice(textStart).ToArray()), CompressionMode.Decompress);
+                                        using var r = new StreamReader(z, System.Text.Encoding.UTF8);
+                                        sb.Append(r.ReadToEnd());
+                                    }
+                                }
+                                else
+                                {
+                                    var textStart = FindITextTextStart(rest);
+                                    if (textStart > 0)
+                                        sb.Append(System.Text.Encoding.UTF8.GetString(rest.Slice(textStart)));
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // corrupt chunk -> skip
+                    }
+                }
+                if (type == "IEND") break;
+                offset += 12 + length;
+            }
+            var all = sb.ToString();
+            return all.Contains("# BEGIN DMI") ? all : null;
+        }
+
+        // iTXt: compressionFlag byte, then lang\0 translated\0 then the text —
+        // the text starts after the SECOND NUL following the flag byte.
+        private static int FindITextTextStart(ReadOnlySpan<byte> rest)
+        {
+            // skip the compression flag byte
+            int pos = 1;
+            int nuls = 0;
+            while (pos < rest.Length)
+            {
+                if (rest[pos] == 0)
+                {
+                    nuls++;
+                    if (nuls == 2) return pos + 1;
+                }
+                pos++;
+            }
+            return -1;
+        }
+
+        // regex(text, flags): a lightweight regex datum (engine-free .NET
+        // Regex). Methods Find/Match/Replace/FindAll dispatch through the
+        // proc registry under /regex (lazily registered).
+        public static DMValue DMRegex(DMValue pattern, DMValue flags = default)
+        {
+            EnsureRegexRegistrations();
+            var datum = new DMRuntime { DMTypePath = "/regex" };
+            datum.SetVar("pattern", pattern);
+            datum.SetVar("flags", flags.Type == DMValueType.Null ? DMValue.FromString("") : flags);
+            LiveDatums.Add(datum);
+            return DMValue.FromDatum(datum);
+        }
+
+        private static bool _regexRegistered;
+
+        private static void EnsureRegexRegistrations()
+        {
+            if (_regexRegistered) return;
+            _regexRegistered = true;
+            ProcRegistry.Register("/regex", "Find", (d, a) => Task.FromResult(RegexFind(d, a)),
+                new[] { "haystack", "start", "end" });
+            ProcRegistry.Register("/regex", "Match", (d, a) => Task.FromResult(RegexMatch(d, a)),
+                new[] { "haystack", "start", "end" });
+            ProcRegistry.Register("/regex", "Replace", (d, a) => Task.FromResult(RegexReplace(d, a)),
+                new[] { "haystack", "replacement" });
+            ProcRegistry.Register("/regex", "FindAll", (d, a) => Task.FromResult(RegexFindAll(d, a)),
+                new[] { "haystack" });
+        }
+
+        private static Regex BuildRegex(DMRuntime datum)
+        {
+            var pattern = datum.GetVar("pattern").ToString();
+            var flags = datum.GetVar("flags").ToString();
+            var opts = RegexOptions.CultureInvariant;
+            if (flags.Contains("i")) opts |= RegexOptions.IgnoreCase;
+            if (flags.Contains("m")) opts |= RegexOptions.Multiline;
+            if (flags.Contains("s")) opts |= RegexOptions.Singleline;
+            return new Regex(pattern, opts);
+        }
+
+        // Returns the 1-based code-point index of the first match (0 = none) —
+        // a subset of BYOND's Match datum, documented approximation.
+        private static DMValue RegexFind(DMRuntime datum, DMValue[] args)
+        {
+            var hay = args.Length > 0 ? args[0].ToString() : "";
+            var m = BuildRegex(datum).Match(hay);
+            if (!m.Success) return DMValue.FromNumber(0);
+            return DMValue.FromNumber(DMValue.CpLength(hay.Substring(0, m.Index)) + 1);
+        }
+
+        private static DMValue RegexMatch(DMRuntime datum, DMValue[] args)
+        {
+            var hay = args.Length > 0 ? args[0].ToString() : "";
+            var m = BuildRegex(datum).Match(hay);
+            return m.Success ? DMValue.FromString(m.Value) : DMValue.Null;
+        }
+
+        private static DMValue RegexReplace(DMRuntime datum, DMValue[] args)
+        {
+            var hay = args.Length > 0 ? args[0].ToString() : "";
+            var repl = args.Length > 1 ? args[1].ToString() : "";
+            return DMValue.FromString(BuildRegex(datum).Replace(hay, repl));
+        }
+
+        private static DMValue RegexFindAll(DMRuntime datum, DMValue[] args)
+        {
+            var hay = args.Length > 0 ? args[0].ToString() : "";
+            var list = new DMList();
+            foreach (Match m in BuildRegex(datum).Matches(hay)) list.Add(DMValue.FromString(m.Value));
+            return DMValue.FromList(list);
+        }
 
         public static DMValue UpperText(DMValue value) => DMValue.FromString(value.ToString().ToUpper());
 

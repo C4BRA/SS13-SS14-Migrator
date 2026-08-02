@@ -738,6 +738,66 @@ const PROBES: Probe[] = [
     name: '\\the text-macro marker is preserved',
     dm: `/datum/probe/proc/run()\n\treturn "\\the item"`,
     expected: '\\the item' // marker kept verbatim, not corrupted to a tab
+  },
+  {
+    name: 'arctan() returns degrees',
+    dm: `/datum/probe/proc/run()\n\treturn round(arctan(1) * 10)`,
+    expected: '450' // BYOND: atan(1) = 45 degrees
+  },
+  {
+    name: 'regex() find returns the match start index',
+    dm: `/datum/probe/proc/run()\n\tvar/re = regex("b+")\n\treturn re.Find("xabbb")`,
+    expected: '3' // 1-based index of the first match ("xabbb": b at 3)
+  },
+  {
+    name: 'regex() match returns the matched text',
+    dm: `/datum/probe/proc/run()\n\tvar/re = regex("b+")\n\treturn re.Match("xabbb")`,
+    expected: 'bbb'
+  },
+  {
+    name: 'regex() replace substitutes matches',
+    dm: `/datum/probe/proc/run()\n\tvar/re = regex("b+")\n\treturn re.Replace("xabbb", "Z")`,
+    expected: 'xaZ'
+  },
+  {
+    name: 'astype() returns the datum type path',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn astype(a)`,
+    expected: '/datum/probe2'
+  },
+  {
+    name: 'regex_quote() escapes regex metacharacters',
+    dm: `/datum/probe/proc/run()\n\treturn regex_quote("a.b")`,
+    expected: 'a\\.b'
+  },
+  {
+    name: 'findlasttext() finds the last match',
+    dm: `/datum/probe/proc/run()\n\treturn findlasttext("abcabc", "b")`,
+    expected: '5' // 1-based index of the last b
+  },
+  {
+    name: 'values_sum() sums a list',
+    dm: `/datum/probe/proc/run()\n\treturn values_sum(list(1, 2, 3))`,
+    expected: '6'
+  },
+  {
+    name: 'values_dot() dot product of two lists',
+    dm: `/datum/probe/proc/run()\n\treturn values_dot(list(1, 2), list(3, 4))`,
+    expected: '11' // 1*3 + 2*4
+  },
+  {
+    name: 'roll() evaluates NdM dice',
+    dm: `/datum/probe/proc/run()\n\treturn roll("1d1")`,
+    expected: '1'
+  },
+  {
+    name: 'isicon() is true only for dmi paths',
+    dm: `/datum/probe/proc/run()\n\treturn isicon(/obj) + isicon("/x.dmi") * 0 + isicon(null)`,
+    expected: '0'
+  },
+  {
+    name: 'world.view and world.tick_lag are numbers',
+    dm: `/datum/probe/proc/run()\n\treturn world.view + world.tick_lag`,
+    expected: '6' // BYOND defaults 5 + 1
   }
 ];
 
