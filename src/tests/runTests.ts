@@ -1,6 +1,7 @@
 import { DMLexer, TokenType } from '../parser/dmLexer.js';
 import { DMParser } from '../parser/dmParser.js';
 import { DMIRGenerator } from '../ir/dmIRGenerator.js';
+import { CSharpEmitter } from '../transpiler/csharpEmitter.js';
 import { YAMLGenerator } from '../transpiler/yamlGenerator.js';
 import { DMIParser } from '../dmi/dmiParser.js';
 import { DMMParser } from '../dmm/dmmParser.js';
@@ -103,6 +104,40 @@ async function runTests() {
   const staticIRMap = irGen.generateIR(staticNodes);
   const floorIR = staticIRMap.get('/turf/simulated/floor');
   assert(floorIR !== undefined && floorIR.isDynamic === false, "Floor correctly categorized as static entity without DMRuntimeComponent bloat");
+
+  // Test 5b (Plan 09 B4): cross-file type split — same path declared in two
+  // files (vars in one, procs in another) must MERGE, not last-wins.
+  const fileA = new DMParser(new DMLexer(`/obj/item/foo\n    var/value = 1`).tokenize()).parse();
+  const fileB = new DMParser(new DMLexer(`/obj/item/foo/proc/run()\n    return value`).tokenize()).parse();
+  const mergedIRMap = irGen.generateIR([...fileA, ...fileB]);
+  const fooIR = mergedIRMap.get('/obj/item/foo');
+  assert(fooIR !== undefined && fooIR!.customVars.has('value'), "Cross-file split merges vars");
+  assert(fooIR!.procs.has('run'), "Cross-file split merges procs");
+
+  // Test 5c (Plan 09 B4): trailing-slash base-type — /obj/ declared as a base
+  // type and /obj children must resolve against it (no duplicate /obj node,
+  // no re-synthesis over the real node).
+  const slashDM = new DMParser(new DMLexer(`/obj/\n    var/flag = 0\n/obj/item/foo/proc/run()\n    return flag`).tokenize()).parse();
+  const slashIRMap = irGen.generateIR(slashDM);
+  const slashObjIR = slashIRMap.get('/obj');
+  assert(slashObjIR !== undefined && slashObjIR!.customVars.has('flag'), "Trailing-slash /obj/ declaration normalized to /obj base");
+  const slashFooIR = slashIRMap.get('/obj/item/foo');
+  assert(slashFooIR !== undefined && slashFooIR!.parentPath === '/obj/item', "Child path resolves synthesized intermediate parent");
+  assert(slashFooIR!.customVars.has('flag'), "Child inherits var from trailing-slash parent declaration");
+
+  // Test 5d (Plan 09 B4): /global/var/ initializer round-trip — string-ness
+  // preserved in EnsureInit, bare refs resolve to other globals (no comp refs).
+  const globalsDM = `/global/var/motd = "hello world"\n/global/var/count = 42\n/global/var/alias = motd\n/global/var/copy = "n=[count]"`;
+  const globalsParser = new DMParser(new DMLexer(globalsDM).tokenize());
+  const globalsNodes = globalsParser.parse();
+  const globalsIR = irGen.generateIR(globalsNodes);
+  const globalsEmitter = new CSharpEmitter();
+  const globalsCS = globalsEmitter.generateProcsCS(globalsIR, globalsParser.globalVars);
+  const ensureInit = (globalsCS.split('private static async Task EnsureInit')[1] || '').split('}')[0];
+  assert(ensureInit.includes('DMValue.FromString("hello world")'), "Global string initializer round-trips as string literal");
+  assert(ensureInit.includes('DMValue.FromNumber(42)'), "Global numeric initializer preserved");
+  assert(ensureInit.includes('GlobalVars.Get("motd")'), "Global initializer referencing another global resolves via GlobalVars.Get");
+  assert(!ensureInit.includes('comp.GetVar'), "Global initializers must not reference comp (CS0103 in static context)");
 
   // Test 5: End-to-End Transpilation to temporary directory
   const tmpInputDir = path.join(process.cwd(), 'temp_test_ss13');

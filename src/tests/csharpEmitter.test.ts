@@ -446,8 +446,8 @@ async function runCSharpEmitterTests() {
 `);
   assertContains(col, 'ObjItemFoo_2', 'second colliding class name gets a suffix');
   assert((col.match(/public static async Task<DMValue> Proc_ObjItemFoo_\w+\(DMRuntime/g) || []).length === 2, 'both colliding paths emit distinct static methods');
-  assertContains(col, 'Proc_ObjItemFoo_2_A(', 'suffixed method for /obj/item/foo');
-  assertContains(col, 'Proc_ObjItemFoo_B(', 'unsuffixed method for /obj/ItemFoo');
+  assertContains(col, 'Proc_ObjItemFoo_2_B(', 'suffixed method for the second path (/obj/ItemFoo)');
+  assertContains(col, 'Proc_ObjItemFoo_A(', 'unsuffixed method for /obj/item/foo');
 
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }

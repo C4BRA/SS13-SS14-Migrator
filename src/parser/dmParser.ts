@@ -534,11 +534,17 @@ export class DMParser {
       const value = this.advance().value;
       if (value === '(' || value === '[' || value === '{') depth++;
       else if (value === ')' || value === ']' || value === '}') depth--;
-      parts.push(value);
+      // StringLiteral token values arrive unquoted; restore the quotes so the
+      // captured text round-trips through the lexer in parseInitializerTextToExpr
+      // (otherwise "hello world" re-lexes as two bare identifiers).
+      if (token.type === TokenType.StringLiteral) {
+        parts.push('"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
+      } else {
+        parts.push(value);
+      }
     }
     return parts.join(' ').trim();
   }
-
   /**
    * Re-parse a captured initializer string (see parseInitialValueText) into a
    * full expression tree. Globals are declared at top level where no statement

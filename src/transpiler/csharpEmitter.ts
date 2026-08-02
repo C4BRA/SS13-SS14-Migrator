@@ -153,8 +153,14 @@ namespace Content.Server.DM
     const prevMode = this.globalsMode;
     this.globalsMode = true;
     for (const g of globals) {
-      const expr = g.initialValueExpr ? this.transpileExpression(g.initialValueExpr) : 'DMValue.Null';
-      code += `            Vars["${g.name}"] = ${expr};\n`;
+      // Round-trip: when the initializer re-parse fails (text macros, exotic
+      // literals), keep the value as the raw text string instead of dropping
+      // it to Null — the captured text is the source of truth.
+      let expr = g.initialValueExpr ? this.transpileExpression(g.initialValueExpr) : null;
+      if (expr === null && g.initialValue) {
+        expr = `DMValue.FromString("${this.escapeString(g.initialValue.replace(/^["']|["']$/g, ''))}")`;
+      }
+      code += `            Vars["${g.name}"] = ${expr ?? 'DMValue.Null'};\n`;
     }
     this.globalsMode = prevMode;
     code += `        }
@@ -556,7 +562,10 @@ namespace Content.Server.DM
     if (node.name === 'src') return this.globalsMode ? 'DMValue.Null' : 'DMValue.FromDatum(comp)';
     if (node.name === 'usr') return 'DMRuntimeHelpers.CurrentUsr';
     if (node.name === 'world') return 'DMRuntimeHelpers.WorldValue';
-    if (node.name === 'args') return 'DMValue.FromList(__dmArgs)';
+    if (node.name === 'args') return this.globalsMode ? 'DMValue.Null' : 'DMValue.FromList(__dmArgs)';
+    // Global initializers have no proc scope: a bare identifier references
+    // another global (there is no comp to read from).
+    if (this.globalsMode) return `await GlobalVars.Get("${node.name}")`;
     return `comp.GetVar("${node.name}")`;
   }
 
