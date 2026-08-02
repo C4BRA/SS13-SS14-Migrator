@@ -72,12 +72,12 @@ trailing-slash normalization.
 | `..()` parent calls → `null` | 22,927 | 8,544 | 13,436 | 16,392 | **61,299** | 🔴 core inheritance dead |
 | bitwise ops `& \| ^ ~ << >>` → `null` | 18,043 | 7,595 | 8,163 | 10,821 | **44,622** | 🔴 flag logic dead |
 | `new` → same object, identity broken | 12,665 | 8,146 | 12,353 | 10,798 | **43,962** | 🔴 |
-| `break`/`continue` dropped | 5,694 | 2,532 | 3,447 | 4,410 | **16,083** | 🔴 loops wrong |
+| `break`/`continue` (counted as dropped) | 5,694 | 2,532 | 3,447 | 4,410 | **16,083** | ✅ handled (emitter emits them; audit 2026-08-02: harness counter stale by 6,018) |
 | world refs (`world.*`) → `null` | 3,705 | 1,748 | 3,160 | 3,843 | **12,456** | 🟠 |
 | GLOB.x reads → `null` | 6,384 | 3,970 | 5,738 | 5,780 | **21,872** | ✅ resolved (3d) |
 | for-as loop filters | 3,899 | 304 | 761 | 2,036 | **7,000** | 🟠 |
-| `!=`/`~!` in value position → **CS0023** | 2,939 | 1,160 | 1,835 | 3,632 | **9,566** | 🔴 won't compile |
-| `**` → **CS0103** (`Power` missing) | 971 | 87 | 123 | 632 | **1,813** | 🔴 won't compile |
+| `!=`/`~!` in value position | 2,939 | 1,160 | 1,835 | 3,632 | **9,566** | ✅ resolved (`NotEquals` exists; counter stale) |
+| `**` (Power) | 971 | 87 | 123 | 632 | **1,813** | ✅ resolved (`Power` exists; counter stale) |
 | `as` casts → `null` | 227 | 228 | 255 | 288 | 998 | 🟠 |
 | `#define` truncation at `//` | 102 | 377 | 188 | 270 | 937 | 🟢 |
 | `new` in type decls, verb decls, client decls | 12–753 / file | — | — | — | 🟡 | client/verb conversion absent |
@@ -237,15 +237,44 @@ instead of counting them unknown (baseline: 3,345 unresolved on tgstation, §3f)
   expressions, bare-C compound-assign `for` init — tgstation parse errors
   **1,285 → 178** (target <500 met).
 
+### 3g. Full-pipeline adversarial audit — VERIFIED (2026-08-02)
+
+Eight parallel workstreams (parser, preprocessor, runtime, emitter, IR,
+harness, security, media) — **115 consolidated findings (29 🔴 / 44 🟠 /
+42 🟡)**, published as GitHub issue #1. The harness findings correct the
+headline numbers:
+
+| Metric | Reported | Corrected | Cause |
+|---|---|---|---|
+| `totalLossSites` (tgstation) | 119,801 | **~105,198** | −708 unresolved double-counted (`fidelityAudit.ts:400-414`); −7,877 stale "won't compile" (`NotEquals`/`Power` exist); −6,018 handled break/continue |
+| Unresolved builtins | 708 | **~593** | −113 unexpanded tgstation fn-macros (`span_*`, `REGEX_QUOTE`, `TEST_ASSERT` — preprocessor `[interpolation]` handling); −2 case mismatches (`Rand`/`Turn` — BYOND case-insensitive) |
+| Parse errors | 178 | internally consistent | includes `tools/CatchUnescapedBrackets/fail.dm` fixture + `tools/` lints; files with parse errors drop their remaining content from every site counter |
+
+Key REDs being fixed in Plan 09 (`docs/plans/09-audit-fixes.md`): parser
+precedence table (`?` tighter than all binary ops; `<<`/`>>` at `||` level;
+bitwise merged into relational), `/`+alpha lexed as TypePath (`a/b` → division
+by `/b`), single-line `if (x) return` bodies dropped, `[expr]` interpolation
+never transpiled, `list("a" = 1)` values dropped, `in`-clause phantom args,
+leading-slash-less decls; emitter switch = infinite `while(true)` with no
+terminating `break`, `continue` skips C-for increment / continues the switch
+wrapper, 10 builtin trailing-arg forms → CS1501, `pathToClassName` collisions →
+CS0102; runtime `replacetext` empty-needle hang; IR special-parent synthesis
+order, cross-file type-split clobber, `/global/var/` string initializers →
+CS0103, trailing-slash base clobber; GUI `/api/convert` = unauthenticated
+arbitrary file write; DMI `state = "x"` regex misses `=`, iTXt needs 5 NULs
+(real: 3), RSI emits one `texture.png` (frame-major → direction-major), TGM
+maps unparseable → all grids skipped, mapConverter emits non-SS14 YAML schema.
+Escape-collapse class, Zip-Slip, ~70 builtin arg orders, and the 91-probe
+baseline were verified clean.
+
 ---
 
 ## 4. Ranked fix backlog
 
 **Tier 0 — unblocks compilation (small, high value)**
-1. Strip trailing `/` when normalizing type paths in the IR → kills CS0111 on all corpora.
-2. Emit `DMValue.NotEquals(a, b)` for value-position `!=` (runtime: `!Equals`); keeps
-   condition-position form → 9,566 sites un-break.
-3. Add `Power(a, b)` to the runtime (`Math.Pow`) → 1,813 sites.
+1. ~~Strip trailing `/` when normalizing type paths in the IR~~ → **DONE** (CS0111 class fixed).
+2. ~~Emit `DMValue.NotEquals(a, b)` for value-position `!=`~~ → **DONE** (runtime + emitter).
+3. ~~Add `Power(a, b)` to the runtime (`Math.Pow`)~~ → **DONE**.
 
 **Tier 1 — restores core semantics (biggest behavioral wins)**
 4. Parent dispatch: runtime registry walks the DM type hierarchy on
@@ -255,6 +284,8 @@ instead of counting them unknown (baseline: 3,345 unresolved on tgstation, §3f)
 6. Bitwise ops on `DMValue` (ints via unchecked ops) → revives 44,622 flag sites.
 7. Loop control: emitter tracks loop nesting; emit `break`/`continue` as structured
    C# (loop-local flag or real statements) → 16,083 sites.
+   (Handled for `while`/`for-in`; Plan 09 fixes `continue` in C-style `for` — it
+   skips the increment — and `continue` inside switch-in-loop.)
 8. Text semantics: `DMValue.Equals` — if either side is text, case-insensitive
    compare; `null == ""` true; `<` on two texts → ordinal; `||` returns operand,
    `&&`/`||` short-circuit via emitted ternaries.
@@ -298,7 +329,8 @@ runtime is engine-free and the probe harness runs it standalone. Probe count is
 now 91/91 preserved — the Phase 0.5 semantic-core backlog is complete (text/list
 semantics, short-circuit ops, break/continue, `..()`, world statics, builtins,
 `/proc` fallback, GLOB statics) and Plan 01 added its first three builtin batches
-(pure functions, file ops, movement; tgstation unresolved 3,345 → 708, parse
-errors 1,285 → 178). Remaining work is Tier 3+ scope: bitwise ops, remaining
-builtins (`regex`/`astype`/`winset`/`icon_states`/`span_*`…), `world.*`, and
-corpus-scale compile proof.
+(pure functions, file ops, movement). The 2026-08-02 adversarial audit (§3g)
+re-baselined the totals: **~105,198 real loss sites** (not 119,801) and **~593
+real unresolved builtins** (not 708). Remaining work is Tier 3+ scope: bitwise
+ops, remaining builtins (`regex`/`astype`/`winset`/`icon_states`/`span_*`…),
+`world.*`, the Plan 09 fix wave, and corpus-scale compile proof.

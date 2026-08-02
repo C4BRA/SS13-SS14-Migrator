@@ -60,9 +60,10 @@ Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
       IR + `new`-expression trailing-slash normalization
 
 Remaining (Phase 2+/Tier 3): bitwise ops, remaining builtins
-(`sqrt`, `json_encode`, `regex`, `file`, `step`, `ckey`, `viewers`, `winset`,
-`orange`, `floor`/`ceil`, `copytext_char`, `SpacemanDMM_unlint`), `world.*`
-statics, top parse-error classes (paradise 14k / beestation 16k).
+(`regex`, `astype`, `winset`, `icon_states`, `span_*` (preprocessor, not builtins),
+`findtextEx`, `arctan`, `isicon`, `link`), `world.*` statics, and the Plan 09
+audit-fix wave (adversarial audit 2026-08-02 surfaced 29 🔴 / 44 🟠 / 42 🟡
+findings; see `docs/plans/09-audit-fixes.md`).
 
 ---
 
@@ -147,14 +148,15 @@ Detailed, code-grounded implementation plans for the remaining loss classes
 
 | Plan | Item | TG sites | Status |
 |---|---|---|---|
-| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls | in progress (2026-08-02: 708 unresolved; pure + file + movement batches landed) |
+| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls (708 unresolved; audit 2026-08-02: ~593 real — ~113 are unexpanded tgstation function macros) | in progress (2026-08-02: pure + file + movement batches landed) |
 | [02-symbol-resolution.md](docs/plans/02-symbol-resolution.md) | Symbol resolution + global procs | 36,911 bare global calls (runtime fallback) | in progress (2026-08-02: milestone 1 — symbol table + audit triage; 93,573 verified) |
 | [03-bitwise.md](docs/plans/03-bitwise.md) | Bitwise operators | 18,060 binary + 1,038 unary → Null | not started |
 | [04-live-server.md](docs/plans/04-live-server.md) | Live-server integration | whole-verification gap | not started |
 | [05-appearance.md](docs/plans/05-appearance.md) | Appearance/icon/overlay system | animate 937, image 442, overlays 117, ... | not started |
-| [06-parse-errors.md](docs/plans/06-parse-errors.md) | Parse-error reduction | 2,473 errors (+ silent classes) | in progress |
+| [06-parse-errors.md](docs/plans/06-parse-errors.md) | Parse-error reduction | 2,473 errors (+ silent classes) | in progress (2026-08-02: tgstation 1,285 → **178**; audit caveats: silent misparse classes + `tools/` fixture noise are excluded from the count) |
 | [07-props.md](docs/plans/07-props.md) | Builtin property reads | 11,644 prop reads + 6,384 GLOB.x | not started |
 | [08-new-type.md](docs/plans/08-new-type.md) | `new /type(...)` semantics | 12,675 sites | not started |
+| [09-audit-fixes.md](docs/plans/09-audit-fixes.md) | Adversarial audit fixes (Plan 09) | audit REDs 29 + ORANGEs 44 | in progress (2026-08-02: full-pipeline adversarial audit, 115 findings, GitHub issue #1) |
 
 ---
 
