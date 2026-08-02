@@ -215,10 +215,73 @@ aaa
   assertEqual(attrDef?.attributes?.['icon_state'], '"wood"', 'Tile attribute icon_state captured');
   assertEqual(attrDef?.attributes?.layer, '5', 'Tile attribute layer captured');
 
+  // Test 12 (Plan 09 B7): TGM multi-line definitions with `{...} =` continuations
+  const tgmDmm = `"aaa" = (/turf/simulated/floor
+/obj/structure/table{dir = 1}
+/obj/item/sword)
+"bbb" = (/turf/simulated/floor{icon_state = "wood"} = /obj/item/coin)
+"ccc" = (/turf/simulated/floor,
+/obj/item/shard)
+
+(1,1,1) = {" 
+aaabbb
+ccc
+"}`;
+
+  const tgmPath = path.join(process.cwd(), 'temp_test_tgm.dmm');
+  fs.writeFileSync(tgmPath, tgmDmm);
+
+  const tgmResult = parser.parseDMM(tgmPath);
+  assertEqual(tgmResult.definitions.get('aaa')?.typePaths, ['/turf/simulated/floor', '/obj/structure/table', '/obj/item/sword'], 'TGM multi-line definition accumulates paths');
+  assertEqual(tgmResult.definitions.get('aaa')?.attributes?.dir, '1', 'TGM multi-line attrs captured');
+  assertEqual(tgmResult.definitions.get('bbb')?.typePaths, ['/turf/simulated/floor', '/obj/item/coin'], 'TGM {attrs} = path continuation parsed');
+  assertEqual(tgmResult.definitions.get('ccc')?.typePaths, ['/turf/simulated/floor', '/obj/item/shard'], 'TGM trailing-comma continuation parsed');
+  assertEqual(tgmResult.grids[0].cells[0], ['aaa', 'bbb'], 'TGM grid cells decoded');
+
+  // Test 13 (Plan 09 B7): per-column sections of the same z merge into ONE grid
+  const colDmm = `"flr" = (/turf/simulated/floor)
+"wal" = (/turf/simulated/wall)
+
+(1,1,1) = {" 
+walwal
+flrflr
+"}
+(3,1,1) = {" 
+wal
+flr
+"}`;
+
+  const colPath = path.join(process.cwd(), 'temp_test_cols.dmm');
+  fs.writeFileSync(colPath, colDmm);
+
+  const colResult = parser.parseDMM(colPath);
+  assertEqual(colResult.grids.length, 1, 'Per-column sections merge into one grid');
+  assertEqual(colResult.grids[0].width, 3, 'Merged grid width spans both sections');
+  assertEqual(colResult.grids[0].cells[0], ['wal', 'wal', 'wal'], 'Merged grid north row');
+  assertEqual(colResult.grids[0].cells[1], ['flr', 'flr', 'flr'], 'Merged grid south row');
+
+  // Test 14 (Plan 09 B7): negative coordinates in grid headers
+  const negDmm = `"floor" = (/turf/simulated/floor)
+
+(-2,-3,1) = {" 
+floor
+floor
+"}`;
+
+  const negPath = path.join(process.cwd(), 'temp_test_neg.dmm');
+  fs.writeFileSync(negPath, negDmm);
+
+  const negResult = parser.parseDMM(negPath);
+  assertEqual(negResult.grids.length, 1, 'Negative-coord section parsed');
+  assertEqual(negResult.grids[0].originX, -2, 'Negative origin X preserved');
+  assertEqual(negResult.grids[0].width, 1, 'Negative-coord grid width');
+  assertEqual(negResult.grids[0].cells[0][0], 'floor', 'Negative-coord grid cell');
+
   // Cleanup
   for (const f of ['temp_test_simple.dmm', 'temp_test_multi.dmm', 'temp_test_multiz.dmm', 
     'temp_test_quoted.dmm', 'temp_test_longkey.dmm', 'temp_test_empty.dmm', 'temp_test_comment.dmm',
-    'temp_test_orphan.dmm', 'temp_test_ragged.dmm', 'temp_test_attr.dmm']) {
+    'temp_test_orphan.dmm', 'temp_test_ragged.dmm', 'temp_test_attr.dmm',
+    'temp_test_tgm.dmm', 'temp_test_cols.dmm', 'temp_test_neg.dmm']) {
     const fp = path.join(process.cwd(), f);
     if (fs.existsSync(fp)) fs.unlinkSync(fp);
   }

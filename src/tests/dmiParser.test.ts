@@ -244,11 +244,60 @@ state "bad"
       'Delay/frames mismatch warning message is descriptive'
     );
 
+    // Test 9 (Plan 09 B7): `state = "x"` assignment syntax (with equals sign)
+    const eqText = `# BEGIN DMI
+version = 4.0
+width = 64
+height = 32
+state = "eqstate"
+  dirs = 4
+# END DMI`;
+    const eqChunkData = Buffer.concat([Buffer.from('DMI'), Buffer.from([0]), Buffer.from(eqText, 'latin1')]);
+    const eqCrc = Buffer.alloc(4);
+    eqCrc.writeUInt32BE(crc32(Buffer.concat([Buffer.from('tEXt'), eqChunkData])), 0);
+    const eqChunk = Buffer.concat([Buffer.alloc(4).fill(0), Buffer.from('tEXt'), eqChunkData, eqCrc]);
+    eqChunk.writeUInt32BE(eqChunkData.length, 0);
+    const eqPng = Buffer.concat([pngSignature, ihdrChunk, eqChunk, iendChunk]);
+    const eqPngPath = path.join(process.cwd(), 'temp_test_dmi_eq.png');
+    fs.writeFileSync(eqPngPath, eqPng);
+
+    const eqResult = parser.parseDMI(eqPngPath);
+    assertEqual(eqResult.states[0].name, 'eqstate', 'state = "x" assignment syntax parses the state name');
+    assertEqual(eqResult.width, 64, 'state = "x" form still parses width');
+
+    // Test 10 (Plan 09 B7): iTXt with empty language tag + translated keyword
+    // (adjacent NULs — 3 distinct NUL bytes, not 5) must still parse.
+    // Layout: "DMI"\0 flag(0) method(0) \0(empty lang) \0(empty translated) text
+    const itxtText = `# BEGIN DMI
+version = 4.0
+width = 32
+height = 32
+state "itxtstate"
+  frames = 1
+# END DMI`;
+    const itxtChunkData = Buffer.concat([
+      Buffer.from('DMI'), Buffer.from([0]),
+      Buffer.from([0, 0]), // compression flag + method
+      Buffer.from([0]),    // empty language tag
+      Buffer.from([0]),    // empty translated keyword
+      Buffer.from(itxtText, 'utf8')
+    ]);
+    const itxtCrc = Buffer.alloc(4);
+    itxtCrc.writeUInt32BE(crc32(Buffer.concat([Buffer.from('iTXt'), itxtChunkData])), 0);
+    const itxtChunk = Buffer.concat([Buffer.alloc(4).fill(0), Buffer.from('iTXt'), itxtChunkData, itxtCrc]);
+    itxtChunk.writeUInt32BE(itxtChunkData.length, 0);
+    const itxtPng = Buffer.concat([pngSignature, ihdrChunk, itxtChunk, iendChunk]);
+    const itxtPngPath = path.join(process.cwd(), 'temp_test_dmi_itxt.png');
+    fs.writeFileSync(itxtPngPath, itxtPng);
+
+    const itxtResult = parser.parseDMI(itxtPngPath);
+    assertEqual(itxtResult.states[0].name, 'itxtstate', 'iTXt with empty language/translated fields parses (3-NUL layout)');
+
     console.log("\n✅ ALL DMI PARSER TESTS PASSED!");
 
   } finally {
     // Cleanup
-    for (const f of [testPngPath, 'temp_test_dmi_multi.png', 'temp_test_no_dmi.png', 'temp_test_bad.png', 'temp_test_dmi_ztxt.png', 'temp_test_dmi_baddelay.png']) {
+    for (const f of [testPngPath, 'temp_test_dmi_multi.png', 'temp_test_no_dmi.png', 'temp_test_bad.png', 'temp_test_dmi_ztxt.png', 'temp_test_dmi_baddelay.png', 'temp_test_dmi_eq.png', 'temp_test_dmi_itxt.png']) {
       const fp = path.join(process.cwd(), f);
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
     }

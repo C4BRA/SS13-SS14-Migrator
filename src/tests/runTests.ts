@@ -25,6 +25,7 @@ async function runTests() {
 
   // Run the standalone test suites (self-executing test modules)
   await import('./dmiParser.test.js');
+  await import('./rsiWriter.test.js');
   await import('./dmmParser.test.js');
   await import('./csharpEmitter.test.js');
   await import('./preprocessor.test.js');
@@ -269,6 +270,10 @@ state "icon"
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml')), "DMM converted to grid map YAML");
     const dmmMapYaml = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml'), 'utf-8');
     assert(dmmMapYaml.includes('proto: obj_item_weapon_sword'), "DMM item mapped to generated prototype id");
+    assert(dmmMapYaml.includes('uid:') && dmmMapYaml.includes('type: MapGrid'), "Map YAML uses uid/type entity schema");
+    assert(dmmMapYaml.includes('tilemap:') && dmmMapYaml.includes('  floor: TurfFloor'), "Map YAML has tilemap with turf prototypes");
+    assert(dmmMapYaml.includes('    chunks:'), "MapGrid entity has chunked tiles");
+    assert(dmmMapYaml.includes('pos: 2, 2, 1'), "Entity z coordinate taken from grid z (1)");
 
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;

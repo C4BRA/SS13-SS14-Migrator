@@ -52,11 +52,11 @@ until the wave closes and the audit is re-run for a corrected baseline.
 - [x] `/api/convert`: session token (X-Auth-Token) + Origin/Host validation + `outputPath` home-root validation + 429 concurrency lock; zip entry/size limits already enforced (`gui/server.ts`)
 
 ### B7 — Media
-- [ ] DMI state regex: `state = "x"` (`dmiParser.ts:164-166`)
-- [ ] iTXt: 3 NULs, not 5 (`dmiParser.ts:107`)
-- [ ] RSI: per-state sprites, direction-major slicing, frame-major delay indexing (`rsiWriter.ts:29-41`)
-- [ ] DMM: TGM multi-line defs; per-column sections merge into one grid (`dmmParser.ts:51,81-92,133-137`)
-- [ ] MapConverter: real SS14 YAML schema (`uid`/`type`, MapGrid `chunks`); `z` from grid z (`mapConverter.ts:74-93`)
+- [x] DMI state regex: `state = "x"` (and legacy `state "x"`) (`dmiParser.ts`)
+- [x] iTXt: positional NUL walk — empty language/translated fields collapse to adjacent NULs (`dmiParser.ts`)
+- [x] RSI: per-state sprites (PNG codec, frames stacked vertically), direction-major slicing, frame-major delay indexing (`rsiWriter.ts` + new `pngCodec.ts`)
+- [x] DMM: TGM multi-line defs (paren-balanced accumulation, `{...} =` continuations, top-level comma/newline split); per-z column-section merge; negative coords (`dmmParser.ts`)
+- [x] MapConverter: SS14 format-2 YAML — `uid`/`type`/`proto`, tilemap, MapGrid `chunks` (8x8 floor-div chunk math), `z` from grid z (`mapConverter.ts`)
 
 ## Probes & tests to add (lock the fixes)
 

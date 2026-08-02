@@ -100,23 +100,35 @@ export class DMIParser {
       }
     } else if (chunkType === 'iTXt') {
       // iTXt: keyword\0compressionFlag\0compressionMethod\0languageTag\0translatedKeyword\0text (UTF-8)
-      const nulls: number[] = [];
-      for (let i = 0; i < data.length && nulls.length < 5; i++) {
-        if (data[i] === 0) nulls.push(i);
-      }
-      if (nulls.length === 5) {
-        const keyword = data.toString('utf8', 0, nulls[0]);
+      // The language tag and translated keyword are NUL-terminated strings that
+      // are usually EMPTY, so adjacent NULs collapse — do not require exactly 5
+      // distinct NUL bytes; walk the fields positionally instead.
+      const firstNul = data.indexOf(0);
+      if (firstNul > 0) {
+        const keyword = data.toString('utf8', 0, firstNul);
         if (keyword === 'DMI' || keyword === 'Description') {
-          const compressionFlag = data[nulls[0] + 1];
-          const textStart = nulls[4] + 1;
+          const compressionFlag = data[firstNul + 1];
+          let i = firstNul + 2; // skip flag + method bytes
+          if (data[i] === 0) i++; // empty language tag
+          else {
+            const tagEnd = data.indexOf(0, i);
+            i = tagEnd > 0 ? tagEnd + 1 : data.length;
+          }
+          if (i >= data.length) return '';
+          if (data[i] === 0) i++; // empty translated keyword
+          else {
+            const kwEnd = data.indexOf(0, i);
+            i = kwEnd > 0 ? kwEnd + 1 : data.length;
+          }
+          if (i >= data.length) return '';
           if (compressionFlag === 1) {
             try {
-              return zlib.inflateSync(data.subarray(textStart)).toString('utf8');
+              return zlib.inflateSync(data.subarray(i)).toString('utf8');
             } catch {
               return '';
             }
           }
-          return data.toString('utf8', textStart);
+          return data.toString('utf8', i);
         }
       }
     } else if (chunkType === 'zTXt') {
@@ -161,8 +173,8 @@ export class DMIParser {
         if (currentState) {
           states.push(currentState);
         }
-        const stateNameMatch = trimmed.match(/state\s+\"([^\"]+)\"/);
-        const name = stateNameMatch ? stateNameMatch[1] : 'unnamed';
+        const stateNameMatch = trimmed.match(/^state\s*=\s*"([^"]+)"/) || trimmed.match(/^state\s+"([^"]+)"/);
+        const name = stateNameMatch ? (stateNameMatch[1] ?? stateNameMatch[2]) : 'unnamed';
         currentState = { name, dirs: 1, frames: 1 };
       } else if (currentState) {
         if (trimmed.startsWith('dirs =')) {

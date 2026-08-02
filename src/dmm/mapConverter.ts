@@ -2,31 +2,43 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DMMMapData, DMMParser } from './dmmParser.js';
 
+// SS14 map YAML (format 2): entities carry `uid` + optional `proto`, grids are
+// MapGrid entities with per-chunk tile arrays, and every Transform pos has an
+// explicit z taken from the source grid's z-level.
+const CHUNK_SIZE = 8;
+
 export class MapConverter {
   private parser = new DMMParser();
 
   public convertDMMToSS14Map(dmmPath: string, outputYAMLPath: string): DMMMapData {
     const dmmData = this.parser.parseDMM(dmmPath);
 
+    const tilemap = new Map<string, string>();
     const entities: any[] = [];
 
     let entityIdCounter = 1;
 
-    // DMM row 0 is the northernmost row; SS14 y grows northward, so world y
-    // is the grid origin plus (height - 1 - row).
     for (const grid of dmmData.grids) {
       const gridId = entityIdCounter++;
-      entities.push({
+      const chunks = new Map<string, string[]>();
+
+      const gridEntity: any = {
+        uid: gridId,
         type: 'MapGrid',
-        id: gridId,
-        format: 1
-      });
+        components: [
+          { type: 'MetaData', name: `grid_z${grid.z}` },
+          { type: 'Transform', pos: `0, 0, ${grid.z}` },
+          { type: 'MapGrid', chunks: chunks, tileSize: 1 }
+        ]
+      };
+      entities.push(gridEntity);
 
       for (let y = 0; y < grid.height; y++) {
         const row = grid.cells[y];
         if (!row) continue;
         for (let x = 0; x < row.length; x++) {
           const key = row[x];
+          if (!key) continue;
           const def = dmmData.definitions.get(key);
           if (!def) continue;
 
@@ -36,25 +48,33 @@ export class MapConverter {
             );
           }
 
+          // Grid row 0 is the northernmost row (world y = originY); SS14 y
+          // grows northward, so descending rows are world y = originY - y.
+          const worldY = grid.originY - y;
+          const worldX = grid.originX + x;
+
           for (const typePath of def.typePaths) {
             if (typePath.startsWith('/area')) continue;
-            const protoId = this.typePathToPrototypeId(typePath);
-            entities.push({
-              proto: protoId,
-              id: entityIdCounter++,
-              components: [
-                {
-                  type: 'Transform',
-                  pos: `${grid.originX + x}, ${grid.originY + grid.height - 1 - y}`
-                }
-              ]
-            });
+            if (typePath.startsWith('/turf')) {
+              const tileId = this.turfToTileId(typePath);
+              tilemap.set(tileId, this.tileIdToPrototype(tileId));
+              this.addTile(chunks, worldX, worldY, tileId);
+            } else {
+              const protoId = this.typePathToPrototypeId(typePath);
+              entities.push({
+                uid: entityIdCounter++,
+                proto: protoId,
+                components: [
+                  { type: 'Transform', pos: `${worldX}, ${worldY}, ${grid.z}` }
+                ]
+              });
+            }
           }
         }
       }
     }
 
-    const yamlOutput = this.serializeToYAML(entities, dmmData.grids.length > 1);
+    const yamlOutput = this.serializeToYAML(entities, tilemap);
 
     const dir = path.dirname(outputYAMLPath);
     if (!fs.existsSync(dir)) {
@@ -66,26 +86,65 @@ export class MapConverter {
     return dmmData;
   }
 
+  private turfToTileId(typePath: string): string {
+    const parts = typePath.split('/').filter(Boolean);
+    const base = parts[parts.length - 1].toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    return base || 'floor';
+  }
+
+  private tileIdToPrototype(tileId: string): string {
+    // SS14 turf prototypes are PascalCase (Floor, Wall, ...).
+    return 'Turf' + tileId.charAt(0).toUpperCase() + tileId.slice(1);
+  }
+
+  private addTile(chunks: Map<string, string[]>, worldX: number, worldY: number, tileId: string): void {
+    // RobustToolbox chunk math: floor division so negative coords land in the
+    // correct chunk with a positive local index.
+    const cx = Math.floor(worldX / CHUNK_SIZE);
+    const cy = Math.floor(worldY / CHUNK_SIZE);
+    const lx = worldX - cx * CHUNK_SIZE;
+    const ly = worldY - cy * CHUNK_SIZE;
+    const key = `${cx},${cy}`;
+    let chunk = chunks.get(key);
+    if (!chunk) {
+      chunk = [];
+      chunks.set(key, chunk);
+    }
+    chunk.push(`    ${lx},${ly}: ${tileId}`);
+  }
+
   private typePathToPrototypeId(typePath: string): string {
     const parts = typePath.split('/').filter(Boolean);
     return parts.join('_').toLowerCase();
   }
 
-  private serializeToYAML(entities: any[], multiGrid: boolean): string {
-    let yaml = '# SS14 Grid Map converted from SS13 DMM\nmeta:\n  format: 1\n  name: ConvertedStation\nentities:\n';
+  private serializeToYAML(entities: any[], tilemap: Map<string, string>): string {
+    let yaml = '# SS14 Grid Map converted from SS13 DMM\nmeta:\n  format: 2\n  name: ConvertedStation\n';
+    if (tilemap.size > 0) {
+      yaml += 'tilemap:\n';
+      for (const [tileId, proto] of tilemap) {
+        yaml += `  ${tileId}: ${proto}\n`;
+      }
+    }
+    yaml += 'entities:\n';
     for (const ent of entities) {
-      yaml += `- id: ${ent.id}\n`;
+      yaml += `- uid: ${ent.uid}\n`;
       if (ent.proto) yaml += `  proto: ${ent.proto}\n`;
       if (ent.type) yaml += `  type: ${ent.type}\n`;
-      if (multiGrid && ent.type === 'MapGrid') {
-        // Multiple DMM z-levels become separate SS14 grids so no level is
-        // dropped; each grid is a distinct entity in the map file.
-        yaml += `  components:\n    - type: Grid\n      z: ${ent.id}\n`;
-      } else if (ent.components) {
-        yaml += `  components:\n`;
+      if (ent.components) {
+        yaml += '  components:\n';
         for (const comp of ent.components) {
           yaml += `  - type: ${comp.type}\n`;
           if (comp.pos) yaml += `    pos: ${comp.pos}\n`;
+          if (comp.name) yaml += `    name: ${comp.name}\n`;
+          if (comp.tileSize) yaml += `    tileSize: ${comp.tileSize}\n`;
+          if (comp.chunks) {
+            yaml += '    chunks:\n';
+            for (const [chunkKey, lines] of comp.chunks) {
+              yaml += `      ${chunkKey}:\n`;
+              for (const line of lines) yaml += line + '\n';
+            }
+          }
         }
       }
     }
