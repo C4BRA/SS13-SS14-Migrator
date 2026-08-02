@@ -20,13 +20,13 @@ until the wave closes and the audit is re-run for a corrected baseline.
 ## Fix checklist (29 REDs, in dependency order)
 
 ### B1 — Parser (land first; corrupts everything downstream)
-- [ ] Precedence table: `?` must bind looser than `||`; `<<`/`>>` split from `||`; `&`/`^`/`|` split from relational (`dmParser.ts:1849`)
-- [ ] Lexer: `/`+alpha mid-expression must be division, not TypePath (`dmLexer.ts:131-135`)
-- [ ] Single-line statement bodies: `if (x) return` (`dmParser.ts:1352-1358`)
-- [ ] String interpolation `[expr]` → real AST node; emitter emits `Text(...)` (runtime helper exists)
-- [ ] `in`-clause proc args: `M as mob in oview()` — no phantom params (`dmParser.ts:434-485`)
-- [ ] Leading-slash-less declarations: `mob/verb/x` (`dmLexer.ts:131` + `dmParser.ts:121`)
-- [ ] Assoc literal values: `list("a" = 1)` (`dmParser.ts:1545-1553`)
+- [x] Precedence table: `?` binds looser than `||`; `<<`/`>>` split from `||`; `&`/`^`/`|` split from relational (`dmParser.ts`)
+- [x] Lexer: `/`+alpha mid-expression is division, not TypePath (`dmLexer.ts`)
+- [x] Single-line statement bodies: `if (x) return` (`dmParser.ts`)
+- [x] String interpolation `[expr]` → real AST node; emitter emits `Text(...)` (`dmParser.ts` + `csharpEmitter.ts`)
+- [x] `in`-clause proc args: `M as mob in oview()` — no phantom params (`dmParser.ts`)
+- [x] Leading-slash-less declarations: `mob/verb/x` (`dmLexer.ts` + `dmParser.ts`)
+- [x] Assoc literal values: `list("a" = 1)` (`dmParser.ts`)
 
 ### B2 — Emitter
 - [x] Switch: terminating `break` after the if/else chain; single-evaluate `switchCond` (`csharpEmitter.ts:231-252`)
@@ -35,7 +35,7 @@ until the wave closes and the audit is re-run for a corrected baseline.
 - [x] `pathToClassName` collisions → CS0102 (`csharpEmitter.ts:655-658`)
 
 ### B3 — Runtime
-- [ ] `ReplaceText` empty-needle infinite loop — guard like `ReplaceTextEx` (`dmRuntimeCS.ts:675-694`)
+- [x] `ReplaceText` empty-needle infinite loop — guarded in B2 fold-in (`dmRuntimeCS.ts`)
 
 ### B4 — IR
 - [x] Special-parent synthesis order: DFS parent-first, fixes /obj,/mob -> /atom/movable (`dmIRGenerator.ts:42-55`)
