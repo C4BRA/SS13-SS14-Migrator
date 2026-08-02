@@ -89,8 +89,9 @@ trailing-slash normalization.
 
 Parse errors (unsupported syntax, source dropped): tgstation 5,359 · tgmc 7,327 ·
 paradise 14,118 · beestation 16,003 — beestation/paradise lose whole files.
-**2026-08-02 re-run (Plan 11): tgstation total loss sites 105,097, tgmc 44,745,
-paradise 58,493, beestation 72,900** (see §3h).
+**2026-08-02 final re-run (post Plan 11 fix wave): tgstation total loss sites 54,457,
+tgmc 27,001, paradise 39,475, beestation 45,277** (bitwise/shift handled, prop-read
+miscount split, stub-builtin bucket visible; see §3j).
 
 ### The two biggest silent buckets (tgstation)
 
@@ -507,3 +508,9 @@ All 13 fix batches from `docs/audit/11-findings.md` §5 executed. Headline delta
   runtime IsType OrdinalIgnoreCase.
 - **Compile-proof**: corpus build 1,500 procs real engine **0 errors**; hostile-name
   corpus builds **0 errors** (was 11 CS error classes).
+- **FULL-SCALE re-verification (2026-08-02, §3b methodology)**: **45,183 procs from
+  45,183 types → real-engine `dotnet build` green, 0 C# errors** (12 residual
+  warnings — CS0162/CS0164 classes). Semantic probes **139/139**. Final 4-corpus
+  loss sites: tgstation **54,457** · tgmc **27,001** · paradise **39,475** ·
+  beestation **45,277**; unresolved bare calls: tgstation 1,012 · tgmc 496 ·
+  paradise 766 · beestation 849.

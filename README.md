@@ -131,12 +131,13 @@ engine.pin                                    pinned RobustToolbox commit + API 
 ## Known limitations
 
 See `PLAN.md` ("Out of scope") and `FIDELITY-AUDIT.md` (honest loss counts;
-**134 semantic probes, 129/134 passing** — the 5 failures are root-caused in
-§3h; Plan 01 builtin batches added 67 probes). Corpus status (2026-08-02 Plan 11
-re-run): tgstation unresolved bare calls **3,360** (dominated by unexpanded
-fn-macros; see `FIDELITY-AUDIT.md` §3h), parse errors **170**. A full-codebase
+**139 semantic probes, 139/139 passing**; Plan 01 builtin batches added 67 probes).
+Corpus status (final 2026-08-02 post-fix-wave re-run): tgstation loss sites
+**54,457**, unresolved bare calls **1,012**, parse errors **170**; full-scale
+compile-proof 45,183 procs vs the real engine: **0 C# errors**
+(`FIDELITY-AUDIT.md` §3j). A full-codebase
 adversarial audit (Plan 11) logged 200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢)
-in `docs/audit/11-findings.md`; fix batches are proposed but not started.
+in `docs/audit/11-findings.md`, and the fix wave 11.1-11.13 has shipped.
 Notable items: no argument macros, no screen/overlay/appearance handling,
 verb-to-command mapping is stubbed, and the generated solution builds against
 the real `Robust.Shared` engine project but does not yet run a live
