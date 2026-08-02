@@ -7,7 +7,7 @@ export interface ASTNode {
 
 // Expression AST Nodes
 export type ExpressionNode =
-  | { type: 'literal'; value: string | number | boolean | null; literalType: 'string' | 'number' | 'bool' | 'null' }
+  | { type: 'literal'; value: string | number | boolean | null; literalType: 'string' | 'number' | 'bool' | 'null' | 'path'; floatLiteral?: boolean }
   | { type: 'variable'; name: string }
   | { type: 'binary'; operator: string; left: ExpressionNode; right: ExpressionNode }
   | { type: 'unary'; operator: string; operand: ExpressionNode }
@@ -173,13 +173,24 @@ export class DMParser {
       }
 
       // Classic BYOND var declaration: /type/path/var/[global/][type/]name = value
-      const varDeclMatch = rawPath.match(/^(.+)\/var\/(global\/)?(.+)$/);
+      // (bare `var/x = 5` at the top level is a global var — WS2-5)
+      const varDeclMatch = rawPath.match(/^((?:.*?))\/var\/(global\/)?(.*)$/);
       if (varDeclMatch) {
         const ownerPath = varDeclMatch[1];
-        const isGlobal = varDeclMatch[2] !== undefined;
+        const isGlobal = varDeclMatch[2] !== undefined || ownerPath === '';
         const rest = varDeclMatch[3].split('/').filter((s) => s.length > 0);
         const varName = rest.pop() ?? '';
         const varType = rest.join('/');
+        // Array length: var/list/x[6] — consumed and dropped (the length is
+        // not materialized; same as in-block array-length handling).
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
+          this.advance();
+          while (!this.isType(TokenType.EOF) &&
+                 !(this.isType(TokenType.Punctuation) && this.peek().value === ']')) {
+            this.advance();
+          }
+          if (this.isType(TokenType.Punctuation) && this.peek().value === ']') this.advance();
+        }
         let initialValue = '';
         if (this.matchOperator('=')) {
           initialValue = this.parseInitialValueText();
@@ -362,15 +373,38 @@ export class DMParser {
         continue;
       }
 
-      // Sub-path under block (e.g. sword)
+      // Sub-path under block (e.g. sword, or sword/name = "x", or /obj/item/sword)
       if (token.type === TokenType.TypePath || (token.type === TokenType.Identifier && this.peekNext()?.type === TokenType.TypePath)) {
-        const subPath = token.type === TokenType.TypePath ? token.value : '/' + token.value;
-        const fullPath = currentTypeNode.path + (subPath.startsWith('/') ? subPath : '/' + subPath);
-        this.advance();
-
-        const subTypeNode = this.getOrCreateTypeNode(fullPath, typeDecls);
+        const isAbsolute = token.type === TokenType.TypePath;
+        let subPath: string;
+        if (isAbsolute) {
+          subPath = token.value;
+          this.advance();
+        } else {
+          const ident = this.advance();
+          subPath = '/' + ident.value + this.advance().value;
+        }
 
         this.skipNewlines();
+        if (this.matchOperator('=')) {
+          // Sub-path var override: `sword/name = "x"` → var `name` on
+          // `/obj/item/sword` (WS2-4).
+          const segs = subPath.split('/').filter((s) => s.length > 0);
+          const varName = segs.pop();
+          if (varName) {
+            const typePart = '/' + segs.join('/');
+            const fullPath = isAbsolute ? typePart : currentTypeNode.path + typePart;
+            const subTypeNode = this.getOrCreateTypeNode(fullPath, typeDecls);
+            subTypeNode.vars.push({
+              type: 'DMVarDecl',
+              name: varName,
+              initialValue: this.parseInitialValueText() || null
+            });
+          }
+          continue;
+        }
+        const fullPath = isAbsolute ? subPath : currentTypeNode.path + subPath;
+        const subTypeNode = this.getOrCreateTypeNode(fullPath, typeDecls);
         if (this.isType(TokenType.Indent)) {
           this.advance();
           this.parseTypeBlock(subTypeNode, typeDecls);
@@ -386,6 +420,18 @@ export class DMParser {
 
       // Var assignment override (e.g. name = "Sword", density = 1)
       if (token.type === TokenType.Identifier) {
+        // Bare relative child type on its own line (WS2-3): `/obj/item` +
+        // indented `sword` + indented members declares `/obj/item/sword`.
+        if (this.peekNext()?.type === TokenType.Newline && this.tokens[this.pos + 2]?.type === TokenType.Indent) {
+          const ident = this.advance();
+          const subTypeNode = this.getOrCreateTypeNode(currentTypeNode.path + '/' + ident.value, typeDecls);
+          this.skipNewlines();
+          if (this.isType(TokenType.Indent)) {
+            this.advance();
+            this.parseTypeBlock(subTypeNode, typeDecls);
+          }
+          continue;
+        }
         const varName = token.value;
         this.advance();
         if (this.matchOperator('=')) {
@@ -533,7 +579,15 @@ export class DMParser {
       }
       const value = this.advance().value;
       if (value === '(' || value === '[' || value === '{') depth++;
-      else if (value === ')' || value === ']' || value === '}') depth--;
+      else if (value === ')' || value === ']' || value === '}') {
+        // A stray closer at depth 0 is an error in the source, not a signal
+        // to swallow the following declaration — clamp at 0 and stop (WS2-6).
+        if (depth <= 0) {
+          parts.push(value);
+          break;
+        }
+        depth--;
+      }
       // StringLiteral token values arrive unquoted; restore the quotes so the
       // captured text round-trips through the lexer in parseInitializerTextToExpr
       // (otherwise "hello world" re-lexes as two bare identifiers).
@@ -1100,6 +1154,7 @@ export class DMParser {
     this.advance();
     this.matchPunctuation('(');
     let loopVar = '';
+    let loopVarType = '';
     if (this.isType(TokenType.Identifier)) {
       loopVar = this.advance().value;
     } else if (this.peek().value === 'var') {
@@ -1108,6 +1163,8 @@ export class DMParser {
       if (this.isType(TokenType.TypePath)) {
         const pathVal = this.advance().value;
         const lastSlash = pathVal.lastIndexOf('/');
+        // The type is everything but the final /name segment: /mob/M -> /mob.
+        loopVarType = lastSlash > 0 ? pathVal.substring(0, lastSlash) : '';
         loopVar = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
       } else if (this.isType(TokenType.Identifier)) {
         loopVar = this.advance().value;
@@ -1135,10 +1192,13 @@ export class DMParser {
         }
       }
     }
-    // for(var/x as anything in list) — 'as' filter clause; parse and drop
-    // the type hint so the 'in' clause below still matches.
+    // for(var/x as anything in list) — 'as' filter clause. A concrete type
+    // (for(var/x as /mob in list)) is preserved as the loop filter.
     if (this.peek().value === 'as') {
       this.advance();
+      if (this.isType(TokenType.TypePath)) {
+        if (!loopVarType) loopVarType = this.advance().value;
+      }
       while (!this.isType(TokenType.EOF) && this.peek().value !== 'in') {
         this.advance();
       }
@@ -1153,7 +1213,7 @@ export class DMParser {
       }
       this.matchPunctuation(')');
       const loopBody = this.parseLoopBody();
-      return { type: 'ForStatement', loopVariable: loopVar, loopRange, step, loopBody };
+      return { type: 'ForStatement', loopVariable: loopVar, loopVariableType: loopVarType, loopRange, step, loopBody };
     }
     if (loopVar && this.matchPunctuation(')')) {
       // for(var/datum/thing) — iterate all instances of the declared type
@@ -1486,6 +1546,10 @@ export class DMParser {
           const right: ExpressionNode = { type: 'variable', name: segment };
           left = { type: 'binary', operator: '/', left, right };
         }
+        // The division chain may itself carry postfix operators — a call in
+        // divisor position (`x / b(...)`) must consume its argument list
+        // (WS2-2), otherwise the `(...)` leaks as a ghost statement.
+        left = this.parsePostfix(left);
         continue;
       }
 
@@ -1718,13 +1782,21 @@ export class DMParser {
     // Number literal
     if (token.type === TokenType.Number) {
       this.advance();
-      return { type: 'literal', value: parseFloat(token.value), literalType: 'number' };
+      // Special values (1.#INF etc.) are carried as string markers.
+      if (token.value === 'Infinity' || token.value === '-Infinity' || token.value === 'NaN') {
+        return { type: 'literal', value: token.value, literalType: 'number' };
+      }
+      // Float literals (7.0, 1e3, 2.5e+10) keep a flag so the emitter can
+      // preserve DM's int-vs-float division semantics (WS8-1).
+      const floatLiteral = /[.eE]/.test(token.value);
+      return { type: 'literal', value: parseFloat(token.value), literalType: 'number', floatLiteral };
     }
 
-    // TypePath (e.g., /obj/item/sword)
+    // TypePath (e.g., /obj/item/sword) — a distinct literal kind: paths are
+    // not text (ispath("/obj") = 0, ispath(/obj) = 1 in DM).
     if (token.type === TokenType.TypePath) {
       this.advance();
-      return { type: 'literal', value: token.value, literalType: 'string' };
+      return { type: 'literal', value: token.value, literalType: 'path' };
     }
 
     // Keywords: null, TRUE, FALSE
@@ -1865,6 +1937,12 @@ export class DMParser {
         }
       } else if (this.matchPunctuation('(')) {
         const args: ExpressionNode[] = [];
+        // DM text("format [x]", args...): the FORMAT is a literal — BYOND
+        // does not interpolate it at parse time (the text() builtin renders
+        // the format macros itself, WS9-2). The first argument of a bare
+        // text(...) call is kept as a raw string literal.
+        const isTextFormat = node.type === 'variable' && node.name === 'text';
+        let argIndex = 0;
         // Indents introduced by the argument lines; the matching Dedents are
         // drained after the ')' so enclosing scopes still see their own.
         let parenIndents = 0;
@@ -1878,11 +1956,19 @@ export class DMParser {
             this.advance();
           }
           if (this.matchPunctuation(')')) break;
-          args.push(this.parseExpression());
+          if (isTextFormat && argIndex === 0 && this.isType(TokenType.StringLiteral)) {
+            // Raw format string: keep [x] markers verbatim for the runtime.
+            const lit = this.advance();
+            args.push({ type: 'literal', value: lit.value, literalType: 'string' });
+          } else {
+            args.push(this.parseExpression());
+          }
+          argIndex++;
           // Weighted pick: pick(20;"brown", 30;"grey") — parse weight;value pairs.
           if (this.peek().value === ';') {
             this.advance();
             args.push(this.parseExpression());
+            argIndex++;
           }
           if (this.matchPunctuation(',')) continue;
         }
@@ -1932,7 +2018,7 @@ export class DMParser {
       case '|': return 4;
       case '^': return 5;
       case '&': return 6;
-      case '==': case '!=': case '~=': case '~!': case 'in': case 'as': case 'to': return 7;
+      case '==': case '!=': case '~=': case '~!': case 'as': case 'to': return 7;
       case '<': case '<=': case '>': case '>=': return 8;
       case '<<': case '>>': return 9;
       case '+': case '-': return 10;
@@ -1941,6 +2027,10 @@ export class DMParser {
       case '**': return 13; // power binds tighter than * /
       case '::': case ':': case '[': return 14; // static / dynamic member access, index
       case '?': return 1; // ternary — looser than || (a || b ? c : d)
+      // `in` has the LOWEST precedence of all operators in BYOND — looser
+      // than assignment, so `has_thing = thing in src` parses as
+      // `(has_thing = thing) in src` (BYOND ref, `in` operator).
+      case 'in': return 0;
       case '=': case '+=': case '-=': case '*=': case '/=': case '%=': case '<<=': case '>>=': case '&=': case '|=': case '^=': case '||=': case '&&=': return 0; // lowest (right-associative)
       default: return -1;
     }

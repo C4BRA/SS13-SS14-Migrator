@@ -197,10 +197,12 @@ export class DMLexer {
         continue;
       }
 
-      // DM regex literal: @"pattern" or @'pattern' — treated as a string.
+      // DM raw string literal: @"..." / @'...' — verbatim text: no escapes,
+      // no [interpolation] (a doubled quote is an escaped quote). This is
+      // distinct from the @regex@ form handled above.
       if (ch === '@' && (this.peek() === '"' || this.peek() === "'")) {
         this.advance(); // consume @
-        tokens.push(this.readString(this.input[this.pos]));
+        tokens.push(this.readRawString(this.input[this.pos]));
         continue;
       }
 
@@ -265,6 +267,10 @@ export class DMLexer {
     return ch >= '0' && ch <= '9';
   }
 
+  private isHexDigit(ch: string): boolean {
+    return this.isDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+  }
+
   private skipLineComment(): void {
     while (this.pos < this.input.length && this.input[this.pos] !== '\n') {
       this.advance();
@@ -274,11 +280,24 @@ export class DMLexer {
   private skipBlockComment(): void {
     this.advance(); // /
     this.advance(); // *
+    // BYOND block comments nest: `/* a /* b */ c */` closes only at the
+    // matching depth. Tracking depth prevents the inner `*/` from re-lexing
+    // the remaining outer-comment content as executable code.
+    let depth = 1;
     while (this.pos < this.input.length) {
-      if (this.input[this.pos] === '*' && this.peek() === '/') {
+      const ch = this.input[this.pos];
+      if (ch === '/' && this.peek() === '*') {
+        depth++;
         this.advance();
         this.advance();
-        return;
+        continue;
+      }
+      if (ch === '*' && this.peek() === '/') {
+        depth--;
+        this.advance();
+        this.advance();
+        if (depth === 0) return;
+        continue;
       }
       this.advance();
     }
@@ -323,6 +342,35 @@ export class DMLexer {
     return { type: TokenType.TypePath, value: path, line: startLine, column: startCol };
   }
 
+  private readRawString(quoteChar: string): Token {
+    const startLine = this.line;
+    const startCol = this.col;
+    this.advance(); // quote
+    let str = '';
+    let closed = false;
+    while (this.pos < this.input.length) {
+      const ch = this.input[this.pos];
+      if (ch === quoteChar) {
+        // Doubled quote is an escaped quote ("say ""hi""").
+        if (this.input[this.pos + 1] === quoteChar) {
+          str += quoteChar;
+          this.advance();
+          this.advance();
+          continue;
+        }
+        this.advance();
+        closed = true;
+        break;
+      }
+      str += ch;
+      this.advance();
+    }
+    if (!closed) {
+      this.diagnostics.error('Unterminated string literal', startLine, startCol);
+    }
+    return { type: TokenType.StringLiteral, value: str, line: startLine, column: startCol };
+  }
+
   private readString(quoteChar: string): Token {
     const startLine = this.line;
     const startCol = this.col;
@@ -348,20 +396,36 @@ export class DMLexer {
       }
       if (ch === '[') {
         // DM string interpolation: [expr] may contain quotes and nested
-        // brackets; scan to the matching ']' keeping the raw text.
+        // brackets; scan to the matching ']' keeping the raw text. The scan
+        // is quote-aware so a ']' inside a nested string literal does not
+        // close the region (WS1-3), and backslash escapes are skipped.
         let depth = 0;
         let closedBracket = false;
+        let nested = false;
         while (this.pos < this.input.length) {
           const c = this.input[this.pos];
-          if (c === '[') depth++;
-          else if (c === ']') {
-            depth--;
-            if (depth === 0) {
-              str += c;
-              this.advance();
-              closedBracket = true;
-              break;
+          if (c === '\\' && (nested || depth > 0)) {
+            str += c + (this.input[this.pos + 1] ?? '');
+            this.advance();
+            this.advance();
+            continue;
+          }
+          if (!nested) {
+            if (c === '"' || c === "'") {
+              nested = true;
+            } else if (c === '[') {
+              depth++;
+            } else if (c === ']') {
+              depth--;
+              if (depth === 0) {
+                str += c;
+                this.advance();
+                closedBracket = true;
+                break;
+              }
             }
+          } else if (c === '"' || c === "'") {
+            nested = false;
           }
           str += c;
           this.advance();
@@ -374,6 +438,23 @@ export class DMLexer {
       if (ch === '\\') {
         this.advance();
         const esc = this.pos < this.input.length ? this.input[this.pos] : '';
+        // DM text macros are word markers; match the longest known one and
+        // preserve it verbatim (the runtime does not process them, but they
+        // must not be corrupted into tabs/escapes). A following identifier
+        // character disambiguates `\theta` as `\t` + "heta".
+        let matchedMarker = false;
+        for (const mk of ['improper', 'proper', 'roman', 'icon', 'ref', 'the', 'th', 's']) {
+          if (this.input.slice(this.pos, this.pos + mk.length).toLowerCase() === mk) {
+            const after = this.input[this.pos + mk.length] ?? '';
+            if (!/[A-Za-z0-9_]/.test(after)) {
+              str += '\\' + this.input.slice(this.pos, this.pos + mk.length);
+              for (let k = 0; k < mk.length; k++) this.advance();
+              matchedMarker = true;
+              break;
+            }
+          }
+        }
+        if (matchedMarker) continue;
         switch (esc) {
           case 'n': str += '\n'; break;
           case 't': str += '\t'; break;
@@ -381,7 +462,30 @@ export class DMLexer {
           case '\\': str += '\\'; break;
           case '"': str += '"'; break;
           case "'": str += "'"; break;
-          default: str += esc; break;
+          case 'x': {
+            // \xHH — hex byte.
+            const hex = this.input.slice(this.pos + 1, this.pos + 3);
+            if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+              str += String.fromCharCode(parseInt(hex, 16));
+              this.advance();
+              this.advance();
+            } else {
+              str += '\\x';
+            }
+            break;
+          }
+          case 'u': {
+            // \uHHHH — Unicode code point.
+            const hex = this.input.slice(this.pos + 1, this.pos + 5);
+            if (/^[0-9A-Fa-f]{4}$/.test(hex)) {
+              str += String.fromCodePoint(parseInt(hex, 16));
+              for (let k = 0; k < 4; k++) this.advance();
+            } else {
+              str += '\\u';
+            }
+            break;
+          }
+          default: str += '\\' + esc; break; // unknown escape: keep the backslash
         }
         this.advance();
       } else {
@@ -461,6 +565,37 @@ export class DMLexer {
     const startCol = this.col;
     let numStr = '';
 
+    // DM 0x / 0b literals: 0x1F, 0b101. The 0b form is only consumed when a
+    // binary digit follows (0badcafe is 0 + identifier, not hex).
+    if (this.input[this.pos] === '0') {
+      const next = this.input[this.pos + 1];
+      if (next === 'x' || next === 'X') {
+        this.advance();
+        this.advance();
+        let hex = '';
+        while (this.pos < this.input.length && this.isHexDigit(this.input[this.pos])) {
+          hex += this.input[this.pos];
+          this.advance();
+        }
+        if (hex.length > 0) {
+          return { type: TokenType.Number, value: String(parseInt(hex, 16)), line: startLine, column: startCol };
+        }
+        this.diagnostics.error('Invalid hex literal', startLine, startCol);
+        return { type: TokenType.Number, value: '0', line: startLine, column: startCol };
+      }
+      if ((next === 'b' || next === 'B')
+        && (this.input[this.pos + 2] === '0' || this.input[this.pos + 2] === '1')) {
+        this.advance();
+        this.advance();
+        let bin = '';
+        while (this.pos < this.input.length && (this.input[this.pos] === '0' || this.input[this.pos] === '1')) {
+          bin += this.input[this.pos];
+          this.advance();
+        }
+        return { type: TokenType.Number, value: String(parseInt(bin, 2)), line: startLine, column: startCol };
+      }
+    }
+
     while (this.pos < this.input.length) {
       const ch = this.input[this.pos];
       if (this.isDigit(ch)) {
@@ -500,13 +635,16 @@ export class DMLexer {
       }
     }
 
-    // Special float values: 1.#INF (infinity), 1.#QNAN (NaN), -1.#IND.
+    // Special float values: 1.#INF (infinity), 1.#QNAN (NaN), -1.#IND (NaN).
+    // parseFloat("1.#INF") would silently yield 1, so the token value is
+    // translated to a form the parser/emitter can map (Infinity/NaN).
     const specialMatch = this.input.slice(this.pos).match(/^#(INF|QNAN|IND)/);
     if (specialMatch) {
-      numStr += specialMatch[0];
       for (let i = 0; i < specialMatch[0].length; i++) {
         this.advance();
       }
+      const special = specialMatch[1];
+      return { type: TokenType.Number, value: special === 'INF' ? 'Infinity' : 'NaN', line: startLine, column: startCol };
     }
 
     return { type: TokenType.Number, value: numStr, line: startLine, column: startCol };

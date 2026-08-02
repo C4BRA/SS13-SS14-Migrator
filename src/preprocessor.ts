@@ -20,13 +20,20 @@ export interface CollectedDefines {
 }
 
 const MAX_MACRO_EXPANSION_DEPTH = 30;
+// Total expansion budget per file: bounds exponential blow-ups that the depth
+// cap alone cannot stop (#define A B B + #define B A A → 2^depth sites).
+const MAX_MACRO_EXPANSION_WORK = 200000;
 
 export class DMPreprocessor {
   private defines = new Map<string, string>();
   private functionDefines = new Map<string, FunctionMacro>();
-  private includeStack: string[] = [];
   private collector: DiagnosticCollector;
   private blockCommentState: { inBlockComment: boolean } = { inBlockComment: false };
+  // BYOND includes each file at most once per compilation; `#pragma multiple`
+  // opts back into re-inclusion.
+  private includedFiles = new Set<string>();
+  private allowMultipleIncludes = false;
+  private macroExpansionBudget = MAX_MACRO_EXPANSION_WORK;
 
   constructor(
     collector: DiagnosticCollector,
@@ -51,18 +58,8 @@ export class DMPreprocessor {
   }
 
   process(code: string, filePath: string): string {
-    const absPath = path.resolve(filePath);
-    if (this.includeStack.includes(absPath)) {
-      this.collector.error(`Recursive #include of '${path.basename(absPath)}'`, 0, 0);
-      return '';
-    }
-    this.includeStack.push(absPath);
     this.blockCommentState.inBlockComment = false;
-    try {
-      return this.processText(code, path.dirname(absPath));
-    } finally {
-      this.includeStack.pop();
-    }
+    return this.processText(code, path.dirname(path.resolve(filePath)));
   }
 
   processFile(filePath: string): string {
@@ -71,7 +68,9 @@ export class DMPreprocessor {
   }
 
   private processText(code: string, dir: string): string {
-    const joined = this.joinParenBlocks(this.joinContinuations(code.split('\n')));
+    // Strip CRLF line endings: splitting on '\n' leaves a trailing '\r' on
+    // every line, which corrupts #define bodies and string literals.
+    const joined = this.joinParenBlocks(this.joinContinuations(code.split('\n').map(l => (l.endsWith('\r') ? l.slice(0, -1) : l))));
     const lines = joined;
     const out: string[] = [];
     const condStack: CondFrame[] = [];
@@ -82,7 +81,7 @@ export class DMPreprocessor {
       const trimmed = raw.trim();
       const startsInComment = this.blockCommentState.inBlockComment;
       if (!startsInComment && trimmed.startsWith('#')) {
-        const dirLine = this.stripComment(trimmed);
+        const dirLine = DMPreprocessor.stripInlineComment(trimmed);
         const m = dirLine.match(/^#(\w+)(.*)$/);
         const name = m ? m[1] : '';
         const arg = (m ? m[2] : '').trim();
@@ -96,6 +95,22 @@ export class DMPreprocessor {
                   : this.evalIf(arg);
             const parentActive = isActive();
             condStack.push({ parentActive, branchTaken: parentActive && value, active: parentActive && value });
+            break;
+          }
+          case 'elif': {
+            const frame = condStack[condStack.length - 1];
+            if (!frame) {
+              this.collector.error('#elif without matching #if', i + 1, 1);
+              break;
+            }
+            if (!frame.parentActive) break;
+            if (frame.branchTaken) {
+              frame.active = false;
+            } else {
+              const value = this.evalIf(arg);
+              frame.active = value;
+              if (value) frame.branchTaken = true;
+            }
             break;
           }
           case 'else': {
@@ -121,6 +136,13 @@ export class DMPreprocessor {
             if (!isActive()) break;
             const dm = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\((.*?)\))?\s*(.*)$/);
             if (!dm) break;
+            // Multi-line bodies: keep absorbing lines until strings are
+            // balanced and parens/brackets/braces close.
+            let body = dm[3];
+            while (i + 1 < lines.length && !DMPreprocessor.isBalancedDefineBody(body)) {
+              body += '\n' + lines[++i];
+            }
+            const bodyClean = DMPreprocessor.stripInlineComment(body).trim();
             if (dm[2] !== undefined) {
               // Function-like macro: #define NAME(a, b) body
               const params = this.splitArgs(dm[2]).map(p => p.trim()).filter(p => p.length > 0);
@@ -137,10 +159,10 @@ export class DMPreprocessor {
                   cleanParams.push(p);
                 }
               }
-              this.functionDefines.set(dm[1], { params: cleanParams, variadic, body: DMPreprocessor.stripInlineComment(dm[3]).trim() });
+              this.functionDefines.set(dm[1], { params: cleanParams, variadic, body: bodyClean });
               break;
             }
-            this.defines.set(dm[1], DMPreprocessor.stripInlineComment(dm[3]).trim());
+            this.defines.set(dm[1], bodyClean);
             break;
           }
           case 'undef': {
@@ -168,6 +190,12 @@ export class DMPreprocessor {
             if (incExt !== '.dm' && incExt !== '.dme' && incExt !== '') {
               break;
             }
+            // BYOND include-once: the first occurrence of a file is processed,
+            // repeats are skipped unless `#pragma multiple` is in effect.
+            if (this.includedFiles.has(incPath) && !this.allowMultipleIncludes) {
+              break;
+            }
+            this.includedFiles.add(incPath);
             const incCode = this.processFile(incPath);
             if (incCode.length > 0) {
               out.push(incCode);
@@ -178,10 +206,21 @@ export class DMPreprocessor {
             if (isActive()) this.collector.warning(`#warn: ${arg}`, i + 1, 1);
             break;
           }
+          case 'error': {
+            if (isActive()) this.collector.error(`#error: ${arg}`, i + 1, 1);
+            break;
+          }
           case 'pragma': {
-            if (isActive() && arg !== 'once') {
-              this.collector.warning(`Unsupported #pragma '${arg}' ignored`, i + 1, 1);
+            if (!isActive()) break;
+            if (arg === 'once') {
+              // Include-once is BYOND's default behavior — no-op.
+              break;
             }
+            if (arg === 'multiple') {
+              this.allowMultipleIncludes = true;
+              break;
+            }
+            this.collector.warning(`Unsupported #pragma '${arg}' ignored`, i + 1, 1);
             break;
           }
           default: {
@@ -431,7 +470,27 @@ export class DMPreprocessor {
     return balance;
   }
 
-  private static stripInlineComment(line: string): string {
+  // True when a #define body is complete: strings/icons balanced, and parens/
+  // brackets/braces not left open. Used to absorb multi-line define bodies.
+  private static isBalancedDefineBody(body: string): boolean {
+    let inString = false;
+    let inIcon = false;
+    let depth = 0;
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (ch === '"' && !inIcon) {
+        inString = !inString;
+      } else if (ch === "'" && !inString) {
+        inIcon = !inIcon;
+      } else if (!inString && !inIcon) {
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        else if (ch === ')' || ch === ']' || ch === '}') depth--;
+      }
+    }
+    return !inString && !inIcon && depth <= 0;
+  }
+
+  public static stripInlineComment(line: string): string {
     let inString = false;
     let inIcon = false;
     let inBlock = false;
@@ -488,11 +547,6 @@ export class DMPreprocessor {
     return line;
   }
 
-  private stripComment(line: string): string {
-    const idx = line.indexOf('//');
-    return idx >= 0 ? line.slice(0, idx) : line;
-  }
-
   // Expand object-like and function-like macros on a single line. Strings,
   // icon paths ('...') and comments are never touched. Block-comment state is
   // carried across lines via `commentState`.
@@ -542,6 +596,34 @@ export class DMPreprocessor {
         const esc = line[i + 1] ?? '';
         result += ch + esc;
         i += 2;
+        continue;
+      }
+      if (inString && ch === '[') {
+        // String interpolation [expr]: the content is code — macro names
+        // inside it must expand too (BYOND expands macros anywhere in code).
+        // Scan to the matching ']' (bracket-depth counted, quotes tracked so
+        // a "]" inside a nested string does not close the region).
+        let j = i + 1;
+        let depth = 1;
+        let nested = false;
+        while (j < line.length && depth > 0) {
+          const c = line[j];
+          if (c === '\\') {
+            j += 2;
+            continue;
+          }
+          if (!nested) {
+            if (c === '"' || c === "'") nested = true;
+            else if (c === '[') depth++;
+            else if (c === ']') depth--;
+          } else if (c === '"' || c === "'") {
+            nested = false;
+          }
+          j++;
+        }
+        const inner = line.slice(i + 1, j - 1);
+        result += '[' + this.expandMacros(inner, depth + 1, cmt) + ']';
+        i = j;
         continue;
       }
       if (inString || inIcon) {
@@ -594,16 +676,17 @@ export class DMPreprocessor {
           while (k < line.length && (line[k] === ' ' || line[k] === '\t')) k++;
           if (k < line.length && line[k] === '(') {
             const end = this.findMatchingParen(line, k);
-            if (end >= 0 && depth < MAX_MACRO_EXPANSION_DEPTH) {
+            if (end >= 0 && depth < MAX_MACRO_EXPANSION_DEPTH && this.macroExpansionBudget > 0) {
+              this.macroExpansionBudget--;
               const argText = line.slice(k + 1, end);
               const args = this.splitArgs(argText).map(a => a.trim());
               const expanded = this.expandFunctionMacro(fnMacro, args);
-              result += this.expandMacros(expanded, depth + 1);
+              result += this.expandMacros(expanded, depth + 1, cmt);
               i = end + 1;
               continue;
             }
           }
-          // Not a call site (or depth exhausted) — leave the word as-is
+          // Not a call site (or depth/budget exhausted) — leave the word as-is
           result += word;
           i = j;
           continue;
@@ -611,7 +694,8 @@ export class DMPreprocessor {
 
         const def = this.defines.get(word);
         if (def !== undefined) {
-          if (depth < MAX_MACRO_EXPANSION_DEPTH) {
+          if (depth < MAX_MACRO_EXPANSION_DEPTH && this.macroExpansionBudget > 0) {
+            this.macroExpansionBudget--;
             result += this.expandMacros(def, depth + 1);
           } else {
             result += word;
@@ -667,20 +751,63 @@ export class DMPreprocessor {
       subst.set(macro.params[i], i < args.length ? args[i] : '');
     }
     let extra = '';
-    if (macro.variadic && args.length > macro.params.length) {
-      extra = args.slice(macro.params.length).join(', ');
+    if (macro.variadic) {
+      if (macro.params.length > 0) {
+        // Named variadic (#define F(a, rest...) ...): the last parameter
+        // absorbs the trailing arguments as a single comma-joined argument.
+        const last = macro.params[macro.params.length - 1];
+        subst.set(last, args.slice(macro.params.length - 1).join(', '));
+      } else {
+        // Anonymous variadic (#define F(...) ...): extras are injected at the
+        // literal `...` placeholder in the body.
+        extra = args.join(', ');
+      }
     }
 
     let body = macro.body;
     body = this.substituteParams(body, subst);
 
-    // Token pasting: remove ## markers so surrounding tokens concatenate
-    body = body.replace(/\s*##\s*/g, '');
-    // Variadic: replace the ... placeholder with the extra arguments
+    // Token pasting and the variadic placeholder must never touch string
+    // literals or icon paths (a literal "##" or "..." inside a string is
+    // content, not a directive).
+    body = this.replaceOutsideStrings(body, /\s*##\s*/, '');
     if (macro.variadic) {
-      body = body.replace(/\.\.\./g, () => extra);
+      body = this.replaceOutsideStrings(body, /\.\.\./, () => extra);
     }
     return body;
+  }
+
+  // Replace `re` matches only outside string literals and icon paths.
+  private replaceOutsideStrings(body: string, re: RegExp, repl: string | (() => string)): string {
+    let result = '';
+    let inString = false;
+    let inIcon = false;
+    for (let i = 0; i < body.length; ) {
+      const ch = body[i];
+      if (ch === '"' && !inIcon) {
+        inString = !inString;
+        result += ch;
+        i++;
+        continue;
+      }
+      if (ch === "'" && !inString) {
+        inIcon = !inIcon;
+        result += ch;
+        i++;
+        continue;
+      }
+      if (!inString && !inIcon) {
+        const m = body.slice(i).match(re);
+        if (m && m.index === 0) {
+          result += typeof repl === 'string' ? repl : repl();
+          i += m[0].length;
+          continue;
+        }
+      }
+      result += ch;
+      i++;
+    }
+    return result;
   }
 
   // Substitute macro parameters by word, skipping string literals, icon
@@ -723,6 +850,32 @@ export class DMPreprocessor {
         i++;
         continue;
       }
+      if (inString && ch === '[') {
+        // String interpolation [expr]: parameters inside it are code and must
+        // be substituted (e.g. span macros with "[text]" bodies).
+        let j = i + 1;
+        let depth = 1;
+        let nested = false;
+        while (j < body.length && depth > 0) {
+          const c = body[j];
+          if (c === '\\') {
+            j += 2;
+            continue;
+          }
+          if (!nested) {
+            if (c === '"' || c === "'") nested = true;
+            else if (c === '[') depth++;
+            else if (c === ']') depth--;
+          } else if (c === '"' || c === "'") {
+            nested = false;
+          }
+          j++;
+        }
+        const inner = body.slice(i + 1, j - 1);
+        result += '[' + this.substituteParams(inner, subst) + ']';
+        i = j;
+        continue;
+      }
       if (!inString && !inIcon && (/[A-Za-z_]/.test(ch) || (ch === '#' && (body[i + 1] === '#' || /[A-Za-z_]/.test(body[i + 1] || ''))))) {
         let j = i;
         let stringify = false;
@@ -740,7 +893,8 @@ export class DMPreprocessor {
         const word = body.slice(i, j);
         const plain = word.replace(/^#+/, '');
         if (plain !== '' && subst.has(plain)) {
-          result += stringify ? `"${subst.get(plain)}"` : subst.get(plain)!;
+          const val = subst.get(plain)!;
+          result += stringify ? `"${val.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : val;
           i = j;
           continue;
         }
@@ -977,37 +1131,121 @@ export class DMPreprocessor {
     return parts;
   }
 
+  // Numeric #if evaluator (BYOND: `#if VERSION >= 514`, `#if 1`, `#if X == Y`).
+  // Supports numbers, macro identifiers (their values are re-evaluated),
+  // defined(X), arithmetic (+ - * / %), comparisons (== != < > <= >=), logical
+  // (&& || !) and parentheses. Undefined identifiers evaluate to 0.
   private evalIf(expr: string): boolean {
+    return this.evalIfValue(expr) !== 0;
+  }
+
+  private evalIfValue(expr: string, depth = 0): number {
+    if (depth > 16) return 0;
     const s = expr.replace(/\s+/g, '');
     let pos = 0;
-    const parseOr = (): boolean => {
+    const parseOr = (): number => {
       let v = parseAnd();
       while (s.slice(pos, pos + 2) === '||') {
         pos += 2;
-        v = v || parseAnd();
+        v = v !== 0 || parseAnd() !== 0 ? 1 : 0;
       }
       return v;
     };
-    const parseAnd = (): boolean => {
-      let v = parseNot();
+    const parseAnd = (): number => {
+      let v = parseEq();
       while (s.slice(pos, pos + 2) === '&&') {
         pos += 2;
-        v = v && parseNot();
+        v = v !== 0 && parseEq() !== 0 ? 1 : 0;
       }
       return v;
     };
-    const parseNot = (): boolean => {
+    const parseEq = (): number => {
+      let v = parseRel();
+      for (;;) {
+        if (s.slice(pos, pos + 2) === '==') {
+          pos += 2;
+          v = v === parseRel() ? 1 : 0;
+        } else if (s.slice(pos, pos + 2) === '!=') {
+          pos += 2;
+          v = v !== parseRel() ? 1 : 0;
+        } else {
+          break;
+        }
+      }
+      return v;
+    };
+    const parseRel = (): number => {
+      let v = parseAdd();
+      for (;;) {
+        if (s.slice(pos, pos + 2) === '<=') {
+          pos += 2;
+          v = v <= parseAdd() ? 1 : 0;
+        } else if (s.slice(pos, pos + 2) === '>=') {
+          pos += 2;
+          v = v >= parseAdd() ? 1 : 0;
+        } else if (s[pos] === '<') {
+          pos++;
+          v = v < parseAdd() ? 1 : 0;
+        } else if (s[pos] === '>') {
+          pos++;
+          v = v > parseAdd() ? 1 : 0;
+        } else {
+          break;
+        }
+      }
+      return v;
+    };
+    const parseAdd = (): number => {
+      let v = parseMul();
+      for (;;) {
+        if (s[pos] === '+') {
+          pos++;
+          v += parseMul();
+        } else if (s[pos] === '-') {
+          pos++;
+          v -= parseMul();
+        } else {
+          break;
+        }
+      }
+      return v;
+    };
+    const parseMul = (): number => {
+      let v = parseUnary();
+      for (;;) {
+        if (s[pos] === '*') {
+          pos++;
+          v *= parseUnary();
+        } else if (s[pos] === '/') {
+          pos++;
+          const d = parseUnary();
+          v = d === 0 ? 0 : Math.floor(v / d);
+        } else if (s[pos] === '%') {
+          pos++;
+          const d = parseUnary();
+          v = d === 0 ? 0 : v % d;
+        } else {
+          break;
+        }
+      }
+      return v;
+    };
+    const parseUnary = (): number => {
       if (s[pos] === '!') {
         pos++;
-        return !parseNot();
+        return parseUnary() === 0 ? 1 : 0;
+      }
+      if (s[pos] === '-') {
+        pos++;
+        return -parseUnary();
       }
       return parsePrimary();
     };
-    const parsePrimary = (): boolean => {
+    const parsePrimary = (): number => {
       if (s[pos] === '(') {
         pos++;
         const v = parseOr();
-        pos++;
+        if (s[pos] === ')') pos++;
         return v;
       }
       if (s.slice(pos, pos + 8) === 'defined(') {
@@ -1016,12 +1254,20 @@ export class DMPreprocessor {
         while (pos < s.length && s[pos] !== ')') pos++;
         const name = s.slice(start, pos);
         pos++;
-        return this.defines.has(name) || this.functionDefines.has(name);
+        return this.defines.has(name) || this.functionDefines.has(name) ? 1 : 0;
+      }
+      const num = /^\d+(\.\d+)?/.exec(s.slice(pos));
+      if (num) {
+        pos += num[0].length;
+        return parseFloat(num[0]);
       }
       const start = pos;
       while (pos < s.length && /[A-Za-z0-9_]/.test(s[pos])) pos++;
       const name = s.slice(start, pos);
-      return name.length > 0 && (this.defines.has(name) || this.functionDefines.has(name));
+      if (name.length === 0) return 0;
+      const def = this.defines.get(name);
+      if (def !== undefined) return this.evalIfValue(def, depth + 1);
+      return 0;
     };
     return parseOr();
   }
