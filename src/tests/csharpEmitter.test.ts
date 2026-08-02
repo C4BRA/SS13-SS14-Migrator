@@ -106,7 +106,8 @@ async function runCSharpEmitterTests() {
         x = x + i
 `);
   assertContains(cfor, `comp.SetVar("i", DMValue.FromNumber(1));`, 'C-style for init');
-  assertContains(cfor, `while (DMValue.LessOrEqual(`, 'C-style for condition');
+  assertContains(cfor, `while (true)`, 'C-style for wrapper');
+  assertContains(cfor, `if (!(DMValue.LessOrEqual(`, 'C-style for condition tested at top');
 
   // Test 11: rand() with no args still emits valid C#
   const rand = transpileProc(`/obj/foo/proc/run()
@@ -201,7 +202,7 @@ async function runCSharpEmitterTests() {
     for (var/datum/x as anything in stuff)
         x = x
 `);
-  assertContains(asClause, `foreach (var __dmIter0 in DMListItems(comp.GetVar("stuff")))`, 'for-in with as filter clause');
+  assertContains(asClause, `foreach (var __dmIter1 in DMListItems(comp.GetVar("stuff")))`, 'for-in with as filter clause');
 
   // Test 24: istype/locate keyword calls parse
   const istype = transpileProc(`/obj/foo/proc/run()
@@ -365,7 +366,7 @@ async function runCSharpEmitterTests() {
 `);
   assertContains(oneLine, `if (comp.GetVar("x").IsTrue())\n            {\n                return DMValue.FromNumber(5);`, 'single-line if body');
   assertContains(oneLine, `else\n            {\n                return DMValue.FromNumber(7);`, 'single-line else body');
-  assertContains(oneLine, `while (comp.GetVar("x").IsTrue())\n            {\n                comp.SetVar("x", DMValue.Add(comp.GetVar("x"), DMValue.FromNumber(1)));`, 'single-line while body');
+  assertContains(oneLine, `while (comp.GetVar("x").IsTrue())\n            {\n                {\n                    comp.SetVar("x", DMValue.Add(comp.GetVar("x"), DMValue.FromNumber(1)));`, 'single-line while body');
   assertContains(oneLine, `comp.SetVar("z", DMValue.Add(comp.GetVar("z"), DMValue.FromNumber(1)));`, 'single-line for-in body');
 
   // Test 37: Plan 09 B1 — associative list literals list("a" = 1)
@@ -395,6 +396,58 @@ async function runCSharpEmitterTests() {
 `);
   assertContains(interp, `DMRuntimeHelpers.CurrentUsr`, 'interpolated usr reads the variable');
   assertContains(interp, `DMValue.Add(DMValue.Add(DMValue.Add(DMValue.FromString(""), DMValue.FromString("hello ")), DMRuntimeHelpers.CurrentUsr), DMValue.FromString(" world"))`, 'interpolation concatenates parts');
+
+  // Test 41: Plan 09 B2 — switch emits a terminating break (no infinite
+  // loop) and single-evaluates the switch value; continue in a case with no
+  // enclosing loop exits the switch.
+  const sw = transpileProc(`/obj/foo/proc/run()
+    switch (x)
+      if (1)
+        doThing()
+      if (2)
+        continue
+      else
+        doOther()
+`);
+  assertContains(sw, `while (true)\n            {\n                if (DMValue.In(comp.GetVar("x"), DMValue.FromNumber(1)).IsTrue())`, 'switch wrapper + first case');
+  assertContains(sw, `else if (DMValue.In(comp.GetVar("x"), DMValue.FromNumber(2)).IsTrue())\n                {\n                    break;\n                }`, 'continue in case (no loop) exits the switch');
+  assertContains(sw, `                }\n                break;\n            }\n            return comp.GetVar(".");`, 'terminating break after the case chain');
+  assert((sw.match(/DMValue\.In\(comp\.GetVar\("x"\),/g) || []).length === 2, 'switch value single-evaluated (reused in each case cond)');
+
+  // Test 42: Plan 09 B2 — continue in a C-style for still runs the increment
+  const cforCont = transpileProc(`/obj/foo/proc/run()
+    for (var/i = 0, i < 5, i++)
+      if (i == 2)
+        continue
+      dothings()
+`);
+  assertContains(cforCont, `while (true)\n                {\n                    if (!(DMValue.LessThan(comp.GetVar("i"), DMValue.FromNumber(5))).IsTrue()) break;`, 'C-for condition tested at loop top');
+  assertContains(cforCont, `goto __dmForCont0;`, 'continue in C-for jumps to the increment label');
+  assertContains(cforCont, `__dmForCont0:\n                    comp.SetVar("i", comp.SetVar("i", DMValue.Add(comp.GetVar("i"), DMValue.FromNumber(1))));`, 'increment behind the continue label');
+  assert(!cforCont.includes('continue;'), 'no plain continue emitted inside the C-for');
+
+  // Test 43: Plan 09 B2 — continue inside a switch inside a C-for targets
+  // the for (runs the increment), not the switch wrapper
+  const swfor = transpileProc(`/obj/foo/proc/run()
+    for (var/i = 0, i < 5, i++)
+      switch (i)
+        if (1)
+          continue
+      dodone()
+`);
+  assertContains(swfor, `goto __dmForCont0;`, 'continue in switch-in-for jumps to the for increment');
+  assert(!swfor.includes('continue;'), 'no plain continue emitted inside the switch-in-for');
+
+  // Test 44: Plan 09 B2 — pathToClassName collisions get a numeric suffix
+  const col = transpileProc(`/obj/item/foo/proc/a()
+    return
+/obj/ItemFoo/proc/b()
+    return
+`);
+  assertContains(col, 'ObjItemFoo_2', 'second colliding class name gets a suffix');
+  assert((col.match(/public static async Task<DMValue> Proc_ObjItemFoo_\w+\(DMRuntime/g) || []).length === 2, 'both colliding paths emit distinct static methods');
+  assertContains(col, 'Proc_ObjItemFoo_2_A(', 'suffixed method for /obj/item/foo');
+  assertContains(col, 'Proc_ObjItemFoo_B(', 'unsuffixed method for /obj/ItemFoo');
 
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }

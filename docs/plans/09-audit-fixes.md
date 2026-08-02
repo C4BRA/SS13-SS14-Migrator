@@ -29,10 +29,10 @@ until the wave closes and the audit is re-run for a corrected baseline.
 - [ ] Assoc literal values: `list("a" = 1)` (`dmParser.ts:1545-1553`)
 
 ### B2 — Emitter
-- [ ] Switch: terminating `break` after the if/else chain; single-evaluate `switchCond` (`csharpEmitter.ts:231-252`)
-- [ ] `continue` in C-style `for` must execute the increment; `continue` inside switch-in-loop targets the for (`csharpEmitter.ts:343-347`)
-- [ ] Missing overloads → CS1501: `text2num(t,radix)`, `num2text(n,l,s)`, `findtext(h,n,s,e)`, `replacetext(h,n,r,s,e)`, `splittext(t,sep,start)`, `step_towards(a,b,speed)`, `step_away(a,b,max,speed)`, `rgb(r,g,b,a,space)`, `jointext(L,sep,start,end)`, `initial(x,y)` (`builtinMappings.ts` + runtime)
-- [ ] `pathToClassName` collisions → CS0102 (`csharpEmitter.ts:655-658`)
+- [x] Switch: terminating `break` after the if/else chain; single-evaluate `switchCond` (`csharpEmitter.ts:231-252`)
+- [x] `continue` in C-style `for` must execute the increment; `continue` inside switch-in-loop targets the for (`csharpEmitter.ts:343-347`)
+- [x] Missing overloads → CS1501: `text2num(t,radix)`, `num2text(n,l,s)`, `findtext(h,n,s,e)`, `replacetext(h,n,r,s,e)`, `splittext(t,sep,start)`, `step_towards(a,b,speed)`, `step_away(a,b,max,speed)`, `rgb(r,g,b,a,space)`, `jointext(L,sep,start,end)`, `initial(x,y)` (`builtinMappings.ts` + runtime)
+- [x] `pathToClassName` collisions → CS0102 (`csharpEmitter.ts:655-658`)
 
 ### B3 — Runtime
 - [ ] `ReplaceText` empty-needle infinite loop — guard like `ReplaceTextEx` (`dmRuntimeCS.ts:675-694`)

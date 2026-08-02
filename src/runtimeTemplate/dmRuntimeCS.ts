@@ -674,15 +674,35 @@ namespace SS13.DM.Runtime
 
         public static DMValue ReplaceText(DMValue haystack, DMValue needle, DMValue replacement)
         {
-            // DM replacetext is case-insensitive and replaces all occurrences.
+            return ReplaceText(haystack, needle, replacement, DMValue.FromNumber(0), DMValue.FromNumber(0));
+        }
+
+        /// <summary>
+        /// DM replacetext(text, find, replace, start, end): case-insensitive,
+        /// replaces all occurrences within the 1-indexed [start, end] window
+        /// (0/absent = the whole string). An empty needle is a no-op (BYOND
+        /// replaces nothing; a naive scan would infinite-loop).
+        /// </summary>
+        public static DMValue ReplaceText(DMValue haystack, DMValue needle, DMValue replacement, DMValue start, DMValue end)
+        {
             var s = haystack.ToString();
             var n = needle.ToString();
+            if (n.Length == 0) return haystack;
             var result = new System.Text.StringBuilder();
             var idx = 0;
-            while (idx < s.Length)
+            int startIdx = start.Type == DMValueType.Null && start.NumberValue == 0 ? 1 : Math.Max(1, (int)start.ToNumber());
+            int endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? s.Length + 1 : (int)end.ToNumber();
+            if (endIdx <= 0) endIdx = s.Length + 1;
+            if (endIdx > s.Length + 1) endIdx = s.Length + 1;
+            if (startIdx > endIdx) return haystack;
+            var windowEnd = Math.Min(s.Length, endIdx - 1);
+            // Copy everything before the window untouched.
+            result.Append(s, 0, Math.Min(s.Length, startIdx - 1));
+            idx = startIdx - 1;
+            while (idx < s.Length && idx <= windowEnd)
             {
                 var found = s.IndexOf(n, idx, StringComparison.OrdinalIgnoreCase);
-                if (found < 0)
+                if (found < 0 || found > windowEnd)
                 {
                     result.Append(s, idx, s.Length - idx);
                     break;
@@ -778,6 +798,11 @@ namespace SS13.DM.Runtime
             if (datumOrValue.Type == DMValueType.DatumRef && datumOrValue.DatumRef is DMRuntime datum)
                 return DMInitial(datum, name);
             return DMValue.Null;
+        }
+
+        public static DMValue DMInitial(DMValue datumOrValue, DMValue name)
+        {
+            return DMInitial(datumOrValue, name.ToString());
         }
 
         // ==== CRASH ====
@@ -1045,34 +1070,71 @@ namespace SS13.DM.Runtime
         }
 
         /// <summary>
-        /// DM step_towards(atom, trg): moves one step toward trg; 1 if moved.
+        /// DM step_towards(atom, trg, speed): moves up to the given number of steps toward
+        /// trg; 1 if moved at least once.
         /// </summary>
         public static DMValue StepTowards(DMValue atom, DMValue trg)
         {
-            var dir = GetDir(atom, trg);
-            if (dir.ToNumber() == 0) return DMValue.FromNumber(0);
-            return Step(atom, dir);
+            return StepTowards(atom, trg, DMValue.FromNumber(1));
+        }
+
+        public static DMValue StepTowards(DMValue atom, DMValue trg, DMValue speed)
+        {
+            var steps = (int)Math.Max(0, speed.ToNumber());
+            var moved = 0;
+            for (var i = 0; i < steps; i++)
+            {
+                var dir = GetDir(atom, trg);
+                if (dir.ToNumber() == 0) break;
+                var r = Step(atom, dir);
+                if (r.ToNumber() != 1) break;
+                moved = 1;
+            }
+            return DMValue.FromNumber(moved);
         }
 
         /// <summary>
-        /// DM step_away(atom, trg): moves one step away from trg, trying the
-        /// direct away direction first and then 45-degree rotations.
+        /// DM step_away(atom, trg, max, speed): moves one step away from trg,
+        /// trying the direct away direction first and then 45-degree rotations,
+        /// stopping once past max tiles (0 = 1) or after the given number of steps.
         /// </summary>
         public static DMValue StepAway(DMValue atom, DMValue trg)
         {
+            return StepAway(atom, trg, DMValue.FromNumber(0), DMValue.FromNumber(1));
+        }
+
+        public static DMValue StepAway(DMValue atom, DMValue trg, DMValue max, DMValue speed)
+        {
             if (atom.Type != DMValueType.DatumRef || atom.DatumRef is not DMRuntime) return DMValue.FromNumber(0);
             if (trg.Type != DMValueType.DatumRef || trg.DatumRef is not DMRuntime) return DMValue.FromNumber(0);
-            var away = GetDir(trg, atom).ToNumber();
-            if (away == 0) return DMValue.FromNumber(0);
-            var idx = Array.IndexOf(ClockwiseDirs, (int)away);
-            if (idx < 0) return DMValue.FromNumber(0);
-            for (var i = 0; i < 8; i++)
+            var maxDist = Math.Max(1, (int)max.ToNumber());
+            var steps = (int)Math.Max(0, speed.ToNumber());
+            var moved = 0;
+            for (var s = 0; s < steps; s++)
             {
-                var dir = ClockwiseDirs[(idx + i) % ClockwiseDirs.Length];
-                var r = Step(atom, DMValue.FromNumber(dir));
-                if (r.ToNumber() == 1) return r;
+                // Stop once the atom is at least maxDist tiles away from trg.
+                var d = Coord(atom.DatumRef as DMRuntime, "x") - Coord(trg.DatumRef as DMRuntime, "x");
+                var dy = Coord(atom.DatumRef as DMRuntime, "y") - Coord(trg.DatumRef as DMRuntime, "y");
+                if (Math.Max(Math.Abs(d), Math.Abs(dy)) >= maxDist) break;
+                var away = GetDir(trg, atom).ToNumber();
+                if (away == 0) break;
+                var idx = Array.IndexOf(ClockwiseDirs, (int)away);
+                if (idx < 0) break;
+                var stepped = false;
+                for (var i = 0; i < 8; i++)
+                {
+                    var dir = ClockwiseDirs[(idx + i) % ClockwiseDirs.Length];
+                    var r = Step(atom, DMValue.FromNumber(dir));
+                    if (r.ToNumber() == 1)
+                    {
+                        stepped = true;
+                        moved = 1;
+                        break;
+                    }
+                }
+                if (!stepped) break;
             }
-            return DMValue.FromNumber(0);
+            return DMValue.FromNumber(moved);
         }
 
         /// <summary>
@@ -1164,21 +1226,42 @@ namespace SS13.DM.Runtime
 
         public static DMValue SplitText(DMValue text, DMValue separator)
         {
+            return SplitText(text, separator, DMValue.FromNumber(1));
+        }
+
+        /// <summary>
+        /// DM splittext(text, sep, start): split from the 1-indexed start
+        /// character on; text before start is dropped.
+        /// </summary>
+        public static DMValue SplitText(DMValue text, DMValue separator, DMValue start)
+        {
             var s = text.ToString();
+            var startIdx = Math.Max(1, (int)start.ToNumber());
+            if (startIdx > s.Length) return DMValue.FromList(new DMList());
+            var window = s.Substring(startIdx - 1);
             var list = new DMList();
             var sep = separator.ToString();
             if (sep.Length == 0)
             {
-                foreach (var c in s) list.Add(DMValue.FromString(c.ToString()));
+                foreach (var c in window) list.Add(DMValue.FromString(c.ToString()));
             }
             else
             {
-                foreach (var p in s.Split(new[] { sep }, StringSplitOptions.None)) list.Add(DMValue.FromString(p));
+                foreach (var p in window.Split(new[] { sep }, StringSplitOptions.None)) list.Add(DMValue.FromString(p));
             }
             return DMValue.FromList(list);
         }
 
         public static DMValue JoinText(DMValue value, DMValue separator = default)
+        {
+            return JoinText(value, separator, DMValue.FromNumber(1), DMValue.FromNumber(0));
+        }
+
+        /// <summary>
+        /// DM jointext(list, sep, start, end): join elements start..end
+        /// (1-indexed, inclusive; end 0 = to the end).
+        /// </summary>
+        public static DMValue JoinText(DMValue value, DMValue separator, DMValue start, DMValue end)
         {
             var sep = separator.Type == DMValueType.Null && separator.NumberValue == 0 ? "" : separator.ToString();
             var sb = new System.Text.StringBuilder();
@@ -1191,7 +1274,10 @@ namespace SS13.DM.Runtime
             }
             if (value.Type == DMValueType.List)
             {
-                for (var i = 1; i <= value.ListValue.Count; i++) Append(value.ListValue.Get(i).ToString());
+                var startIdx = Math.Max(1, (int)start.ToNumber());
+                var endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? value.ListValue.Count : (int)end.ToNumber();
+                if (endIdx > value.ListValue.Count) endIdx = value.ListValue.Count;
+                for (var i = startIdx; i <= endIdx; i++) Append(value.ListValue.Get(i).ToString());
             }
             else
             {
@@ -1597,11 +1683,49 @@ namespace SS13.DM.Runtime
 
         public static DMValue Text2Num(DMValue value)
         {
+            return Text2Num(value, DMValue.FromNumber(0));
+        }
+
+        /// <summary>
+        /// DM text2num(text, radix): parse text in the given base (2-36).
+        /// radix 0 auto-detects 0x / 0b prefixes, else decimal.
+        /// </summary>
+        public static DMValue Text2Num(DMValue value, DMValue radix)
+        {
             var s = value.ToString().Trim();
-            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-                && int.TryParse(s.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out var hex))
-                return DMValue.FromNumber(hex);
-            return DMValue.FromNumber(double.TryParse(s, out var n) ? n : 0);
+            var r = (int)radix.ToNumber();
+            if (r == 0)
+            {
+                if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(s.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out var hex))
+                    return DMValue.FromNumber(hex);
+                if (s.StartsWith("0b", StringComparison.OrdinalIgnoreCase))
+                {
+                    var bin = 0L;
+                    var ok = s.Length > 2;
+                    for (var i = 2; ok && i < s.Length; i++)
+                    {
+                        if (s[i] == '0') bin <<= 1;
+                        else if (s[i] == '1') bin = (bin << 1) | 1;
+                        else ok = false;
+                    }
+                    if (ok) return DMValue.FromNumber(bin);
+                }
+                return DMValue.FromNumber(double.TryParse(s, out var n) ? n : 0);
+            }
+            if (r < 2 || r > 36) return DMValue.FromNumber(0);
+            var neg = s.StartsWith("-");
+            var digits = neg ? s.Substring(1) : s;
+            long v;
+            try
+            {
+                v = System.Convert.ToInt64(digits, r);
+            }
+            catch
+            {
+                return DMValue.FromNumber(0);
+            }
+            return DMValue.FromNumber(neg ? -v : v);
         }
 
         public static DMValue Num2Text(DMValue value)
@@ -1611,10 +1735,16 @@ namespace SS13.DM.Runtime
 
         public static DMValue Num2Text(DMValue value, DMValue len)
         {
+            return Num2Text(value, len, DMValue.FromString("0"));
+        }
+
+        public static DMValue Num2Text(DMValue value, DMValue len, DMValue pad)
+        {
             var n = value.ToNumber();
             var s = n == (int)n ? ((int)n).ToString() : n.ToString();
             var width = (int)len.ToNumber();
-            if (width > s.Length) s = s.PadLeft(width, '0');
+            var padStr = pad.ToString();
+            if (width > s.Length && padStr.Length > 0) s = s.PadLeft(width, padStr[0]);
             return DMValue.FromString(s);
         }
 
@@ -1631,12 +1761,17 @@ namespace SS13.DM.Runtime
             return DMValue.FromString(s.Substring(startIdx - 1, endIdx - startIdx));
         }
 
-        public static DMValue FindText(DMValue text, DMValue needle, DMValue start = default)
+        public static DMValue FindText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)
         {
             var s = text.ToString();
             int startIdx = start.Type == DMValueType.Null && start.NumberValue == 0 ? 1 : Math.Max(1, (int)start.ToNumber());
             if (startIdx > s.Length) return DMValue.FromNumber(0);
-            var idx = s.IndexOf(needle.ToString(), startIdx - 1, StringComparison.Ordinal);
+            var needleStr = needle.ToString();
+            int endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? s.Length + 1 : (int)end.ToNumber();
+            if (endIdx <= 0) return DMValue.FromNumber(0);
+            if (endIdx > s.Length) endIdx = s.Length;
+            if (endIdx < startIdx) return DMValue.FromNumber(0);
+            var idx = s.IndexOf(needleStr, startIdx - 1, endIdx - startIdx + 1, StringComparison.Ordinal);
             return DMValue.FromNumber(idx < 0 ? 0 : idx + 1);
         }
 

@@ -40,4 +40,21 @@ for (const expected of EXPECTED_FILES) {
   assert(file!.content.length > 100, `${expected} has substantial content (${file!.content.length} chars)`);
 }
 
+// Plan 09 B2: multi-arg overloads for calls that previously failed to compile
+// (CS1501). Each signature must exist in the DMRuntimeHelpers template.
+const OVERLOAD_SIGNATURES = [
+  'Text2Num(DMValue value, DMValue radix)',
+  'Num2Text(DMValue value, DMValue len, DMValue pad)',
+  'FindText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)',
+  'ReplaceText(DMValue haystack, DMValue needle, DMValue replacement, DMValue start, DMValue end)',
+  'SplitText(DMValue text, DMValue separator, DMValue start)',
+  'StepTowards(DMValue atom, DMValue trg, DMValue speed)',
+  'StepAway(DMValue atom, DMValue trg, DMValue max, DMValue speed)',
+  'JoinText(DMValue value, DMValue separator, DMValue start, DMValue end)'
+];
+const helpersContent = files.find(f => f.filename === 'DMRuntimeHelpers.cs')!.content;
+for (const sig of OVERLOAD_SIGNATURES) {
+  assert(helpersContent.includes(sig), `DMRuntimeHelpers overload exists: ${sig}`);
+}
+
 console.log("\n✅ ALL RUNTIME TEMPLATE INTEGRITY TESTS PASSED!");

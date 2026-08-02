@@ -10,6 +10,11 @@ export class CSharpEmitter {
   private loopDepth = 0;
   private switchDepth = 0;
   private lambdaDepth = 0;
+  /** Per-loop continue labels (C# label or '' for loops where a plain
+   *  `continue;` already reaches the correct point). Top of stack = the
+   *  innermost loop; jumped to when a `continue` must cross a switch's
+   *  while(true) wrapper or land on a C-for increment. */
+  private continueLabels: string[] = [];
 
   /** While true, expressions are emitted in the GlobalVars initializer
    *  context (no `comp`, no current datum): src is Null, bare calls go
@@ -40,7 +45,10 @@ export class CSharpEmitter {
    * static method per DM proc, operating on the engine-free DMRuntime datum.
    */
   public generateProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[] = []): string {
+    this.pathClassNameMap.clear();
+    this.usedClassNames.clear();
     let code = `using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using SS13.DM.Runtime;
 using static SS13.DM.Runtime.DMRuntimeHelpers;
@@ -248,6 +256,9 @@ namespace Content.Server.DM
           }
           switchCode += `${pad}    }\n`;
         }
+        // Terminating break: after the last case (or default) body runs, the
+        // switch is done — without this the while(true) wrapper loops forever.
+        switchCode += `${pad}    break;\n`;
         this.switchDepth--;
         switchCode += `${pad}}\n`;
         return switchCode;
@@ -260,6 +271,7 @@ namespace Content.Server.DM
           const savedLoop = this.loopDepth;
           const savedSwitch = this.switchDepth;
           const savedLambda = this.lambdaDepth;
+          const savedLabels = this.continueLabels.length;
           this.loopDepth = 0;
           this.switchDepth = 0;
           this.lambdaDepth++;
@@ -271,6 +283,7 @@ namespace Content.Server.DM
           this.loopDepth = savedLoop;
           this.switchDepth = savedSwitch;
           this.lambdaDepth = savedLambda;
+          this.continueLabels.length = savedLabels;
           return spawnCode;
         }
 
@@ -308,55 +321,109 @@ namespace Content.Server.DM
         return `${pad}break;\n`;
 
       case 'ContinueStatement':
-        if (this.loopDepth > 0) {
+        // DM continue: next iteration of the innermost loop. Needs a goto
+        // when (a) inside a switch — a plain `continue` would iterate the
+        // switch's while(true) wrapper forever instead of the enclosing loop —
+        // or (b) inside a C-style for, where the increment must still run.
+        if (this.loopDepth === 0) {
+          if (this.switchDepth > 0) {
+            // Continue inside a switch with no enclosing loop exits the switch.
+            return `${pad}break;\n`;
+          }
+          return `${pad}// continue outside a loop\n`;
+        }
+        {
+          const label = this.continueLabels[this.continueLabels.length - 1];
+          if (this.switchDepth > 0 || label.startsWith('__dmForCont')) {
+            return `${pad}goto ${label};\n`;
+          }
           return `${pad}continue;\n`;
         }
-        return `${pad}// continue outside a loop\n`;
 
       case 'WhileStatement':
-        this.loopDepth++;
-        let whileCode = `${pad}while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}{\n`;
-        for (const s of stmt.loopBody || []) {
-          whileCode += this.transpileStatement(s, indent + 4);
+        {
+          const contLabel = `__dmWhileCont${this.tempCounter++}`;
+          let whileCode = `${pad}while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}{\n`;
+          whileCode += `${pad}    {\n`;
+          this.loopDepth++;
+          this.continueLabels.push(contLabel);
+          for (const s of stmt.loopBody || []) {
+            whileCode += this.transpileStatement(s, indent + 8);
+          }
+          this.continueLabels.pop();
+          this.loopDepth--;
+          whileCode += `${pad}    }\n`;
+          // Continue label for continues crossing a switch: jumping here is
+          // equivalent to `continue;` (skip rest of body, re-check condition).
+          whileCode += `${pad}    ${contLabel}: ;\n`;
+          whileCode += `${pad}}\n`;
+          return whileCode;
         }
-        whileCode += `${pad}}\n`;
-        this.loopDepth--;
-        return whileCode;
 
       case 'DoWhileStatement':
-        this.loopDepth++;
-        let doCode = `${pad}do\n${pad}{\n`;
-        for (const s of stmt.loopBody || []) {
-          doCode += this.transpileStatement(s, indent + 4);
+        {
+          const contLabel = `__dmDoCont${this.tempCounter++}`;
+          let doCode = `${pad}do\n${pad}{\n`;
+          doCode += `${pad}    {\n`;
+          this.loopDepth++;
+          this.continueLabels.push(contLabel);
+          for (const s of stmt.loopBody || []) {
+            doCode += this.transpileStatement(s, indent + 8);
+          }
+          this.continueLabels.pop();
+          this.loopDepth--;
+          doCode += `${pad}    }\n`;
+          doCode += `${pad}    ${contLabel}: ;\n`;
+          doCode += `${pad}} while (${stmt.condition ? this.transpileExpression(stmt.condition) : 'DMValue.FromNumber(1)'}.IsTrue());\n`;
+          return doCode;
         }
-        doCode += `${pad}} while (${stmt.condition ? this.transpileExpression(stmt.condition) : 'DMValue.FromNumber(1)'}.IsTrue());\n`;
-        this.loopDepth--;
-        return doCode;
 
       case 'CForStatement':
         {
+          // DM for(init; cond; incr): a `continue` inside the body must still
+          // execute the increment. A plain `continue` in `while (cond)` would
+          // skip it (infinite loop), so the loop is `while (true)` with the
+          // condition tested at the top and the increment behind a label that
+          // the ContinueStatement jumps to (from a switch or the C-for body).
+          // The body is wrapped in its own block so the label stays outside
+          // the scope of the body's locals (C# forbids goto INTO a scope).
+          const contLabel = `__dmForCont${this.tempCounter++}`;
           let cforCode = `${pad}{\n`;
           if (stmt.loopVariable) {
             cforCode += `${pad}    comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.init)});\n`;
-            cforCode += `${pad}    while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}    {\n`;
+            cforCode += `${pad}    while (true)\n${pad}    {\n`;
+            cforCode += `${pad}        if (!(${this.transpileExpression(stmt.condition)}).IsTrue()) break;\n`;
+            cforCode += `${pad}        {\n`;
             this.loopDepth++;
+            this.continueLabels.push(contLabel);
             for (const s of stmt.loopBody || []) {
-              cforCode += this.transpileStatement(s, indent + 8);
+              cforCode += this.transpileStatement(s, indent + 12);
             }
+            this.continueLabels.pop();
             this.loopDepth--;
+            cforCode += `${pad}        }\n`;
+            cforCode += `${pad}        ${contLabel}:\n`;
             cforCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.increment)});\n`;
             cforCode += `${pad}    }\n`;
           } else if (stmt.condition) {
             // Bare-init C-style loop (for(words, words > 0, words--)): the
             // init was a plain expression; only the condition/increment apply.
-            cforCode += `${pad}    while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}    {\n`;
+            cforCode += `${pad}    while (true)\n${pad}    {\n`;
+            cforCode += `${pad}        if (!(${this.transpileExpression(stmt.condition)}).IsTrue()) break;\n`;
+            cforCode += `${pad}        {\n`;
             this.loopDepth++;
+            this.continueLabels.push(contLabel);
             for (const s of stmt.loopBody || []) {
-              cforCode += this.transpileStatement(s, indent + 8);
+              cforCode += this.transpileStatement(s, indent + 12);
             }
+            this.continueLabels.pop();
             this.loopDepth--;
+            cforCode += `${pad}        }\n`;
             if (stmt.increment) {
+              cforCode += `${pad}        ${contLabel}:\n`;
               cforCode += `${pad}        ${this.transpileExpression(stmt.increment)};\n`;
+            } else {
+              cforCode += `${pad}        ${contLabel}: ;\n`;
             }
             cforCode += `${pad}    }\n`;
           }
@@ -369,17 +436,23 @@ namespace Content.Server.DM
         // local gets a unique name: nested loops would otherwise collide
         // (CS0136) when the outer iterator is used inside the inner loop.
         {
+          const contLabel = `__dmForInCont${this.tempCounter++}`;
           const iter = `__dmIter${this.tempCounter++}`;
           let forCode = `${pad}{\n`;
           if (stmt.loopVariable && stmt.loopRange) {
             forCode += `${pad}    foreach (var ${iter} in DMListItems(${this.transpileExpression(stmt.loopRange)}))\n`;
             forCode += `${pad}    {\n`;
-            forCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${iter});\n`;
+            forCode += `${pad}        {\n`;
+            forCode += `${pad}            comp.SetVar("${stmt.loopVariable}", ${iter});\n`;
             this.loopDepth++;
+            this.continueLabels.push(contLabel);
             for (const s of stmt.loopBody || []) {
-              forCode += this.transpileStatement(s, indent + 8);
+              forCode += this.transpileStatement(s, indent + 12);
             }
+            this.continueLabels.pop();
             this.loopDepth--;
+            forCode += `${pad}        }\n`;
+            forCode += `${pad}        ${contLabel}: ;\n`;
             forCode += `${pad}    }\n`;
           }
           forCode += `${pad}}\n`;
@@ -607,6 +680,15 @@ namespace Content.Server.DM
         return `DMRuntimeHelpers.DMInitial(comp, "${a.name}")`;
       }
     }
+    // DM initial(x, "name"): initial(path_or_datum, var_name). The name is a
+    // string literal — pass it through as a C# string (the DMValue overload
+    // below would not match the runtime's (DMValue, string) signature).
+    if (node.name === 'initial' && node.arguments.length === 2) {
+      const nameArg = node.arguments[1];
+      if (nameArg.type === 'literal' && nameArg.literalType === 'string') {
+        return `DMRuntimeHelpers.DMInitial(${this.transpileExpression(node.arguments[0])}, "${nameArg.value}")`;
+      }
+    }
 
     // Built-in DM procs
     const builtin = transpileBuiltinCall(node.name, args);
@@ -663,9 +745,27 @@ namespace Content.Server.DM
     return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
   }
 
+  /** Path -> deduped class name, and the class names already taken, for the
+   *  current generateProcsCS run. Distinct paths can map to the same class
+   *  name (/obj/item/foo vs /obj/ItemFoo both give ObjItemFoo); the second
+   *  gets a numeric suffix so the generated static methods do not collide
+   *  (CS0102). */
+  private pathClassNameMap = new Map<string, string>();
+  private usedClassNames = new Set<string>();
+
   private pathToClassName(dmPath: string): string {
+    const existing = this.pathClassNameMap.get(dmPath);
+    if (existing) return existing;
     const parts = dmPath.split('/').filter(Boolean);
-    return parts.map(p => this.capitalize(p)).join('');
+    let name = parts.map(p => this.capitalize(p)).join('');
+    if (this.usedClassNames.has(name)) {
+      let suffix = 2;
+      while (this.usedClassNames.has(`${name}_${suffix}`)) suffix++;
+      name = `${name}_${suffix}`;
+    }
+    this.usedClassNames.add(name);
+    this.pathClassNameMap.set(dmPath, name);
+    return name;
   }
 
   private capitalize(str: string): string {
