@@ -57,7 +57,7 @@ repository and the converted solution is written to your Downloads folder.
 2. **Preprocesses & parses DM source** — a `#include`/`#define`/`#if`-aware
    preprocessor feeds a hand-written lexer and indentation-sensitive parser that
    builds    an AST (type declarations, vars, procs, `if`/`else if`/`switch`/
-   `for`/`for-in`/C-style `for(var/i=..)`/`while`/`do-while`, `spawn`/`sleep`,
+   `for`/`for-in`/C-style `for` (var, bare, or compound-assign init)/`while`/`do-while`, `spawn`/`sleep`,
    `{...}` list literals, `1..5` ranges, verbs with `set` modifiers, and full
    expressions including string interpolation).
 3. **Builds a DM-IR** — merges all files into a type hierarchy, auto-synthesizes
@@ -79,11 +79,19 @@ repository and the converted solution is written to your Downloads folder.
    source positions (including orphan DMM tile keys, non-rectangular grids,
    DMI frame/delay mismatches); the CLI exits non-zero if any errors were found.
 
-Builtins (`pick`, `rand`, `list`, `length`, `text`, `text2num`, `num2text`,
-`copytext`, `findtext`, `clamp`, `max`, `min`, `round`, `abs`, `uppertext`,
-`lowertext`, `hascall`, `alert`, `input`, `icon`, `sleep`, `spawn`, `qdel`,
-`locate`, `istype`, `ispath`, `prob`) map to runtime helpers in the generated
-solution.
+Builtins map to runtime helpers in the generated solution — 112 names in
+`MAPPED_BUILTINS`: core (`pick`, `rand`, `list`, `length`, `text`, `text2num`,
+`num2text`, `copytext`, `findtext`, `clamp`, `max`, `min`, `round`, `abs`,
+`uppertext`, `lowertext`, `hascall`, `alert`, `input`, `icon`, `sleep`, `spawn`,
+`qdel`, `locate`, `istype`, `ispath`, `prob`), pure functions (`floor`, `ceil`,
+`sqrt`, `sin`, `cos`, `arccos`, `log`, `sign`, `copytext_char`, `length_char`,
+`text2ascii`, `ascii2text`, `ckey`, `sorttext`, `replacetextEx`, `html_encode`,
+`html_decode`, `rgb2num`, `json_encode`, `time2text`, `list2params`, `arglist`,
+`alist`), file ops (`file`, `isfile`, `fdel`, `fcopy`, `fcopy_rsc`, `flist`,
+`ref`, `refcount`, `SpacemanDMM_unlint`), and movement (`step`, `step_towards`,
+`step_away`, `get_step_away`, `get_step_towards`, `orange`, `viewers`, `hearers`;
+`range`/`view`/`oview` take BYOND's dist-first `(dist, center)` form). Bare global
+proc calls fall back to the `/proc` registry at runtime.
 
 ## Architecture
 
@@ -91,14 +99,16 @@ solution.
 src/
   parser/      dmLexer.ts, dmParser.ts        DM tokenizer + AST parser
   preprocessor.ts                             #include/#define/#if handling
-  ir/          dmIRGenerator.ts               type hierarchy + static/dynamic split
+  ir/          dmIRGenerator.ts, symbolTable.ts    type hierarchy + symbol resolution
+  audit/       fidelityAudit.ts                    corpus-wide fidelity measurement
   transpiler/  csharpEmitter.ts, yamlGenerator.ts, builtinMappings.ts
   dmi/         dmiParser.ts, rsiWriter.ts     DMI (PNG chunk) -> RSI
   dmm/         dmmParser.ts, mapConverter.ts  DMM -> grid YAML
   project/     ss14Template.ts                solution scaffolding (real engine)
   runtimeTemplate/ dmRuntimeCS.ts             embedded C# runtime (engine-free)
   gui/         server.ts                      local web UI
-  tests/       runTests.ts + suites           test runner (no framework deps)
+  tests/       runTests.ts + suites           test runner + differential probes
+  docs/        plans/*.md, audit snapshots    plan status + fidelity baselines
 scripts/
   setup-engine.sh                             fetch + pin real RobustToolbox
   build-loop.sh                               Phase 0 CI loop (build+test+probes)
@@ -121,11 +131,12 @@ engine.pin                                    pinned RobustToolbox commit + API 
 ## Known limitations
 
 See `PLAN.md` ("Out of scope") and `FIDELITY-AUDIT.md` (honest loss counts;
-24/24 semantic probes preserved after the Phase 0.5 semantic core).
-Notable items: no argument macros, no screen/overlay/appearance handling,
-verb-to-command mapping is stubbed, and the generated solution builds against
-the real `Robust.Shared` engine project but does not yet run a live
-server/client (Robust.Server / Robust.Client integration is Phase 3).
+91/91 semantic probes preserved across the Phase 0.5 core + Plan 01 builtin
+batches). Corpus status: tgstation unresolved builtins 3,345 → **708**, parse
+errors 1,285 → **178**. Notable items: no argument macros, no screen/overlay/
+appearance handling, verb-to-command mapping is stubbed, and the generated
+solution builds against the real `Robust.Shared` engine project but does not yet
+run a live server/client (Robust.Server / Robust.Client integration is Phase 3).
 
 ## License
 

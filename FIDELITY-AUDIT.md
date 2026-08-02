@@ -20,7 +20,7 @@ Severity: 🔴 Critical (generated code broken / core semantics destroyed) ·
 
 ---
 
-## 1. Semantic differential results (24 probes, 24/24 preserved)
+## 1. Semantic differential results (91 probes, 91/91 preserved)
 
 Each probe runs the *converted* code; expected = BYOND behavior, observed =
 converted runtime.
@@ -51,6 +51,9 @@ converted runtime.
 | `as /type` cast preserves the object | 0 | 0 | ✅ |
 | istype(null, /datum) | 0 | 0 | ✅ |
 | islist(list(1)) | 1 | 1 | ✅ |
+
+**Current: 91 probes, 91/91 preserved** — the core 24 above plus 67 added by the
+Plan 01 builtin batches (see §3e).
 
 **All 24 core-semantics probes preserved** (Phase 0.5 semantic core, done 2026-08):
 text semantics, operand-returning short-circuit `&&`/`||`, `DMList` (`len`,
@@ -201,6 +204,39 @@ Batch: materialize `/global/var/` declarations as a runtime `GlobalVars` registr
 - Compile proof **re-verified at 44,826 procs → 0 C# errors** (dotnet build green,
   ~11 min) with `GlobalVars` materializing all corpus globals.
 
+### 3e. Plan 01: builtin batches 1–3 (pure functions, file ops, movement) — VERIFIED (2026-08)
+
+`MAPPED_BUILTINS` grew to 112 names; the audit now resolves known builtin calls
+instead of counting them unknown (baseline: 3,345 unresolved on tgstation, §3f).
+
+- **Batch 1 — pure functions** (23): `arglist`, `floor`, `ceil`, `sqrt`, `sin`,
+  `cos`, `arccos`, `log`, `sign`, `copytext_char`, `length_char`, `text2ascii`,
+  `ascii2text`, `ckey`, `sorttext`, `replacetextEx`, `html_encode`, `html_decode`,
+  `rgb2num`, `json_encode`, `time2text`, `list2params`, `alist` — probes 68/68,
+  unresolved **3,345 → 1,740** (−1,605).
+- **Batch 2 — file ops** (9): `file`/`isfile`/`fdel`/`fcopy`/`fcopy_rsc`/`flist`/
+  `ref`/`refcount`/`SpacemanDMM_unlint` (new `DMValueType.File`; `fdel` must check
+  existence first — .NET `File.Delete` silently succeeds on missing files) —
+  probes 80/80, unresolved **1,740 → 1,080** (−660).
+- **Batch 3 — movement** (8): `step`, `step_towards`, `step_away`,
+  `get_step_away`, `get_step_towards`, `orange`, `viewers`, `hearers` — and fixed
+  **`range`/`view`/`oview` arg order**: BYOND is `(dist, center)`, the mapping was
+  `(center, dist)` and would have returned empty lists for every call site —
+  probes 91/91, unresolved **1,080 → 708** (−372).
+- Compile proof re-verified at 44,826 procs → 0 C# errors after each batch.
+
+### 3f. Plan 02 + Plan 06: symbol resolution & parse-error sweep — VERIFIED (2026-08)
+
+- **Symbol table** (`src/ir/symbolTable.ts`): one pass over the merged IR builds
+  per-type proc sets; the audit resolves bare calls against it (type-aware).
+  **93,573 / 96,918 bare global calls now verified** (35,937 `/proc` + 57,636
+  type-hierarchy); the remaining **3,345** are unknown builtins — the working
+  baseline for Plan 01 (§3e).
+- **Parse-error sweep** (Plan 06): `@\`@@\`` raw strings, `#INF` literals,
+  multi-line `new()` args, `switch` dedents, bare-type C-`for`, `+=` in
+  expressions, bare-C compound-assign `for` init — tgstation parse errors
+  **1,285 → 178** (target <500 met).
+
 ---
 
 ## 4. Ranked fix backlog
@@ -233,9 +269,10 @@ Batch: materialize `/global/var/` declarations as a runtime `GlobalVars` registr
 12. Expand `MAPPED_BUILTINS`/runtime helpers: `isnull`, `isnum`, `get_step`,
     `CRASH` (throw), `sqrt`/`log`/`sin`/`cos`, `text2num` hex, `replacetext` (string
     replace — currently `null`), `findtext` (works) → the largest single bucket.
-    (Done: the 3b builtin batch + `/proc` fallback; remaining: `sqrt`, `json_encode`,
-    `regex`, `file`/`fdel`, `step`, `orange`, `viewers`, `winset`, `copytext_char`,
-    `ckey`, `floor`, `ceil`, `SpacemanDMM_unlint`, stale `arglist`).
+    (Done: the 3b builtin batch + `/proc` fallback + Plan 01 batches 1–3 (§3e);
+    remaining: `regex`, `astype`, `winset`, `icon_states`, `span_*`,
+    `findtextEx`, `arctan`, `isicon`, `link`, `gradient`, `filter`,
+    `openToolTip`, `browse_rsc`, `closeToolTip`, `ftp`, `values_sum`…).
 13. ~~`GLOB` as a real static class; `var/global/GLOB/x` declarations populate it~~ →
     **DONE (3d)**: `GlobalVars` registry, 21,872 sites resolved, probes 49/49.
 14. `world.*` → static world state (time, tick) → 12,456 sites.
@@ -246,7 +283,7 @@ Batch: materialize `/global/var/` declarations as a runtime `GlobalVars` registr
 16. Verb declarations: map to SS14 commands or document as unsupported (tgmc has 268).
 
 ## Verification
-- `npm run build` clean; `npm run audit:semantics` → 49 probes run under `dotnet`
+- `npm run build` clean; `npm run audit:semantics` → 91 probes run under `dotnet`
   (scratch kept in `$TMPDIR/dm2ss14-fidelity`); `npm run audit:fidelity -- <repo>`
   reproduces all counters above; results archived in
   `~/Documents/antigravity/ss13-audit-corpora/`.
@@ -258,8 +295,10 @@ No symbol-resolution pass; unknown procs → `null`; `spawn()` as expression;
 DMI/RSI round-trips. **Update (Phase 0):** the generated solution now builds
 against the real RobustToolbox engine (previously a fabricated shim); the DM
 runtime is engine-free and the probe harness runs it standalone. Probe count is
-now 49/49 preserved — the Phase 0.5 semantic-core backlog is complete (text/list
+now 91/91 preserved — the Phase 0.5 semantic-core backlog is complete (text/list
 semantics, short-circuit ops, break/continue, `..()`, world statics, builtins,
-`/proc` fallback, GLOB statics). Remaining work is Tier 3+ scope: bitwise ops,
-remaining builtins (`sqrt`/`json_encode`/`regex`/`file`…), `world.*`, and corpus-scale
-compile proof.
+`/proc` fallback, GLOB statics) and Plan 01 added its first three builtin batches
+(pure functions, file ops, movement; tgstation unresolved 3,345 → 708, parse
+errors 1,285 → 178). Remaining work is Tier 3+ scope: bitwise ops, remaining
+builtins (`regex`/`astype`/`winset`/`icon_states`/`span_*`…), `world.*`, and
+corpus-scale compile proof.
