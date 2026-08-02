@@ -13,6 +13,7 @@ namespace SS13.DM.Runtime
         Number,
         String,
         List,
+        File,
         DatumRef
     }
 
@@ -21,6 +22,7 @@ namespace SS13.DM.Runtime
         public DMValueType Type { get; private set; }
         public double NumberValue { get; private set; }
         public string StringValue { get; private set; }
+        public string FileValue { get; private set; }
         public DMList ListValue { get; private set; }
         public object DatumRef { get; private set; }
 
@@ -29,6 +31,7 @@ namespace SS13.DM.Runtime
         public static DMValue FromNumber(double val) => new DMValue { Type = DMValueType.Number, NumberValue = val };
         public static DMValue FromString(string val) => new DMValue { Type = DMValueType.String, StringValue = val ?? "" };
         public static DMValue FromList(DMList list) => new DMValue { Type = DMValueType.List, ListValue = list };
+        public static DMValue FromFile(string path) => new DMValue { Type = DMValueType.File, FileValue = path ?? "" };
         public static DMValue FromRef(object obj) => new DMValue { Type = DMValueType.DatumRef, DatumRef = obj };
         public static DMValue FromDatum(DMRuntime datum) => new DMValue { Type = DMValueType.DatumRef, DatumRef = datum };
 
@@ -46,6 +49,7 @@ namespace SS13.DM.Runtime
                 DMValueType.Number => NumberValue != 0,
                 DMValueType.String => !string.IsNullOrEmpty(StringValue) && StringValue != "0",
                 DMValueType.List => ListValue != null && ListValue.Count > 0,
+                DMValueType.File => !string.IsNullOrEmpty(FileValue),
                 DMValueType.DatumRef => DatumRef != null,
                 _ => false
             };
@@ -59,6 +63,7 @@ namespace SS13.DM.Runtime
                 DMValueType.Number => NumberValue.ToString(),
                 DMValueType.String => StringValue,
                 DMValueType.List => "[list]",
+                DMValueType.File => FileValue,
                 DMValueType.DatumRef => DatumRef?.ToString() ?? "null",
                 _ => "null"
             };
@@ -278,6 +283,7 @@ namespace SS13.DM.Runtime
 
         public void SetAssoc(string key, DMValue val) => _assocMap[key] = val;
         public DMValue GetAssoc(string key) => _assocMap.TryGetValue(key, out var val) ? val : DMValue.Null;
+        public IReadOnlyDictionary<string, DMValue> AssocEntries => _assocMap;
     }
 }
 `
@@ -286,6 +292,9 @@ namespace SS13.DM.Runtime
         filename: 'DMRuntime.cs',
         content: `using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Net;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace SS13.DM.Runtime
@@ -472,6 +481,9 @@ namespace SS13.DM.Runtime
         filename: 'DMRuntimeHelpers.cs',
         content: `using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -909,24 +921,41 @@ namespace SS13.DM.Runtime
         }
 
         /// <summary>
+        /// Resolves DM "range/dist-first" arg conventions shared by range,
+        /// view, oview, orange, viewers, hearers: (dist, center) with center
+        /// defaulting to usr — or (center) when the first arg is not a number.
+        /// </summary>
+        private static (DMValue Center, DMValue Dist) CenterDist(double defaultDist, params DMValue[] args)
+        {
+            if (args.Length == 0) return (CurrentUsr, DMValue.FromNumber(defaultDist));
+            if (args[0].Type == DMValueType.Number)
+            {
+                var dist = args[0];
+                var center = args.Length > 1 ? args[1] : CurrentUsr;
+                return (center, dist);
+            }
+            var c = args[0];
+            var d = args.Length > 1 ? args[1] : DMValue.FromNumber(defaultDist);
+            return (c, d);
+        }
+
+        /// <summary>
         /// DM range(...): live datums within a distance of a center (usr by
         /// default). Approximates BYOND turf ranges by x/y/z vars.
         /// </summary>
         public static DMValue Range(params DMValue[] args)
         {
-            var center = args.Length > 0 ? args[0] : CurrentUsr;
-            var dist = args.Length > 1 ? args[1] : DMValue.FromNumber(3);
+            var (center, dist) = CenterDist(0, args);
             return RangeScan(center, dist, false);
         }
 
         /// <summary>
-        /// DM view(...): like range but default distance is the 7x7 vision
-        /// view (dist 3).
+        /// DM view(...): like range but the default distance is the 5x5 vision
+        /// view (dist 2) and includes the center.
         /// </summary>
         public static DMValue View(params DMValue[] args)
         {
-            var center = args.Length > 0 ? args[0] : CurrentUsr;
-            var dist = args.Length > 1 ? args[1] : DMValue.FromNumber(3);
+            var (center, dist) = CenterDist(2, args);
             return RangeScan(center, dist, false);
         }
 
@@ -935,8 +964,7 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static DMValue OView(params DMValue[] args)
         {
-            var center = args.Length > 0 ? args[0] : CurrentUsr;
-            var dist = args.Length > 1 ? args[1] : DMValue.FromNumber(3);
+            var (center, dist) = CenterDist(2, args);
             return RangeScan(center, dist, true);
         }
 
@@ -980,6 +1008,154 @@ namespace SS13.DM.Runtime
                         list.Add(DMValue.FromDatum(d));
                 }
                 return DMValue.FromList(list);
+            }
+            return DMValue.FromList(list);
+        }
+
+        // ==== Movement builtins (engine-free, by DM x/y/z vars) ====
+
+        private static double WorldCoord(string axis)
+        {
+            if (WorldValue.Type == DMValueType.DatumRef && WorldValue.DatumRef is DMRuntime w)
+                return Coord(w, axis);
+            return 0;
+        }
+
+        /// <summary>
+        /// DM step(atom, dir, speed): moves the atom speed tiles (default 1)
+        /// in the given direction, clamped to world bounds when world.xmax/
+        /// ymax are set. Returns 1 if it moved, 0 if blocked.
+        /// </summary>
+        public static DMValue Step(DMValue atom, DMValue dir, DMValue speed = default)
+        {
+            if (atom.Type != DMValueType.DatumRef || atom.DatumRef is not DMRuntime a) return DMValue.FromNumber(0);
+            var sp = speed.Type == DMValueType.Null && speed.NumberValue == 0 ? 1 : (int)speed.ToNumber();
+            if (sp <= 0) return DMValue.FromNumber(0);
+            var (dx, dy) = DirOffset(dir.ToNumber());
+            if (dx == 0 && dy == 0) return DMValue.FromNumber(0);
+            var nx = Coord(a, "x") + dx * sp;
+            var ny = Coord(a, "y") + dy * sp;
+            var xmax = WorldCoord("xmax");
+            var ymax = WorldCoord("ymax");
+            if (xmax > 0 && (nx < 1 || nx > xmax)) return DMValue.FromNumber(0);
+            if (ymax > 0 && (ny < 1 || ny > ymax)) return DMValue.FromNumber(0);
+            a.SetVar("x", DMValue.FromNumber(nx));
+            a.SetVar("y", DMValue.FromNumber(ny));
+            return DMValue.FromNumber(1);
+        }
+
+        /// <summary>
+        /// DM step_towards(atom, trg): moves one step toward trg; 1 if moved.
+        /// </summary>
+        public static DMValue StepTowards(DMValue atom, DMValue trg)
+        {
+            var dir = GetDir(atom, trg);
+            if (dir.ToNumber() == 0) return DMValue.FromNumber(0);
+            return Step(atom, dir);
+        }
+
+        /// <summary>
+        /// DM step_away(atom, trg): moves one step away from trg, trying the
+        /// direct away direction first and then 45-degree rotations.
+        /// </summary>
+        public static DMValue StepAway(DMValue atom, DMValue trg)
+        {
+            if (atom.Type != DMValueType.DatumRef || atom.DatumRef is not DMRuntime) return DMValue.FromNumber(0);
+            if (trg.Type != DMValueType.DatumRef || trg.DatumRef is not DMRuntime) return DMValue.FromNumber(0);
+            var away = GetDir(trg, atom).ToNumber();
+            if (away == 0) return DMValue.FromNumber(0);
+            var idx = Array.IndexOf(ClockwiseDirs, (int)away);
+            if (idx < 0) return DMValue.FromNumber(0);
+            for (var i = 0; i < 8; i++)
+            {
+                var dir = ClockwiseDirs[(idx + i) % ClockwiseDirs.Length];
+                var r = Step(atom, DMValue.FromNumber(dir));
+                if (r.ToNumber() == 1) return r;
+            }
+            return DMValue.FromNumber(0);
+        }
+
+        /// <summary>
+        /// DM get_step_away(atom, trg): the turf one step away from trg
+        /// (no movement; first live datum at that position, or Null).
+        /// </summary>
+        public static DMValue GetStepAway(DMValue atom, DMValue trg)
+        {
+            var away = GetDir(trg, atom);
+            if (away.ToNumber() == 0) return DMValue.Null;
+            return GetStep(atom, away);
+        }
+
+        /// <summary>
+        /// DM get_step_towards(atom, trg): the turf one step toward trg
+        /// (no movement; first live datum at that position, or Null).
+        /// </summary>
+        public static DMValue GetStepTowards(DMValue atom, DMValue trg)
+        {
+            var dir = GetDir(atom, trg);
+            if (dir.ToNumber() == 0) return DMValue.Null;
+            return GetStep(atom, dir);
+        }
+
+        /// <summary>
+        /// DM orange(dist, center): datums within dist (Chebyshev) of center,
+        /// excluding the center's own tile. orange(0, c) = same-tile atoms
+        /// other than c.
+        /// </summary>
+        public static DMValue Orange(params DMValue[] args)
+        {
+            var (center, dist) = CenterDist(0, args);
+            var list = new DMList();
+            if (center.Type != DMValueType.DatumRef || center.DatumRef is not DMRuntime c) return DMValue.FromList(list);
+            var d = dist.ToNumber();
+            var cx = Coord(c, "x");
+            var cy = Coord(c, "y");
+            var cz = Coord(c, "z");
+            foreach (var d2 in LiveDatums)
+            {
+                var dx = Coord(d2, "x") - cx;
+                var dy = Coord(d2, "y") - cy;
+                if (Math.Max(Math.Abs(dx), Math.Abs(dy)) <= d && (dx != 0 || dy != 0) && Coord(d2, "z") == cz)
+                    list.Add(DMValue.FromDatum(d2));
+            }
+            return DMValue.FromList(list);
+        }
+
+        /// <summary>
+        /// DM viewers(dist, center): mobs that can see the center. Engine-free
+        /// approximation: all /mob datums within range (default 2 = 5x5 view);
+        /// vision-blocking checks are not modeled.
+        /// </summary>
+        public static DMValue Viewers(params DMValue[] args)
+        {
+            var (center, dist) = CenterDist(2, args);
+            return MobScan(center, dist, true);
+        }
+
+        /// <summary>
+        /// DM hearers(dist, center): mobs that can hear the center (default
+        /// range 7, matching BYOND's hearing radius).
+        /// </summary>
+        public static DMValue Hearers(params DMValue[] args)
+        {
+            var (center, dist) = CenterDist(7, args);
+            return MobScan(center, dist, true);
+        }
+
+        private static DMValue MobScan(DMValue center, DMValue distValue, bool includeCenter)
+        {
+            var dist = distValue.ToNumber();
+            var list = new DMList();
+            if (center.Type != DMValueType.DatumRef || center.DatumRef is not DMRuntime c) return DMValue.FromList(list);
+            var cx = Coord(c, "x");
+            var cy = Coord(c, "y");
+            var cz = Coord(c, "z");
+            foreach (var d in LiveDatums)
+            {
+                if (d == c && !includeCenter) continue;
+                if (!d.IsType("/mob")) continue;
+                if (Math.Max(Math.Abs(Coord(d, "x") - cx), Math.Abs(Coord(d, "y") - cy)) <= dist && Coord(d, "z") == cz)
+                    list.Add(DMValue.FromDatum(d));
             }
             return DMValue.FromList(list);
         }
@@ -1064,8 +1240,116 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static DMValue FExists(DMValue path)
         {
-            return DMValue.FromNumber(System.IO.File.Exists(path.ToString()) ? 1 : 0);
+            return DMValue.FromNumber(System.IO.File.Exists(PathOf(path)) ? 1 : 0);
         }
+
+        private static string PathOf(DMValue v) =>
+            v.Type == DMValueType.File ? v.FileValue : v.ToString();
+
+        /// <summary>
+        /// DM file(path): a file value bound to a host path (engine-free; the
+        /// path is used verbatim, resolved against the process CWD).
+        /// </summary>
+        public static DMValue File(DMValue path) => DMValue.FromFile(path.ToString());
+
+        /// <summary>
+        /// DM isfile(value): whether the value is a file (or file-bearing datum).
+        /// </summary>
+        public static DMValue IsFile(DMValue value) =>
+            DMValue.FromNumber(value.Type == DMValueType.File ? 1 : 0);
+
+        /// <summary>
+        /// DM fdel(path): deletes the file; 1 if it existed and was deleted, 0 otherwise.
+        /// </summary>
+        public static DMValue FileDel(DMValue path)
+        {
+            try
+            {
+                var p = PathOf(path);
+                if (!System.IO.File.Exists(p)) return DMValue.FromNumber(0);
+                System.IO.File.Delete(p);
+                return DMValue.FromNumber(1);
+            }
+            catch
+            {
+                return DMValue.FromNumber(0);
+            }
+        }
+
+        /// <summary>
+        /// DM fcopy(src, dst): copies a file; 1 on success, 0 on failure.
+        /// </summary>
+        public static DMValue FileCopy(DMValue src, DMValue dst)
+        {
+            try
+            {
+                System.IO.File.Copy(PathOf(src), PathOf(dst), true);
+                return DMValue.FromNumber(1);
+            }
+            catch
+            {
+                return DMValue.FromNumber(0);
+            }
+        }
+
+        /// <summary>
+        /// DM fcopy_rsc(src, dst): copies a bundled resource. Engine-free runtime
+        /// has no rsc packaging, so this behaves like fcopy.
+        /// </summary>
+        public static DMValue FileCopyRsc(DMValue src, DMValue dst) => FileCopy(src, dst);
+
+        /// <summary>
+        /// DM flist(path): list of entry names (files and directories) in a folder.
+        /// </summary>
+        public static DMValue FList(DMValue path)
+        {
+            var list = new DMList();
+            try
+            {
+                var dir = PathOf(path);
+                if (string.IsNullOrEmpty(dir)) dir = ".";
+                foreach (var f in System.IO.Directory.GetFiles(dir))
+                    list.Add(DMValue.FromString(System.IO.Path.GetFileName(f)));
+                foreach (var d in System.IO.Directory.GetDirectories(dir))
+                    list.Add(DMValue.FromString(System.IO.Path.GetFileName(d)));
+            }
+            catch
+            {
+                return DMValue.FromList(list);
+            }
+            return DMValue.FromList(list);
+        }
+
+        private static readonly System.Collections.Generic.Dictionary<object, string> RefIds =
+            new System.Collections.Generic.Dictionary<object, string>();
+        private static int RefCounter = 0;
+
+        /// <summary>
+        /// DM ref(value): stable reference string ("REF[0x...]") for datums;
+        /// empty string for non-datum values.
+        /// </summary>
+        public static DMValue Ref(DMValue value)
+        {
+            if (value.Type == DMValueType.DatumRef && value.DatumRef != null)
+            {
+                if (RefIds.TryGetValue(value.DatumRef, out var id)) return DMValue.FromString(id);
+                id = "REF[0x" + (++RefCounter).ToString("x") + "]";
+                RefIds[value.DatumRef] = id;
+                return DMValue.FromString(id);
+            }
+            return DMValue.FromString("");
+        }
+
+        /// <summary>
+        /// DM refcount(value): engine-free approximation — no ref tracking, so 0.
+        /// (Plan 01 file batch: documented approximation.)
+        /// </summary>
+        public static DMValue RefCount(DMValue value) => DMValue.FromNumber(0);
+
+        /// <summary>
+        /// DM SpacemanDMM_unlint(value): linter-only no-op.
+        /// </summary>
+        public static DMValue SpacemanUnlint(params DMValue[] args) => DMValue.Null;
 
         public static DMValue IsNaN(DMValue value)
         {
@@ -1261,6 +1545,11 @@ namespace SS13.DM.Runtime
         public static DMValue Length(DMValue value)
         {
             if (value.Type == DMValueType.List) return DMValue.FromNumber(value.ListValue.Count);
+            if (value.Type == DMValueType.File)
+            {
+                try { return DMValue.FromNumber(new System.IO.FileInfo(value.FileValue).Length); }
+                catch { return DMValue.FromNumber(0); }
+            }
             return DMValue.FromNumber(value.ToString().Length);
         }
 
@@ -1383,6 +1672,250 @@ namespace SS13.DM.Runtime
             if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
                 return DMValue.FromNumber(datum.CanCallProc(procName.ToString()) ? 1 : 0);
             return DMValue.FromNumber(0);
+        }
+
+        // ==== Pure math functions (BYOND semantics: trig in degrees) ====
+
+        public static DMValue Floor(DMValue value) => DMValue.FromNumber(Math.Floor(value.ToNumber()));
+
+        public static DMValue Ceil(DMValue value) => DMValue.FromNumber(Math.Ceiling(value.ToNumber()));
+
+        public static DMValue Sqrt(DMValue value) => DMValue.FromNumber(Math.Sqrt(value.ToNumber()));
+
+        public static DMValue Sin(DMValue value) => DMValue.FromNumber(Math.Sin(value.ToNumber() * Math.PI / 180.0));
+
+        public static DMValue Cos(DMValue value) => DMValue.FromNumber(Math.Cos(value.ToNumber() * Math.PI / 180.0));
+
+        public static DMValue ArcCos(DMValue value) => DMValue.FromNumber(Math.Acos(value.ToNumber()) * 180.0 / Math.PI);
+
+        public static DMValue Log(DMValue value) => DMValue.FromNumber(Math.Log(value.ToNumber()));
+
+        public static DMValue Sign(DMValue value)
+        {
+            if (value.Type == DMValueType.String)
+                return DMValue.FromNumber(string.IsNullOrEmpty(value.StringValue) ? 0 : -1);
+            var n = value.ToNumber();
+            return DMValue.FromNumber(n < 0 ? -1 : (n > 0 ? 1 : 0));
+        }
+
+        // ==== Text functions ====
+
+        public static DMValue LengthChar(DMValue value)
+        {
+            if (value.Type == DMValueType.String) return DMValue.FromNumber(value.StringValue.Length);
+            return Length(value);
+        }
+
+        // DM 1-based index; negative counts from the end (-1 = last char).
+        private static int DmIndex(double dmIndex, int length)
+        {
+            var i = (int)dmIndex;
+            if (i < 0) i = length + i + 1;
+            return i;
+        }
+
+        public static DMValue CopyTextChar(DMValue text, DMValue start, DMValue end = default)
+        {
+            var s = text.Type == DMValueType.String ? text.StringValue : text.ToString();
+            var s1 = Math.Clamp(DmIndex(start.ToNumber(), s.Length), 1, s.Length + 1);
+            var e1 = end.Type == DMValueType.Null
+                ? s.Length + 1
+                : Math.Clamp(DmIndex(end.ToNumber(), s.Length), s1, s.Length + 1);
+            return DMValue.FromString(s.Substring(s1 - 1, e1 - s1));
+        }
+
+        public static DMValue Text2Ascii(DMValue text, DMValue pos = default)
+        {
+            var s = text.Type == DMValueType.String ? text.StringValue : text.ToString();
+            var p = pos.Type == DMValueType.Null ? 1 : DmIndex(pos.ToNumber(), s.Length);
+            if (p < 1 || p > s.Length) return DMValue.FromNumber(0);
+            return DMValue.FromNumber(s[p - 1]);
+        }
+
+        public static DMValue Ascii2Text(DMValue code) => DMValue.FromString(((char)(int)code.ToNumber()).ToString());
+
+        public static DMValue CKey(DMValue value)
+        {
+            var s = value.Type == DMValueType.String ? value.StringValue : value.ToString();
+            var sb = new StringBuilder(s.Length);
+            foreach (var ch in s.ToLowerInvariant())
+            {
+                if (ch == '_') sb.Append(' ');
+                else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == ' ') sb.Append(ch);
+            }
+            return DMValue.FromString(sb.ToString().Trim());
+        }
+
+        public static DMValue SortText(DMValue a, DMValue b)
+        {
+            var c = string.Compare(a.ToString(), b.ToString(), StringComparison.OrdinalIgnoreCase);
+            return DMValue.FromNumber(c < 0 ? -1 : (c > 0 ? 1 : 0));
+        }
+
+        public static DMValue ReplaceTextEx(DMValue haystack, DMValue needle, DMValue replacement)
+        {
+            var find = needle.ToString();
+            if (string.IsNullOrEmpty(find)) return haystack;
+            return DMValue.FromString(haystack.ToString().Replace(find, replacement.ToString()));
+        }
+
+        public static DMValue HtmlEncode(DMValue value)
+        {
+            var sb = new StringBuilder();
+            foreach (var ch in value.ToString())
+            {
+                if (ch == '&') sb.Append("&amp;");
+                else if (ch == '<') sb.Append("&lt;");
+                else if (ch == '>') sb.Append("&gt;");
+                else if (ch == '"') sb.Append("&quot;");
+                else if (ch == 0x27) sb.Append("&#39;");
+                else sb.Append(ch);
+            }
+            return DMValue.FromString(sb.ToString());
+        }
+
+        public static DMValue HtmlDecode(DMValue value) => DMValue.FromString(WebUtility.HtmlDecode(value.ToString()));
+
+        // ==== RGB / color ====
+
+        /// <summary>
+        /// rgb2num(r, g, b[, a]) -> packed number; rgb2num("#RRGGBB") or
+        /// rgb2num(number) -> list(r, g, b, a). DM packs alpha into the high
+        /// bits for 4-arg calls; we keep the 3-arg packing there for now.
+        /// </summary>
+        public static DMValue RGB2Num(params DMValue[] args)
+        {
+            if (args.Length >= 3)
+            {
+                var r = (int)args[0].ToNumber() & 0xFF;
+                var g = (int)args[1].ToNumber() & 0xFF;
+                var b = (int)args[2].ToNumber() & 0xFF;
+                return DMValue.FromNumber((r << 16) | (g << 8) | b);
+            }
+            var list = new DMList();
+            double packed;
+            if (args.Length > 0 && args[0].Type == DMValueType.String)
+            {
+                var hex = args[0].StringValue.TrimStart('#');
+                if (hex.Length >= 6 && uint.TryParse(hex.Substring(0, 6), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var u))
+                    packed = u;
+                else packed = 0;
+            }
+            else
+            {
+                packed = args.Length > 0 ? args[0].ToNumber() : 0;
+            }
+            list.Add(DMValue.FromNumber((int)packed >> 16 & 0xFF));
+            list.Add(DMValue.FromNumber((int)packed >> 8 & 0xFF));
+            list.Add(DMValue.FromNumber((int)packed & 0xFF));
+            list.Add(DMValue.FromNumber(0xFF));
+            return DMValue.FromList(list);
+        }
+
+        // ==== JSON ====
+
+        public static DMValue JsonEncode(DMValue value) => DMValue.FromString(JsonValue(value));
+
+        private static string JsonValue(DMValue v)
+        {
+            switch (v.Type)
+            {
+                case DMValueType.Null: return "null";
+                case DMValueType.Number:
+                    if (double.IsNaN(v.NumberValue) || double.IsInfinity(v.NumberValue)) return "null";
+                    return v.NumberValue.ToString(CultureInfo.InvariantCulture);
+                case DMValueType.String: return JsonEscape(v.StringValue);
+                case DMValueType.List:
+                    var list = v.ListValue;
+                    if (list != null && list.AssocEntries.Count > 0)
+                    {
+                        var parts = new List<string>();
+                        foreach (var kv in list.AssocEntries)
+                            parts.Add(JsonEscape(kv.Key) + ":" + JsonValue(kv.Value));
+                        return "{" + string.Join(",", parts) + "}";
+                    }
+                    var arr = new List<string>();
+                    for (var i = 1; i <= (list?.Count ?? 0); i++) arr.Add(JsonValue(list!.Get(i)));
+                    return "[" + string.Join(",", arr) + "]";
+                default:
+                    // Datums encode as null in phase 1 (documented limitation).
+                    return "null";
+            }
+        }
+
+        private static string JsonEscape(string s)
+        {
+            var sb = new StringBuilder("\\"");
+            foreach (var ch in s)
+            {
+                switch (ch)
+                {
+                    case '"': sb.Append("\\\""); break;
+                    case '\\\\': sb.Append("\\\\"); break;
+                    case '\\n': sb.Append("\\n"); break;
+                    case '\\r': sb.Append("\\r"); break;
+                    case '\\t': sb.Append("\\t"); break;
+                    default:
+                        if (ch < 0x20) sb.Append("\\\\u").Append(((int)ch).ToString("x4"));
+                        else sb.Append(ch);
+                        break;
+                }
+            }
+            return sb.Append('"').ToString();
+        }
+
+        // ==== Time / params ====
+
+        /// <summary>
+        /// time2text(world.time, format): world time is in deciseconds, epoch
+        /// Jan 1 2000 (BYOND semantics). Supports YYYY/MM/DD/hh/mm/ss/MMM.
+        /// </summary>
+        public static DMValue Time2Text(DMValue time, DMValue format = default)
+        {
+            var fmt = format.Type == DMValueType.Null ? "hh:mm:ss" : format.StringValue;
+            var epoch = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var dt = epoch.AddSeconds(time.ToNumber() / 10.0);
+            var sb = new StringBuilder();
+            for (var i = 0; i < fmt.Length; i++)
+            {
+                var rest = fmt.Substring(i);
+                if (rest.StartsWith("YYYY")) { sb.Append(dt.Year.ToString("D4")); i += 3; }
+                else if (rest.StartsWith("MMM")) { sb.Append(dt.ToString("MMM", CultureInfo.InvariantCulture)); i += 2; }
+                else if (rest.StartsWith("MM")) { sb.Append(dt.Month.ToString("D2")); i += 1; }
+                else if (rest.StartsWith("DD")) { sb.Append(dt.Day.ToString("D2")); i += 1; }
+                else if (rest.StartsWith("hh")) { sb.Append(dt.Hour.ToString("D2")); i += 1; }
+                else if (rest.StartsWith("mm")) { sb.Append(dt.Minute.ToString("D2")); i += 1; }
+                else if (rest.StartsWith("ss")) { sb.Append(dt.Second.ToString("D2")); i += 1; }
+                else if (rest.StartsWith("YY")) { sb.Append((dt.Year % 100).ToString("D2")); i += 1; }
+                else sb.Append(fmt[i]);
+            }
+            return DMValue.FromString(sb.ToString());
+        }
+
+        public static DMValue List2Params(DMValue value)
+        {
+            var list = value.AsList();
+            if (list == null) return DMValue.FromString("");
+            var parts = new List<string>();
+            for (var i = 1; i <= list.Count; i++)
+            {
+                var key = list.Get(i).ToString();
+                parts.Add(DmUrlEncode(key) + "=" + DmUrlEncode(list.GetAssoc(key).ToString()));
+            }
+            return DMValue.FromString(string.Join("&", parts));
+        }
+
+        private static string DmUrlEncode(string s)
+        {
+            var sb = new StringBuilder();
+            foreach (var b in Encoding.UTF8.GetBytes(s))
+            {
+                if ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+                    || b == '-' || b == '_' || b == '.' || b == '~')
+                    sb.Append((char)b);
+                else sb.Append('%').Append(b.ToString("X2"));
+            }
+            return sb.ToString();
         }
 
         public static DMValue Alert(params DMValue[] args) => DMValue.Null;

@@ -256,6 +256,88 @@ async function runCSharpEmitterTests() {
 `);
   assertContains(globRef, `Vars["b"] = DMValue.Add((await GlobalVars.Get("a")), DMValue.FromNumber(3));`, 'Global init reads earlier global');
 
+  // Test 31: Plan 01 pure-function builtins emit runtime helper calls
+  const pure = transpileProc(`/datum/probe/proc/run()
+    var/a = floor(3.7)
+    var/b = ceil(3.2)
+    var/c = sqrt(16)
+    var/d = sin(30)
+    var/e = cos(60)
+    var/f = sign(-5)
+    var/g = copytext_char("hello", 2, 4)
+    var/h = length_char("hello")
+    var/i = text2ascii("A")
+    var/j = ckey("My_Thing #2!")
+    var/k = sorttext("b", "A")
+    var/l = replacetextEx("aXbX", "X", "c")
+    var/m = html_encode("<b>")
+    var/n = rgb2num(255, 128, 0)
+    var/o = json_encode(list(1, "two"))
+    var/p = time2text(1000, "hh:mm:ss")
+    var/q = list2params(list(1, 2))
+    var/r = arglist(list(1, 2))
+`);
+  assertContains(pure, `DMRuntimeHelpers.Floor(DMValue.FromNumber(3.7))`, 'floor mapping');
+  assertContains(pure, `DMRuntimeHelpers.Ceil(DMValue.FromNumber(3.2))`, 'ceil mapping');
+  assertContains(pure, `DMRuntimeHelpers.Sqrt(DMValue.FromNumber(16))`, 'sqrt mapping');
+  assertContains(pure, `DMRuntimeHelpers.Sin(DMValue.FromNumber(30))`, 'sin mapping');
+  assertContains(pure, `DMRuntimeHelpers.Cos(DMValue.FromNumber(60))`, 'cos mapping');
+  assertContains(pure, `DMRuntimeHelpers.Sign(DMValue.Negate(DMValue.FromNumber(5)))`, 'sign mapping');
+  assertContains(pure, `DMRuntimeHelpers.CopyTextChar(DMValue.FromString("hello"), DMValue.FromNumber(2), DMValue.FromNumber(4))`, 'copytext_char mapping');
+  assertContains(pure, `DMRuntimeHelpers.LengthChar(DMValue.FromString("hello"))`, 'length_char mapping');
+  assertContains(pure, `DMRuntimeHelpers.Text2Ascii(DMValue.FromString("A"))`, 'text2ascii mapping');
+  assertContains(pure, `DMRuntimeHelpers.CKey(DMValue.FromString("My_Thing #2!"))`, 'ckey mapping');
+  assertContains(pure, `DMRuntimeHelpers.SortText(DMValue.FromString("b"), DMValue.FromString("A"))`, 'sorttext mapping');
+  assertContains(pure, `DMRuntimeHelpers.ReplaceTextEx(DMValue.FromString("aXbX"), DMValue.FromString("X"), DMValue.FromString("c"))`, 'replacetextEx mapping');
+  assertContains(pure, `DMRuntimeHelpers.HtmlEncode(DMValue.FromString("<b>"))`, 'html_encode mapping');
+  assertContains(pure, `DMRuntimeHelpers.RGB2Num(DMValue.FromNumber(255), DMValue.FromNumber(128), DMValue.FromNumber(0))`, 'rgb2num mapping');
+  assertContains(pure, `DMRuntimeHelpers.JsonEncode(`, 'json_encode mapping');
+  assertContains(pure, `DMRuntimeHelpers.Time2Text(DMValue.FromNumber(1000), DMValue.FromString("hh:mm:ss"))`, 'time2text mapping');
+  assertContains(pure, `DMRuntimeHelpers.List2Params(`, 'list2params mapping');
+  assertContains(pure, `DMRuntimeHelpers.DMArgList(`, 'arglist mapping');
+
+  // Test 32: Plan 01 file-ops builtins emit runtime helper calls
+  const files = transpileProc(`/datum/probe/proc/run()
+    var/a = file("data/save.sav")
+    var/b = isfile(a)
+    var/c = fdel(a)
+    var/d = fcopy("src.txt", "dst.txt")
+    var/e = fcopy_rsc("icon.dmi", "copy.dmi")
+    var/f = flist("data")
+    var/g = ref(src)
+    var/h = refcount(src)
+    var/i = SpacemanDMM_unlint("x")
+`);
+  assertContains(files, `DMRuntimeHelpers.File(DMValue.FromString("data/save.sav"))`, 'file mapping');
+  assertContains(files, `DMRuntimeHelpers.IsFile(`, 'isfile mapping');
+  assertContains(files, `DMRuntimeHelpers.FileDel(`, 'fdel mapping');
+  assertContains(files, `DMRuntimeHelpers.FileCopy(DMValue.FromString("src.txt"), DMValue.FromString("dst.txt"))`, 'fcopy mapping');
+  assertContains(files, `DMRuntimeHelpers.FileCopyRsc(`, 'fcopy_rsc mapping');
+  assertContains(files, `DMRuntimeHelpers.FList(DMValue.FromString("data"))`, 'flist mapping');
+  assertContains(files, `DMRuntimeHelpers.Ref(`, 'ref mapping');
+  assertContains(files, `DMRuntimeHelpers.RefCount(`, 'refcount mapping');
+  assertContains(files, `DMRuntimeHelpers.SpacemanUnlint(`, 'SpacemanDMM_unlint mapping');
+
+  // Test 33: Plan 01 movement builtins emit runtime helper calls
+  const move = transpileProc(`/datum/probe/proc/run()
+    var/a = step(src, 1)
+    var/b = step_towards(src, src)
+    var/c = step_away(src, src)
+    var/d = get_step_away(src, src)
+    var/e = get_step_towards(src, src)
+    var/f = orange(2, src)
+    var/g = viewers(2, src)
+    var/h = hearers(src)
+`);
+  assertContains(move, `DMRuntimeHelpers.Step(`, 'step mapping');
+  assertContains(move, `DMRuntimeHelpers.StepTowards(`, 'step_towards mapping');
+  assertContains(move, `DMRuntimeHelpers.StepAway(`, 'step_away mapping');
+  assertContains(move, `DMRuntimeHelpers.GetStepAway(`, 'get_step_away mapping');
+  assertContains(move, `DMRuntimeHelpers.GetStepTowards(`, 'get_step_towards mapping');
+  assertContains(move, `DMRuntimeHelpers.Orange(DMValue.FromNumber(2), `, 'orange mapping');
+  assertContains(move, `DMRuntimeHelpers.Viewers(DMValue.FromNumber(2), `, 'viewers mapping');
+  assertContains(move, `DMRuntimeHelpers.Hearers(DMValue.FromDatum(comp))`, 'hearers mapping');
+
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }
 

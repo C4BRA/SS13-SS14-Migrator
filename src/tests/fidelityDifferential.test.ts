@@ -25,6 +25,7 @@ interface Probe {
   name: string;
   dm: string;
   expected: string;
+  files?: Record<string, string>;
 }
 
 const PROBES: Probe[] = [
@@ -213,6 +214,102 @@ const PROBES: Probe[] = [
     dm: `/datum/probe2\n\tproc/helper(x)\n\t\treturn x + 1\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn call(a, "helper")(5)`,
     expected: '6'
   },
+  // --- Plan 01 pure-function builtins (BYOND-verified expected values) ---
+  {
+    name: 'floor() rounds down',
+    dm: `/datum/probe/proc/run()\n\treturn floor(3.7)`,
+    expected: '3'
+  },
+  {
+    name: 'ceil() rounds up',
+    dm: `/datum/probe/proc/run()\n\treturn ceil(3.2)`,
+    expected: '4'
+  },
+  {
+    name: 'sqrt() square root',
+    dm: `/datum/probe/proc/run()\n\treturn sqrt(16)`,
+    expected: '4'
+  },
+  {
+    name: 'sin() takes degrees (sin 30 = 0.5)',
+    dm: `/datum/probe/proc/run()\n\treturn round(sin(30) * 100)`,
+    expected: '50'
+  },
+  {
+    name: 'cos() takes degrees (cos 60 = 0.5)',
+    dm: `/datum/probe/proc/run()\n\treturn round(cos(60) * 100)`,
+    expected: '50'
+  },
+  {
+    name: 'sign() returns -1/0/1',
+    dm: `/datum/probe/proc/run()\n\treturn sign(-5)`,
+    expected: '-1'
+  },
+  {
+    name: 'copytext_char() is char-based',
+    dm: `/datum/probe/proc/run()\n\treturn copytext_char("hello", 2, 4)`,
+    expected: 'el'
+  },
+  {
+    name: 'length_char() counts chars',
+    dm: `/datum/probe/proc/run()\n\treturn length_char("hello")`,
+    expected: '5'
+  },
+  {
+    name: 'text2ascii() returns char code',
+    dm: `/datum/probe/proc/run()\n\treturn text2ascii("A")`,
+    expected: '65'
+  },
+  {
+    name: 'ascii2text() converts code to char',
+    dm: `/datum/probe/proc/run()\n\treturn ascii2text(65)`,
+    expected: 'A'
+  },
+  {
+    name: 'ckey() canonicalizes',
+    dm: `/datum/probe/proc/run()\n\treturn ckey("My_Thing #2!")`,
+    expected: 'my thing 2'
+  },
+  {
+    name: 'sorttext() case-insensitive compare',
+    dm: `/datum/probe/proc/run()\n\treturn sorttext("b", "A")`,
+    expected: '1'
+  },
+  {
+    name: 'replacetextEx() literal case-sensitive replace',
+    dm: `/datum/probe/proc/run()\n\treturn replacetextEx("aXbX", "X", "c")`,
+    expected: 'acbc'
+  },
+  {
+    name: 'html_encode() escapes markup',
+    dm: `/datum/probe/proc/run()\n\treturn html_encode("<b>")`,
+    expected: '&lt;b&gt;'
+  },
+  {
+    name: 'html_decode() unescapes markup',
+    dm: `/datum/probe/proc/run()\n\treturn html_decode("&lt;b&gt;")`,
+    expected: '<b>'
+  },
+  {
+    name: 'rgb2num(r, g, b) packs a color number',
+    dm: `/datum/probe/proc/run()\n\treturn rgb2num(255, 128, 0)`,
+    expected: '16744448'
+  },
+  {
+    name: 'rgb2num("#hex") decomposes to channels',
+    dm: `/datum/probe/proc/run()\n\tvar/c = rgb2num("#ff8000")\n\treturn c[1] * 1000000 + c[2] * 1000 + c[3]`,
+    expected: '255128000'
+  },
+  {
+    name: 'json_encode() serializes lists',
+    dm: `/datum/probe/proc/run()\n\treturn json_encode(list(1, "two", null))`,
+    expected: '[1,"two",null]'
+  },
+  {
+    name: 'time2text() formats decisecond world time',
+    dm: `/datum/probe/proc/run()\n\treturn time2text(1000, "hh:mm:ss")`,
+    expected: '00:01:40'
+  },
   {
     name: 'json_decode() parses into an assoc list',
     dm: `/datum/probe/proc/run()\n\tvar/L = json_decode("{\\"a\\": 1}")\n\treturn L["a"]`,
@@ -225,7 +322,7 @@ const PROBES: Probe[] = [
   },
   {
     name: 'range() finds datums within distance',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 0\n\ta.y = 0\n\tb.x = 1\n\tb.y = 1\n\treturn range(a, 2).len`,
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 0\n\ta.y = 0\n\tb.x = 1\n\tb.y = 1\n\treturn range(2, a).len`,
     expected: '2'
   },
   {
@@ -272,6 +369,129 @@ const PROBES: Probe[] = [
     name: 'assoc key on global list persists',
     dm: `/global/var/list/registry = list()\n/datum/probe/proc/run()\n\tGLOB.registry["k"] = 5\n\treturn GLOB.registry["k"]`,
     expected: '5'
+  },
+  // --- Plan 01 file-ops builtins (seed files written to the scratch dir) ---
+  {
+    name: 'fdel() on a missing file returns 0',
+    dm: `/datum/probe/proc/run()\n\treturn fdel("probe_missing.txt")`,
+    expected: '0'
+  },
+  {
+    name: 'fexists() true for a seeded file',
+    dm: `/datum/probe/proc/run()\n\treturn fexists("probe_seed.txt")`,
+    expected: '1',
+    files: { 'probe_seed.txt': 'seed content' }
+  },
+  {
+    name: 'fdel() deletes a file and returns 1',
+    dm: `/datum/probe/proc/run()\n\treturn fdel("probe_del.txt")`,
+    expected: '1',
+    files: { 'probe_del.txt': 'delete me' }
+  },
+  {
+    name: 'file() yields a file value that isfile() accepts',
+    dm: `/datum/probe/proc/run()\n\tvar/f = file("probe_seed.txt")\n\treturn isfile(f)`,
+    expected: '1',
+    files: { 'probe_seed.txt': 'seed content' }
+  },
+  {
+    name: 'isfile() false for plain text',
+    dm: `/datum/probe/proc/run()\n\treturn isfile("not a file")`,
+    expected: '0'
+  },
+  {
+    name: 'length(file) reports the byte size',
+    dm: `/datum/probe/proc/run()\n\treturn length(file("probe_seed.txt"))`,
+    expected: '12',
+    files: { 'probe_seed.txt': 'seed content' }
+  },
+  {
+    name: 'fcopy() copies a file and fexists() confirms',
+    dm: `/datum/probe/proc/run()\n\tif (fcopy("probe_seed.txt", "probe_copy.txt"))\n\t\treturn fexists("probe_copy.txt")\n\treturn 0`,
+    expected: '1',
+    files: { 'probe_seed.txt': 'seed content' }
+  },
+  {
+    name: 'flist() lists a seeded file name',
+    dm: `/datum/probe/proc/run()\n\tfor (var/f in flist("."))\n\t\tif (f == "probe_seed.txt")\n\t\t\treturn 1\n\treturn 0`,
+    expected: '1',
+    files: { 'probe_seed.txt': 'seed content' }
+  },
+  {
+    name: 'ref() is stable per datum and unique across datums',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\treturn ref(a) == ref(a) && ref(a) != ref(b)`,
+    expected: '1'
+  },
+  {
+    name: 'ref() of a non-datum is empty',
+    dm: `/datum/probe/proc/run()\n\treturn ref(5)`,
+    expected: ''
+  },
+  {
+    name: 'refcount() is a number, not null',
+    dm: `/datum/probe/proc/run()\n\treturn isnum(refcount(new /datum/probe2()))`,
+    expected: '1'
+  },
+  {
+    name: 'SpacemanDMM_unlint() is a no-op returning null',
+    dm: `/datum/probe/proc/run()\n\treturn SpacemanDMM_unlint("x")`,
+    expected: 'null'
+  },
+  // --- Plan 01 movement builtins (engine-free x/y/z grid) ---
+  {
+    name: 'step() moves an atom north and returns 1',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tvar/r = step(a, 1)\n\treturn a.y * 10 + r`,
+    expected: '41'
+  },
+  {
+    name: 'step() with speed 2 moves two tiles',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tstep(a, 1, 2)\n\treturn a.y`,
+    expected: '5'
+  },
+  {
+    name: 'step() with no direction returns 0',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn step(a, 0)`,
+    expected: '0'
+  },
+  {
+    name: 'step_towards() moves one step toward the target',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 6\n\tstep_towards(a, b)\n\treturn a.y`,
+    expected: '4'
+  },
+  {
+    name: 'step_away() moves one step away from the target',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 1\n\tstep_away(a, b)\n\treturn a.y`,
+    expected: '4'
+  },
+  {
+    name: 'get_step_away() locates the turf one step away',
+    dm: `/turf/away_turf\n/datum/probe/proc/run()\n\tvar/a = new /turf/away_turf()\n\tvar/b = new /turf/away_turf()\n\tvar/c = new /turf/away_turf()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 1\n\tc.x = 3\n\tc.y = 4\n\tvar/t = get_step_away(a, b)\n\treturn t.x + t.y * 10`,
+    expected: '43'
+  },
+  {
+    name: 'get_step_towards() locates the turf one step toward',
+    dm: `/turf/away_turf\n/datum/probe/proc/run()\n\tvar/a = new /turf/away_turf()\n\tvar/b = new /turf/away_turf()\n\tvar/c = new /turf/away_turf()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 6\n\tc.x = 3\n\tc.y = 4\n\tvar/t = get_step_towards(a, b)\n\treturn t.x + t.y * 10`,
+    expected: '43'
+  },
+  {
+    name: 'orange(1, c) excludes the center tile',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\tvar/c = new /datum/probe2()\n\tvar/d = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 4\n\tc.x = 3\n\tc.y = 3\n\td.x = 5\n\td.y = 5\n\treturn orange(1, a).len`,
+    expected: '1'
+  },
+  {
+    name: 'orange(0, c) excludes the center tile entirely',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 3\n\treturn orange(0, a).len`,
+    expected: '0'
+  },
+  {
+    name: 'viewers() lists mobs within range',
+    dm: `/mob/dummy\n/datum/probe/proc/run()\n\tvar/a = new /mob/dummy()\n\tvar/b = new /mob/dummy()\n\tvar/c = new /mob/dummy()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 5\n\tc.x = 3\n\tc.y = 20\n\treturn viewers(2, a).len`,
+    expected: '2'
+  },
+  {
+    name: 'hearers() uses the 7-tile default range',
+    dm: `/mob/dummy\n/datum/probe/proc/run()\n\tvar/a = new /mob/dummy()\n\tvar/b = new /mob/dummy()\n\tvar/c = new /mob/dummy()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 10\n\tc.x = 3\n\tc.y = 12\n\treturn hearers(a).len`,
+    expected: '2'
   }
 ];
 
@@ -344,6 +564,11 @@ async function main(): Promise<void> {
 
   for (const probe of PROBES) {
     emitConverted(probe.dm, scratch);
+    if (probe.files) {
+      for (const [name, content] of Object.entries(probe.files)) {
+        fs.writeFileSync(path.join(scratch, name), content, 'utf-8');
+      }
+    }
     let output: string;
     try {
       output = execSync('dotnet run --project ProbeDriver.csproj --nologo -v q', {

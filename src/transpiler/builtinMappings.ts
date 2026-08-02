@@ -11,7 +11,14 @@ export const MAPPED_BUILTINS = [
   'initial', 'call', 'turn', 'get_step', 'get_dist', 'get_dir', 'get_turf',
   'range', 'view', 'oview', 'block', 'splittext', 'jointext', 'params2list',
   'text2path', 'rgb', 'fexists', 'isnan', 'isinf', 'json_decode', 'animate',
-  'image', 'flick', 'sound', 'matrix', 'browse', 'call_ext', '__detect_rust_g'
+  'image', 'flick', 'sound', 'matrix', 'browse', 'call_ext', '__detect_rust_g',
+  'floor', 'ceil', 'sqrt', 'sin', 'cos', 'arccos', 'log', 'sign',
+  'copytext_char', 'length_char', 'text2ascii', 'ascii2text', 'ckey', 'sorttext',
+  'replacetextEx', 'html_encode', 'html_decode', 'rgb2num', 'json_encode',
+  'time2text', 'list2params', 'arglist', 'alist', 'SpacemanDMM_unlint', 'file',
+  'isfile', 'fdel', 'fcopy', 'fcopy_rsc', 'flist', 'ref', 'refcount',
+  'step', 'step_towards', 'step_away', 'get_step_away', 'get_step_towards',
+  'orange', 'viewers', 'hearers'
 ];
 
 export function transpileBuiltinCall(name: string, args: string): string | null {
@@ -160,6 +167,86 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.CallExt(${args})`;
     case '__detect_rust_g':
       return `DMRuntimeHelpers.DetectRustG(${args})`;
+    case 'floor':
+      return `DMRuntimeHelpers.Floor(${args})`;
+    case 'ceil':
+      return `DMRuntimeHelpers.Ceil(${args})`;
+    case 'sqrt':
+      return `DMRuntimeHelpers.Sqrt(${args})`;
+    case 'sin':
+      return `DMRuntimeHelpers.Sin(${args})`;
+    case 'cos':
+      return `DMRuntimeHelpers.Cos(${args})`;
+    case 'arccos':
+      return `DMRuntimeHelpers.ArcCos(${args})`;
+    case 'log':
+      return `DMRuntimeHelpers.Log(${args})`;
+    case 'sign':
+      return `DMRuntimeHelpers.Sign(${args})`;
+    case 'copytext_char':
+      return `DMRuntimeHelpers.CopyTextChar(${args})`;
+    case 'length_char':
+      return `DMRuntimeHelpers.LengthChar(${args})`;
+    case 'text2ascii':
+      return `DMRuntimeHelpers.Text2Ascii(${args})`;
+    case 'ascii2text':
+      return `DMRuntimeHelpers.Ascii2Text(${args})`;
+    case 'ckey':
+      return `DMRuntimeHelpers.CKey(${args})`;
+    case 'sorttext':
+      return `DMRuntimeHelpers.SortText(${args})`;
+    case 'replacetextEx':
+      return `DMRuntimeHelpers.ReplaceTextEx(${args})`;
+    case 'html_encode':
+      return `DMRuntimeHelpers.HtmlEncode(${args})`;
+    case 'html_decode':
+      return `DMRuntimeHelpers.HtmlDecode(${args})`;
+    case 'rgb2num':
+      return `DMRuntimeHelpers.RGB2Num(${args})`;
+    case 'json_encode':
+      return `DMRuntimeHelpers.JsonEncode(${args})`;
+    case 'time2text':
+      return `DMRuntimeHelpers.Time2Text(${args})`;
+    case 'list2params':
+      return `DMRuntimeHelpers.List2Params(${args})`;
+    case 'arglist':
+      return `DMRuntimeHelpers.DMArgList(${args})`;
+    case 'alist':
+      return `DMRuntimeHelpers.MakeList(${args})`;
+    case 'SpacemanDMM_unlint':
+      return `DMRuntimeHelpers.SpacemanUnlint(${args})`;
+    case 'file':
+      return `DMRuntimeHelpers.File(${args})`;
+    case 'isfile':
+      return `DMRuntimeHelpers.IsFile(${args})`;
+    case 'fdel':
+      return `DMRuntimeHelpers.FileDel(${args})`;
+    case 'fcopy':
+      return `DMRuntimeHelpers.FileCopy(${args})`;
+    case 'fcopy_rsc':
+      return `DMRuntimeHelpers.FileCopyRsc(${args})`;
+    case 'flist':
+      return `DMRuntimeHelpers.FList(${args})`;
+    case 'ref':
+      return `DMRuntimeHelpers.Ref(${args})`;
+    case 'refcount':
+      return `DMRuntimeHelpers.RefCount(${args})`;
+    case 'step':
+      return `DMRuntimeHelpers.Step(${args})`;
+    case 'step_towards':
+      return `DMRuntimeHelpers.StepTowards(${args})`;
+    case 'step_away':
+      return `DMRuntimeHelpers.StepAway(${args})`;
+    case 'get_step_away':
+      return `DMRuntimeHelpers.GetStepAway(${args})`;
+    case 'get_step_towards':
+      return `DMRuntimeHelpers.GetStepTowards(${args})`;
+    case 'orange':
+      return `DMRuntimeHelpers.Orange(${args})`;
+    case 'viewers':
+      return `DMRuntimeHelpers.Viewers(${args})`;
+    case 'hearers':
+      return `DMRuntimeHelpers.Hearers(${args})`;
     default:
       return null;
   }
