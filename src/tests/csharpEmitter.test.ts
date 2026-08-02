@@ -184,7 +184,7 @@ async function runCSharpEmitterTests() {
     var/z = ~a
 `);
   assertContains(mod, `DMValue.Modulo(`, 'Modulo binary op');
-  assertContains(mod, `comp.SetVar("y", DMValue.Null)`, 'Bitwise & parses (runtime stub)');
+  assertContains(mod, `DMValue.BitwiseAnd(`, 'Bitwise & emits the runtime helper');
 
   // Test 22: 'to' range in for(var/i = 1 to 5) and in switch cases
   const to = transpileProc(`/obj/foo/proc/run()
@@ -202,14 +202,14 @@ async function runCSharpEmitterTests() {
     for (var/datum/x as anything in stuff)
         x = x
 `);
-  assertContains(asClause, `foreach (var __dmIter1 in DMListItems(comp.GetVar("stuff")))`, 'for-in with as filter clause');
+  assertContains(asClause, `foreach (var __dmIter0 in DMListItems(comp.GetVar("stuff")))`, 'for-in with as filter clause');
 
   // Test 24: istype/locate keyword calls parse
   const istype = transpileProc(`/obj/foo/proc/run()
     if (istype(x, /turf))
         x = locate(x)
 `);
-  assertContains(istype, `DMIsType(comp.GetVar("x"), DMValue.FromString("/turf"))`, 'istype() keyword call');
+  assertContains(istype, `DMIsType(comp.GetVar("x"), DMValue.FromPath("/turf"))`, 'istype() keyword call');
   assertContains(istype, `DMLocate(comp.GetVar("x"))`, 'locate() keyword call');
 
   // Test 25: null-conditional ?. property access parses
@@ -278,8 +278,8 @@ async function runCSharpEmitterTests() {
     var/q = list2params(list(1, 2))
     var/r = arglist(list(1, 2))
 `);
-  assertContains(pure, `DMRuntimeHelpers.Floor(DMValue.FromNumber(3.7))`, 'floor mapping');
-  assertContains(pure, `DMRuntimeHelpers.Ceil(DMValue.FromNumber(3.2))`, 'ceil mapping');
+  assertContains(pure, `DMRuntimeHelpers.Floor(DMValue.FromNumber(3.7d, true))`, 'floor mapping');
+  assertContains(pure, `DMRuntimeHelpers.Ceil(DMValue.FromNumber(3.2d, true))`, 'ceil mapping');
   assertContains(pure, `DMRuntimeHelpers.Sqrt(DMValue.FromNumber(16))`, 'sqrt mapping');
   assertContains(pure, `DMRuntimeHelpers.Sin(DMValue.FromNumber(30))`, 'sin mapping');
   assertContains(pure, `DMRuntimeHelpers.Cos(DMValue.FromNumber(60))`, 'cos mapping');
@@ -347,7 +347,7 @@ async function runCSharpEmitterTests() {
 `);
   assertContains(prec, `DMValue.Equals(comp.GetVar("a"), comp.GetVar("b")).IsTrue() ? comp.GetVar("c") : comp.GetVar("d")`, 'ternary binds looser than ==');
   assertContains(prec, `(comp.GetVar("m")) is var __dm_t1 && !__dm_t1.IsTrue()`, '|| binds looser than &&');
-  assertContains(prec, `DMValue.Output(DMValue.Add(comp.GetVar("p"), comp.GetVar("q")), DMValue.FromNumber(2))`, 'shift binds looser than +');
+  assertContains(prec, `DMValue.ShiftLeft(DMValue.Add(comp.GetVar("p"), comp.GetVar("q")), DMValue.FromNumber(2))`, 'shift binds looser than +');
 
   // Test 35: Plan 09 B1 — a/b is division by a variable (not a type-path literal)
   const div = transpileProc(`/obj/foo/proc/run()
@@ -379,7 +379,7 @@ async function runCSharpEmitterTests() {
   const decl = transpileProc(`/mob/verb/say(msg)
     return msg
 `);
-  assertContains(decl, `ProcRegistry.Register("/mob", "say", Proc_Mob_Say);`, 'mob/verb/say registers under /mob');
+  assertContains(decl, `ProcRegistry.Register("/mob", "say", Proc_Mob_Say, new[] { "msg" });`, 'mob/verb/say registers under /mob with param names');
 
   // Test 39: Plan 09 B1 — in-clause proc args are not phantom parameters
   const inClause = transpileProc(`/obj/foo/proc/find_thing(atom/target as mob in oview(1), flag = 0)
@@ -439,15 +439,17 @@ async function runCSharpEmitterTests() {
   assert(!swfor.includes('continue;'), 'no plain continue emitted inside the switch-in-for');
 
   // Test 44: Plan 09 B2 — pathToClassName collisions get a numeric suffix
-  const col = transpileProc(`/obj/item/foo/proc/a()
+  // (case-variants now MERGE in the IR — WS4-1 — so a real collision needs
+  // distinct paths whose SANITIZED names collide: /obj/item/a.b vs /obj/item/ab)
+  const col = transpileProc(`/obj/item/a.b/proc/a()
     return
-/obj/ItemFoo/proc/b()
+/obj/item/ab/proc/b()
     return
 `);
-  assertContains(col, 'ObjItemFoo_2', 'second colliding class name gets a suffix');
-  assert((col.match(/public static async Task<DMValue> Proc_ObjItemFoo_\w+\(DMRuntime/g) || []).length === 2, 'both colliding paths emit distinct static methods');
-  assertContains(col, 'Proc_ObjItemFoo_2_B(', 'suffixed method for the second path (/obj/ItemFoo)');
-  assertContains(col, 'Proc_ObjItemFoo_A(', 'unsuffixed method for /obj/item/foo');
+  assertContains(col, 'ObjItemAb_2', 'second colliding class name gets a suffix');
+  assert((col.match(/public static async Task<DMValue> Proc_ObjItemAb_\w+\(DMRuntime/g) || []).length === 2, 'both colliding paths emit distinct static methods');
+  assertContains(col, 'Proc_ObjItemAb_2_B(', 'suffixed method for the second path (/obj/item/ab)');
+  assertContains(col, 'Proc_ObjItemAb_A(', 'unsuffixed method for /obj/item/a.b');
 
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }

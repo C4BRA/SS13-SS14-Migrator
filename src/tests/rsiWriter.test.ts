@@ -3,6 +3,7 @@ import { DMIParser } from '../dmi/dmiParser.js';
 import { encodePNG, decodePNG, crc32 } from '../dmi/pngCodec.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as zlib from 'zlib';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -110,6 +111,43 @@ async function runRSIWriterTests() {
     if (fs.existsSync(f)) fs.unlinkSync(f);
   }
   if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true });
+
+  // Plan 10 B5: a sheet smaller than the declared cells warns and skips the
+  // state's sprites instead of cropping out-of-bounds into black pixels.
+  const smallPng = encodePNG({ width: 2, height: 2, rgba: Buffer.alloc(2 * 2 * 4, 0) });
+  const smallText = `# BEGIN DMI
+version = 4.0
+width = 4
+height = 4
+state "big"
+  dirs = 1
+  frames = 1
+# END DMI`;
+  const smallSig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const smallCrc = crc32(Buffer.concat([Buffer.from('tEXt'), Buffer.concat([Buffer.from('DMI'), Buffer.from([0]), Buffer.from(smallText, 'latin1')])]));
+  const smallChunk = Buffer.concat([
+    Buffer.from([0, 0, 0, Buffer.concat([Buffer.from('DMI'), Buffer.from([0]), Buffer.from(smallText, 'latin1')]).length]),
+    Buffer.from('tEXt'),
+    Buffer.concat([Buffer.from('DMI'), Buffer.from([0]), Buffer.from(smallText, 'latin1')]),
+    Buffer.from([(smallCrc >>> 24) & 0xff, (smallCrc >>> 16) & 0xff, (smallCrc >>> 8) & 0xff, smallCrc & 0xff])
+  ]);
+  const smallDmi = Buffer.concat([
+    smallSig,
+    (() => { const d = Buffer.alloc(13); d.writeUInt32BE(2, 0); d.writeUInt32BE(2, 4); d[8] = 8; d[9] = 6; return d; })().length
+      ? (() => { const d = Buffer.alloc(13); d.writeUInt32BE(2, 0); d.writeUInt32BE(2, 4); d[8] = 8; d[9] = 6; return Buffer.concat([Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), d, (() => { const c = Buffer.alloc(4); c.writeUInt32BE(crc32(Buffer.concat([Buffer.from('IHDR'), d])), 0); return c; })()]); })()
+      : Buffer.alloc(0),
+    smallChunk,
+    (() => { const id = zlib.deflateSync(Buffer.concat([Buffer.from([0, 0]), Buffer.alloc(2 * 2 * 4)])); const c = Buffer.alloc(4); c.writeUInt32BE(crc32(Buffer.concat([Buffer.from('IDAT'), id])), 0); return Buffer.concat([Buffer.from([0, 0, 0, id.length]), Buffer.from('IDAT'), id, c]); })(),
+    (() => { const c = Buffer.alloc(4); c.writeUInt32BE(crc32(Buffer.from('IEND')), 0); return Buffer.concat([Buffer.from([0, 0, 0, 0]), Buffer.from('IEND'), Buffer.alloc(0), c]); })()
+  ]);
+  const smallPath = path.join(process.cwd(), 'temp_test_small.dmi');
+  fs.writeFileSync(smallPath, smallDmi);
+  const smallOut = path.join(process.cwd(), 'temp_test_small_rsi');
+  const smallMeta = writer.convertDMIToRSI(smallPath, smallOut);
+  assert(smallMeta.warnings.some(w => w.includes('smaller than declared')), 'Undersized sheet produces a warning');
+  assert(!fs.existsSync(path.join(smallOut, 'big', '0.png')), 'Undersized sheet skips sprite emission');
+  if (fs.existsSync(smallPath)) fs.unlinkSync(smallPath);
+  if (fs.existsSync(smallOut)) fs.rmSync(smallOut, { recursive: true, force: true });
 
   console.log("\n✅ ALL RSI WRITER TESTS PASSED!");
 }

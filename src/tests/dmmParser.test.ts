@@ -277,11 +277,47 @@ floor
   assertEqual(negResult.grids[0].width, 1, 'Negative-coord grid width');
   assertEqual(negResult.grids[0].cells[0][0], 'floor', 'Negative-coord grid cell');
 
+  // Test 15 (Plan 10 B5): mixed-length keys decode by longest-match
+  const mixedDmm = `"A" = (/turf/a)
+"aa" = (/turf/aa)
+"B" = (/turf/b)
+
+(1,1,1) = {" 
+Aaa
+aaB
+"}`;
+
+  const mixedPath = path.join(process.cwd(), 'temp_test_mixed.dmm');
+  fs.writeFileSync(mixedPath, mixedDmm);
+
+  const mixedResult = parser.parseDMM(mixedPath);
+  assertEqual(mixedResult.grids.length, 1, 'Mixed-key section parsed');
+  assertEqual(mixedResult.grids[0].cells[0], ['A', 'aa'], 'Row 1 longest-match decodes A+aa (not A+a+a)');
+  assertEqual(mixedResult.grids[0].cells[1], ['aa', 'B'], 'Row 2 longest-match decodes aa+B');
+  assertEqual(mixedResult.grids[0].width, 2, 'Mixed-key grid width 2');
+
+  // Test 16 (Plan 10 B5): space-separated rows skip whitespace, never treat
+  // a space as a tile key
+  const spacedDmm = `"a" = (/turf/a)
+"b" = (/turf/b)
+
+(1,1,1) = {" 
+a b a b
+"}`;
+
+  const spacedPath = path.join(process.cwd(), 'temp_test_spaced.dmm');
+  fs.writeFileSync(spacedPath, spacedDmm);
+
+  const spacedResult = parser.parseDMM(spacedPath);
+  assertEqual(spacedResult.grids[0].cells[0], ['a', 'b', 'a', 'b'], 'Space-separated row decodes to 4 tiles');
+  assertEqual(spacedResult.grids[0].width, 4, 'Space-separated grid width 4');
+
   // Cleanup
   for (const f of ['temp_test_simple.dmm', 'temp_test_multi.dmm', 'temp_test_multiz.dmm', 
     'temp_test_quoted.dmm', 'temp_test_longkey.dmm', 'temp_test_empty.dmm', 'temp_test_comment.dmm',
     'temp_test_orphan.dmm', 'temp_test_ragged.dmm', 'temp_test_attr.dmm',
-    'temp_test_tgm.dmm', 'temp_test_cols.dmm', 'temp_test_neg.dmm']) {
+    'temp_test_tgm.dmm', 'temp_test_cols.dmm', 'temp_test_neg.dmm',
+    'temp_test_mixed.dmm', 'temp_test_spaced.dmm']) {
     const fp = path.join(process.cwd(), f);
     if (fs.existsSync(fp)) fs.unlinkSync(fp);
   }

@@ -45,9 +45,9 @@ for (const expected of EXPECTED_FILES) {
 const OVERLOAD_SIGNATURES = [
   'Text2Num(DMValue value, DMValue radix)',
   'Num2Text(DMValue value, DMValue len, DMValue pad)',
-  'FindText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)',
+  'FindText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default, DMValue caseSensitive = default)',
   'ReplaceText(DMValue haystack, DMValue needle, DMValue replacement, DMValue start, DMValue end)',
-  'SplitText(DMValue text, DMValue separator, DMValue start)',
+  'SplitText(DMValue text, DMValue separator, DMValue start = default, DMValue end = default, DMValue includeDelimiters = default)',
   'StepTowards(DMValue atom, DMValue trg, DMValue speed)',
   'StepAway(DMValue atom, DMValue trg, DMValue max, DMValue speed)',
   'JoinText(DMValue value, DMValue separator, DMValue start, DMValue end)'

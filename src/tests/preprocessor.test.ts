@@ -69,7 +69,9 @@ async function runPreprocessorTests() {
   assertContains(t6.out, 'var/fromInclude = 42', '#include inlines included file');
   assertContains(t6.out, 'var/mainVal = 42', 'Macros from #include visible to includer');
 
-  // Cycle guard: c.dm includes a.dm includes b.dm includes a.dm (cycle)
+  // Include-once: c.dm includes a.dm includes b.dm includes a.dm (cycle) —
+  // BYOND processes each file at most once, so the inner a.dm is silently
+  // skipped and no error is reported.
   const aFile = path.join(tmpDir, 'a.dm');
   const bFile = path.join(tmpDir, 'b.dm');
   const cFile = path.join(tmpDir, 'c.dm');
@@ -78,9 +80,15 @@ async function runPreprocessorTests() {
   fs.writeFileSync(cFile, '#include "a.dm"\nvar/c1 = 3\n');
   const coll = new DiagnosticCollector();
   const t6b = preprocess(fs.readFileSync(cFile, 'utf-8'), cFile, coll);
-  assert(coll.errors.length === 1 && coll.errors[0].message.includes('Recursive'), 'Cycle guard reports recursive include');
+  assert(coll.errors.length === 0, 'Include-once: recursive include is skipped, not an error');
   assertContains(t6b.out, 'var/b1 = 2', 'Included file content kept despite cycle');
   assertContains(t6b.out, 'var/a1 = 1', 'Outer file continues after cycle');
+
+  // Repeated include of the same file is expanded once (BYOND include-once)
+  const coll6c = new DiagnosticCollector();
+  const t6c = preprocess('#include "defs.dm"\n#include "defs.dm"\nvar/mainVal = INCLUDED\n', mainFile, coll6c);
+  assertContains(t6c.out, 'var/fromInclude = 42', 'Double include expands body');
+  assert((t6c.out.match(/var\/fromInclude/g) || []).length === 1, 'Double include expands the body exactly once');
 
   // Test 7: Missing include produces error
   const coll7 = new DiagnosticCollector();
@@ -157,6 +165,68 @@ async function runPreprocessorTests() {
   const pp20 = new DMPreprocessor(coll20, undefined, fnSeeds);
   const t20 = pp20.process('GLOBAL_VAR_INIT(counter, 0)\n', '/tmp/pp_test20.dm');
   assertContains(t20, '/global/var/counter = 0', 'Seeded function-like macro expands');
+
+  // Test 21: #if numeric evaluation (BYOND: `#if VERSION >= 514`)
+  const coll21 = new DiagnosticCollector();
+  const pp21 = new DMPreprocessor(coll21);
+  pp21.process('#define VERSION 500\n', '/tmp/pp_test21.dm');
+  const t21 = pp21.process('#if VERSION >= 514\nvar/a = HIGH\n#else\nvar/a = LOW\n#endif\n#if 1 == 1\nvar/b = ONE\n#endif\n#if 2 * 3 == 6 && !defined(MISSING)\nvar/c = MATH\n#endif\n', '/tmp/pp_test21b.dm');
+  assertContains(t21, 'var/a = LOW', '#if VERSION >= 514 with VERSION=500 selects else branch');
+  assert(!t21.includes('var/a = HIGH'), '#if comparison does not select the true branch');
+  assertContains(t21, 'var/b = ONE', '#if 1 == 1 evaluates numerically');
+  assertContains(t21, 'var/c = MATH', '#if arithmetic + logical + !defined() evaluates');
+
+  // Test 22: #elif chains and #error
+  const coll22 = new DiagnosticCollector();
+  const pp22 = new DMPreprocessor(coll22);
+  const t22 = pp22.process('#if 0\nvar/a = A\n#elif 1\nvar/a = B\n#else\nvar/a = C\n#endif\n', '/tmp/pp_test22.dm');
+  assertContains(t22, 'var/a = B', '#elif 1 branch taken after false #if');
+  assert(!t22.includes('var/a = C'), '#else dropped after taken #elif');
+  const coll22b = new DiagnosticCollector();
+  const pp22b = new DMPreprocessor(coll22b);
+  pp22b.process('#error "boom"\nvar/x = 1\n', '/tmp/pp_test22b.dm');
+  assert(coll22b.errors.length === 1 && coll22b.errors[0].message.includes('boom'), '#error produces a real diagnostics error');
+
+  // Test 23: // inside a #define string literal is not truncated
+  const coll23 = new DiagnosticCollector();
+  const pp23 = new DMPreprocessor(coll23);
+  const t23 = pp23.process('#define URL "https://example.com"\nvar/x = URL\n', '/tmp/pp_test23.dm');
+  assertContains(t23, 'var/x = "https://example.com"', '#define with // inside a string literal survives');
+
+  // Test 24: multi-line #define bodies (unbalanced parens pull following lines)
+  const coll24 = new DiagnosticCollector();
+  const pp24 = new DMPreprocessor(coll24);
+  const t24 = pp24.process('#define MULTI(a, b) (list(\n\ta,\n\tb\n))\nvar/x = MULTI(1, 2)\n', '/tmp/pp_test24.dm');
+  assertContains(t24, 'var/x = (list(', 'Multi-line define body absorbed across lines');
+  assert(!t24.includes('var/x = MULTI'), 'Multi-line define body expands at the call site');
+
+  // Test 25: macros expand inside string interpolation [expr]
+  const coll25 = new DiagnosticCollector();
+  const pp25 = new DMPreprocessor(coll25);
+  const t25 = pp25.process('#define EXAMINE_HINT(x) "[" + x + "]" \nvar/s = "temp is [EXAMINE_HINT("k")]."\n', '/tmp/pp_test25.dm');
+  assertContains(t25, '"temp is [', 'Interpolation macro expansion preserved the string prefix');
+  assert(!t25.includes('"[EXAMINE_HINT('), 'Macro name inside interpolation is expanded');
+
+  // Test 26: named variadic params absorb trailing args
+  const coll26 = new DiagnosticCollector();
+  const pp26 = new DMPreprocessor(coll26);
+  const t26 = pp26.process('#define F(a, rest...) [a][rest]\nvar/x = F(1, 2, 3)\n', '/tmp/pp_test26.dm');
+  assertContains(t26, 'var/x = [1][2, 3]', 'Named variadic param joins trailing arguments');
+
+  // Test 27: ## and ... inside string literals are content, not directives
+  const coll27 = new DiagnosticCollector();
+  const pp27 = new DMPreprocessor(coll27);
+  const t27 = pp27.process('#define LIT() "a##b"\n#define VAR(...) "[...]"\nvar/x = LIT()\nvar/y = VAR(1, 2)\n', '/tmp/pp_test27.dm');
+  assertContains(t27, 'var/x = "a##b"', '## inside a function-macro string literal is preserved');
+  assertContains(t27, 'var/y = "[...]"', '... inside a string literal is preserved');
+
+  // Test 28: #pragma multiple re-enables re-inclusion
+  const inc28 = path.join(tmpDir2, 'defs.dm');
+  fs.writeFileSync(inc28, '#define INCLUDED 42\nvar/fromInclude = INCLUDED\n');
+  const coll28 = new DiagnosticCollector();
+  const t28 = preprocess('#pragma multiple\n#include "defs.dm"\n#include "defs.dm"\nvar/mainVal = INCLUDED\n', path.join(tmpDir2, 'main.dm'), coll28);
+  assertContains(t28.out, 'var/fromInclude = 42', '#pragma multiple keeps inlining');
+  assert((t28.out.match(/var\/fromInclude/g) || []).length === 2, '#pragma multiple expands the body twice');
 
   fs.rmSync(tmpDir2, { recursive: true, force: true });
   console.log("\n✅ ALL PREPROCESSOR TESTS PASSED!");

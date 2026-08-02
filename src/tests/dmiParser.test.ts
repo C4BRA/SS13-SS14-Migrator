@@ -1,4 +1,5 @@
 import { DMIParser, DMIMetadata, DMIState } from '../dmi/dmiParser.js';
+import { decodePNG, encodePNG, crc32 as pngCrc32 } from '../dmi/pngCodec.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -325,3 +326,79 @@ runDMIParserTests().catch(err => {
   console.error("Test error:", err);
   process.exit(1);
 });
+
+// Plan 10 B5 — pngCodec decode validation (hostile/corrupt PNGs must throw,
+// not hang or silently decode garbage).
+function assertThrows(fn: () => unknown, message: string) {
+  try {
+    fn();
+    console.error(`❌ TEST FAILED: ${message}`);
+    process.exit(1);
+  } catch {
+    console.log(`✅ ${message}`);
+  }
+}
+
+const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const ihdr = (w: number, h: number, bd = 8, ct = 6, interlace = 0): Buffer => {
+  const d = Buffer.alloc(13);
+  d.writeUInt32BE(w, 0);
+  d.writeUInt32BE(h, 4);
+  d[8] = bd;
+  d[9] = ct;
+  d[12] = interlace;
+  return d;
+};
+const chunk = (type: string, data: Buffer): Buffer => {
+  const c = Buffer.alloc(4);
+  c.writeUInt32BE(pngCrc32(Buffer.concat([Buffer.from(type), data])), 0);
+  return Buffer.concat([Buffer.from([0, 0, 0, data.length]), Buffer.from(type), data, c]);
+};
+
+// 8-byte signature check: corrupted bytes 5-8 rejected
+assertThrows(() => decodePNG(Buffer.concat([sig.slice(0, 4), Buffer.from([0, 0, 0, 0]), chunk('IHDR', ihdr(1, 1))])), 'PNG signature fully validated (8 bytes)');
+
+// Absurd dimensions rejected before any allocation (would previously hang)
+assertThrows(() => decodePNG(Buffer.concat([sig, chunk('IHDR', ihdr(100000, 100000))])), 'Huge PNG dimensions rejected');
+
+// Zero dimensions rejected
+assertThrows(() => decodePNG(Buffer.concat([sig, chunk('IHDR', ihdr(0, 1))])), 'Zero PNG width rejected');
+
+// Invalid color type (1) rejected
+assertThrows(() => decodePNG(Buffer.concat([sig, chunk('IHDR', ihdr(1, 1, 8, 1))])), 'Invalid PNG color type rejected');
+
+// Invalid bit depth for RGBA (bit depth 4 with colorType 6) rejected
+assertThrows(() => decodePNG(Buffer.concat([sig, chunk('IHDR', ihdr(1, 1, 4, 6))])), 'Invalid PNG bit depth rejected');
+
+// Interlaced PNGs rejected (Adam7 unsupported)
+assertThrows(() => decodePNG(Buffer.concat([sig, chunk('IHDR', ihdr(1, 1, 8, 6, 1))])), 'Interlaced PNG rejected');
+
+// Lying chunk length (declares more data than the file has) rejected
+const lying = Buffer.concat([sig, chunk('IHDR', ihdr(1, 1)), Buffer.concat([Buffer.from([0x7f, 0xff, 0xff, 0xff]), Buffer.from('IDAT'), Buffer.from([1, 2, 3])])]);
+assertThrows(() => decodePNG(lying), 'Chunk length beyond file bounds rejected');
+
+// Truncated scanline stream rejected (would previously decode silent black)
+const zlib = require('zlib');
+const shortRaw = zlib.deflateSync(Buffer.from([0, 255, 0, 255])); // filter + 1 px but IHDR says 2x1
+const shortPng = Buffer.concat([sig, chunk('IHDR', ihdr(2, 1, 8, 2)), chunk('IDAT', shortRaw), chunk('IEND', Buffer.alloc(0))]);
+assertThrows(() => decodePNG(shortPng), 'Scanline stream length mismatch rejected');
+
+// Valid PNG round-trips (encode -> decode byte-identical pixels)
+const px = Buffer.alloc(4 * 4);
+px[0] = 10; px[1] = 20; px[2] = 30; px[3] = 255;
+const roundTrip = decodePNG(encodePNG({ width: 2, height: 2, rgba: px }));
+assert(roundTrip.width === 2 && roundTrip.height === 2 && roundTrip.rgba[0] === 10, 'encodePNG -> decodePNG round-trip identical');
+
+// 1-bit indexed palette decodes per-bit (not per-byte)
+const paletteBuf = Buffer.from([255, 0, 0, 0, 255, 0]); // idx0 red, idx1 green
+const packedRow = Buffer.from([0b10101010]); // 8 pixels alternating
+const bd1raw = zlib.deflateSync(Buffer.concat([Buffer.from([0]), packedRow]));
+const bd1png = Buffer.concat([
+  sig,
+  chunk('IHDR', ihdr(8, 1, 1, 3)),
+  chunk('PLTE', paletteBuf),
+  chunk('IDAT', bd1raw),
+  chunk('IEND', Buffer.alloc(0))
+]);
+const bd1 = decodePNG(bd1png);
+assert(bd1.rgba[0] === 0 && bd1.rgba[1] === 255 && bd1.rgba[4] === 255 && bd1.rgba[5] === 0, '1-bit indexed palette decodes per-bit (pixel 0 green=idx1, pixel 1 red=idx0)');

@@ -4,8 +4,10 @@ import { DMIRGenerator } from '../ir/dmIRGenerator.js';
 import { CSharpEmitter } from '../transpiler/csharpEmitter.js';
 import { YAMLGenerator } from '../transpiler/yamlGenerator.js';
 import { DMIParser } from '../dmi/dmiParser.js';
+import { crc32 } from '../dmi/pngCodec.js';
 import { DMMParser } from '../dmm/dmmParser.js';
 import { DM2SS14Transpiler } from '../index.js';
+import * as zlib from 'zlib';
 import { runAudit } from '../audit/fidelityAudit.js';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -223,17 +225,22 @@ walwal
 "}`;
     fs.writeFileSync(path.join(tmpInputDir, 'testmap.dmm'), dmmFixture, 'utf-8');
 
-    // Minimal DMI icon fixture (IHDR + DMI tEXt metadata + IEND)
+    // Minimal DMI icon fixture (IHDR + DMI tEXt metadata + real 1x1 RGB IDAT + IEND)
     const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
     const ihdrData = Buffer.alloc(13);
-    ihdrData.writeUInt32BE(32, 0);
-    ihdrData.writeUInt32BE(32, 4);
+    ihdrData.writeUInt32BE(1, 0);
+    ihdrData.writeUInt32BE(1, 4);
     ihdrData[8] = 8;
     ihdrData[9] = 2;
+    const chunkCrc = (type: string, data: Buffer): Buffer => {
+      const c = Buffer.alloc(4);
+      c.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type), data])), 0);
+      return c;
+    };
     const dmiText = `# BEGIN DMI
 version = 4.0
-width = 32
-height = 32
+width = 1
+height = 1
 state "icon"
   dirs = 1
   frames = 1
@@ -243,15 +250,26 @@ state "icon"
       Buffer.from([0, 0, 0, dmiChunkData.length]),
       Buffer.from('tEXt'),
       dmiChunkData,
-      Buffer.alloc(4)
+      chunkCrc('tEXt', dmiChunkData)
+    ]);
+    const idatData = zlib.deflateSync(Buffer.from([0, 255, 0, 255])); // filter 0 + one red RGB pixel
+    const idatChunk = Buffer.concat([
+      Buffer.from([0, 0, 0, idatData.length]),
+      Buffer.from('IDAT'),
+      idatData,
+      chunkCrc('IDAT', idatData)
     ]);
     const iendChunk = Buffer.concat([
       Buffer.from([0, 0, 0, 0]),
       Buffer.from('IEND'),
       Buffer.alloc(0),
-      Buffer.alloc(4)
+      chunkCrc('IEND', Buffer.alloc(0))
     ]);
-    const dmiFixture = Buffer.concat([pngSignature, Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), ihdrData, Buffer.alloc(4), dmiChunk, iendChunk]);
+    const dmiFixture = Buffer.concat([
+      pngSignature,
+      Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), ihdrData, chunkCrc('IHDR', ihdrData),
+      dmiChunk, idatChunk, iendChunk
+    ]);
     fs.writeFileSync(path.join(tmpInputDir, 'icon.dmi'), dmiFixture);
 
     const transpiler = new DM2SS14Transpiler();
@@ -269,11 +287,12 @@ state "icon"
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Textures', 'icon.rsi', 'meta.json')), "DMI converted to RSI with meta.json");
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml')), "DMM converted to grid map YAML");
     const dmmMapYaml = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml'), 'utf-8');
-    assert(dmmMapYaml.includes('proto: obj_item_weapon_sword'), "DMM item mapped to generated prototype id");
-    assert(dmmMapYaml.includes('uid:') && dmmMapYaml.includes('type: MapGrid'), "Map YAML uses uid/type entity schema");
-    assert(dmmMapYaml.includes('tilemap:') && dmmMapYaml.includes('  floor: TurfFloor'), "Map YAML has tilemap with turf prototypes");
-    assert(dmmMapYaml.includes('    chunks:'), "MapGrid entity has chunked tiles");
-    assert(dmmMapYaml.includes('pos: 2, 2, 1'), "Entity z coordinate taken from grid z (1)");
+   assert(dmmMapYaml.includes('proto: Sword'), "DMM item mapped to PascalCase prototype id");
+   assert(dmmMapYaml.includes('uid:') && dmmMapYaml.includes('type: MapGrid'), "Map YAML uses uid/type entity schema");
+   assert(dmmMapYaml.includes('tilemap:') && dmmMapYaml.includes('  floor: Floor'), "Map YAML has tilemap with real SS14 turf prototypes");
+   assert(dmmMapYaml.includes('    chunks:'), "MapGrid entity has chunked tiles");
+   assert(dmmMapYaml.includes('- 1,1: floor') || dmmMapYaml.includes('- 1,1:'), "Chunk tiles are list items under the chunk key");
+   assert(dmmMapYaml.includes('pos: 2, 2, 1'), "Entity z coordinate taken from grid z (1)");
 
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;

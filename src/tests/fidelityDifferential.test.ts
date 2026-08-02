@@ -62,7 +62,7 @@ const PROBES: Probe[] = [
   {
     name: 'L += x appends to a list',
     dm: `/datum/probe/proc/run()\n\tvar/L = list(1, 2)\n\tL += 3\n\treturn L`,
-    expected: '[list]' // DM: list(1,2,3)
+    expected: 'list(1, 2, 3)' // DM: list text rendering; probe hardened (WS13-8)
   },
   {
     name: 'L.len reads list length',
@@ -306,6 +306,11 @@ const PROBES: Probe[] = [
     expected: '[1,"two",null]'
   },
   {
+    name: 'json_encode() escapes quotes and backslashes',
+    dm: `/datum/probe/proc/run()\n\treturn json_encode(list("a\\"b", "c\\\\d", "e\\nf", "a\\tb"))`,
+    expected: '["a\\"b","c\\\\d","e\\nf","a\\tb"]' // hardened: escape paths (WS13-7)
+  },
+  {
     name: 'time2text() formats decisecond world time',
     dm: `/datum/probe/proc/run()\n\treturn time2text(1000, "hh:mm:ss")`,
     expected: '00:01:40'
@@ -492,6 +497,247 @@ const PROBES: Probe[] = [
     name: 'hearers() uses the 7-tile default range',
     dm: `/mob/dummy\n/datum/probe/proc/run()\n\tvar/a = new /mob/dummy()\n\tvar/b = new /mob/dummy()\n\tvar/c = new /mob/dummy()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 10\n\tc.x = 3\n\tc.y = 12\n\treturn hearers(a).len`,
     expected: '2'
+  },
+
+  // --- Plan 10 B1: value semantics (expected = BYOND reference) ---
+  {
+    name: 'division of two integers is floor division',
+    dm: `/datum/probe/proc/run()\n\treturn 7 / 2`,
+    expected: '3'
+  },
+  {
+    name: 'division of negative integers floors toward -inf',
+    dm: `/datum/probe/proc/run()\n\treturn -7 / 2`,
+    expected: '-4'
+  },
+  {
+    name: 'division with a fractional operand is float division',
+    dm: `/datum/probe/proc/run()\n\treturn 7.0 / 2`,
+    expected: '3.5'
+  },
+  {
+    name: 'number equality is exact (no float tolerance)',
+    dm: `/datum/probe/proc/run()\n\treturn 1 == 1.000000001`,
+    expected: '0'
+  },
+  {
+    name: 'number equality exact for identical values',
+    dm: `/datum/probe/proc/run()\n\treturn 1 == 1.0`,
+    expected: '1'
+  },
+  {
+    name: 'findtext is case-insensitive by default',
+    dm: `/datum/probe/proc/run()\n\treturn findtext("ABC", "b")`,
+    expected: '2'
+  },
+  {
+    name: 'findtext with an empty needle finds the start',
+    dm: `/datum/probe/proc/run()\n\treturn findtext("abc", "")`,
+    expected: '1'
+  },
+  {
+    name: 'isnull("") is 0 (empty string is not null)',
+    dm: `/datum/probe/proc/run()\n\treturn isnull("")`,
+    expected: '0'
+  },
+  {
+    name: 'isnull(0) is 0 (zero is not null)',
+    dm: `/datum/probe/proc/run()\n\treturn isnull(0)`,
+    expected: '0'
+  },
+  {
+    name: 'sign() of non-numeric text is 0',
+    dm: `/datum/probe/proc/run()\n\treturn sign("abc")`,
+    expected: '0'
+  },
+  {
+    name: 'sign() of negative text is -1',
+    dm: `/datum/probe/proc/run()\n\treturn sign("-3")`,
+    expected: '-1'
+  },
+  {
+    name: 'text2num radix parses the longest valid prefix',
+    dm: `/datum/probe/proc/run()\n\treturn text2num("1G", 16)`,
+    expected: '1'
+  },
+  {
+    name: 'text2num radix 16 parses hex digits',
+    dm: `/datum/probe/proc/run()\n\treturn text2num("1F", 16)`,
+    expected: '31'
+  },
+  {
+    name: 'text2num accepts a leading plus sign',
+    dm: `/datum/probe/proc/run()\n\treturn text2num("+42")`,
+    expected: '42'
+  },
+  {
+    name: 'in checks associative keys',
+    dm: `/datum/probe/proc/run()\n\treturn "a" in list("a" = 1)`,
+    expected: '1'
+  },
+  {
+    name: 'in checks positional values, not assoc keys as values',
+    dm: `/datum/probe/proc/run()\n\treturn 2 in list("a" = 1)`,
+    expected: '0'
+  },
+  {
+    name: 'assoc list len counts entries',
+    dm: `/datum/probe/proc/run()\n\treturn list("a" = 1).len`,
+    expected: '1'
+  },
+  {
+    name: 'assoc lists with different keys are not equal',
+    dm: `/datum/probe/proc/run()\n\treturn list("a" = 1) == list("b" = 1)`,
+    expected: '0'
+  },
+  {
+    name: 'assoc lists with same keys are equal',
+    dm: `/datum/probe/proc/run()\n\treturn list("a" = 1) == list("a" = 1)`,
+    expected: '1'
+  },
+  {
+    name: 'for-in iterates assoc values',
+    dm: `/datum/probe/proc/run()\n\tvar/n = 0\n\tfor (var/x in list("a" = 7))\n\t\tn = x\n\treturn n`,
+    expected: '7'
+  },
+  {
+    name: 'params2list URL-decodes values',
+    dm: `/datum/probe/proc/run()\n\treturn params2list("a=b%20c")["a"]`,
+    expected: 'b c'
+  },
+  {
+    name: 'length counts Unicode code points',
+    dm: `/datum/probe/proc/run()\n\treturn length("a😀b")`,
+    expected: '3'
+  },
+  {
+    name: 'copytext slices by code points',
+    dm: `/datum/probe/proc/run()\n\treturn copytext("a😀b", 2, 3)`,
+    expected: '😀'
+  },
+  {
+    name: 'findtext indexes by code points',
+    dm: `/datum/probe/proc/run()\n\treturn findtext("a😀b", "😀")`,
+    expected: '2'
+  },
+  {
+    name: 'ispath("x") is 0 (text is not a path)',
+    dm: `/datum/probe/proc/run()\n\treturn ispath("x")`,
+    expected: '0'
+  },
+  {
+    name: 'ispath(/obj) is 1',
+    dm: `/datum/probe/proc/run()\n\treturn ispath(/obj)`,
+    expected: '1'
+  },
+  {
+    name: 'ispath base-type check (subtype is within)',
+    dm: `/datum/probe/proc/run()\n\treturn ispath(/obj/item, /obj)`,
+    expected: '1'
+  },
+  {
+    name: 'ispath base-type check (base is not within subtype)',
+    dm: `/datum/probe/proc/run()\n\treturn ispath(/obj, /obj/item)`,
+    expected: '0'
+  },
+  {
+    name: 'copytext with end 0 goes to the end of the string',
+    dm: `/datum/probe/proc/run()\n\treturn copytext("abc", 1, 0)`,
+    expected: 'abc'
+  },
+  {
+    name: 'copytext with negative end counts from the end',
+    dm: `/datum/probe/proc/run()\n\treturn copytext("abc", 2, -1)`,
+    expected: 'b'
+  },
+  {
+    name: 'copytext with start 0 is treated as 1',
+    dm: `/datum/probe/proc/run()\n\treturn copytext("abc", 0)`,
+    expected: 'abc'
+  },
+
+  // --- Plan 10 B2: emitter control flow + list semantics ---
+  {
+    name: 'for range with positive step',
+    dm: `/datum/probe/proc/run()\n\tvar/s = 0\n\tfor (var/i = 1 to 6 step 2)\n\t\ts += i\n\treturn s`,
+    expected: '9'
+  },
+  {
+    name: 'for range with descending step',
+    dm: `/datum/probe/proc/run()\n\tvar/s = 0\n\tfor (var/i = 5 to 1 step -2)\n\t\ts += i\n\treturn s`,
+    expected: '9'
+  },
+  {
+    name: 'for range step with continue still increments',
+    dm: `/datum/probe/proc/run()\n\tvar/s = 0\n\tfor (var/i = 1 to 6 step 2)\n\t{\n\t\tif (i == 3)\n\t\t\tcontinue\n\t\ts += i\n\t}\n\treturn s`,
+    expected: '6'
+  },
+  {
+    name: 'for(var/type) iterates only matching instances',
+    dm: `/mob/p_mob\n/obj/p_obj\n/datum/probe/proc/run()\n\tvar/count = 0\n\tfor (var/mob/p_mob/M in list(new /mob/p_mob(), new /obj/p_obj()))\n\t\tcount++\n\treturn count`,
+    expected: '1'
+  },
+  {
+    name: 'list index assignment copies on write',
+    dm: `/datum/probe/proc/run()\n\tvar/a = list(1)\n\tvar/b = a\n\ta[1] = 9\n\treturn b[1]`,
+    expected: '1'
+  },
+  {
+    name: 'list += keeps associative keys',
+    dm: `/datum/probe/proc/run()\n\tvar/a = list("k" = 1)\n\ta += 2\n\treturn a["k"]`,
+    expected: '1'
+  },
+  {
+    name: 'string + null concatenates null as empty',
+    dm: `/datum/probe/proc/run()\n\treturn "a" + null`,
+    expected: 'a'
+  },
+  {
+    name: 'string + 0 concatenates the zero',
+    dm: `/datum/probe/proc/run()\n\treturn "a" + 0`,
+    expected: 'a0'
+  },
+  {
+    name: 'abs of a negative number',
+    dm: `/datum/probe/proc/run()\n\treturn abs(-5)`,
+    expected: '5'
+  },
+
+  // --- Plan 10 B3: lexer literals ---
+  {
+    name: '0x hex literal',
+    dm: `/datum/probe/proc/run()\n\treturn 0x1F`,
+    expected: '31'
+  },
+  {
+    name: '0b binary literal',
+    dm: `/datum/probe/proc/run()\n\treturn 0b101`,
+    expected: '5'
+  },
+  {
+    name: 'CRLF line endings parse without errors',
+    dm: `/datum/probe/proc/run()\r\n\tvar/x = 5\r\n\treturn x + 1`,
+    expected: '6'
+  },
+  {
+    name: 'return inside spawn() compiles and exits the block',
+    dm: `/datum/probe/proc/run()\n\tvar/x = 1\n\tspawn(0)\n\t\treturn\n\treturn x`,
+    expected: '1' // DM: return exits the spawn block; run() returns 1
+  },
+  {
+    name: '\\x and \\u escapes decode to characters',
+    dm: `/datum/probe/proc/run()\n\treturn "\\x41\\u0041"`,
+    expected: 'AA' // BYOND: \x41 = 'A', \u0041 = 'A'
+  },
+  {
+    name: 'unknown escapes keep the backslash',
+    dm: `/datum/probe/proc/run()\n\treturn "\\a\\b"`,
+    expected: '\\a\\b' // unknown escapes pass through byte-exact
+  },
+  {
+    name: '\\the text-macro marker is preserved',
+    dm: `/datum/probe/proc/run()\n\treturn "\\the item"`,
+    expected: '\\the item' // marker kept verbatim, not corrupted to a tab
   }
 ];
 
@@ -532,8 +778,11 @@ class ProbeDriver
 `;
 
 async function main(): Promise<void> {
-  const dotnetCheck = execSync('dotnet --version', { stdio: 'pipe' });
-  if (!dotnetCheck) {
+  // WS13-10: missing dotnet must SKIP gracefully, not hard-fail — execSync
+  // throws when the binary is absent.
+  try {
+    execSync('dotnet --version', { stdio: 'pipe' });
+  } catch {
     console.log('dotnet not available — skipping semantic probes');
     return;
   }
