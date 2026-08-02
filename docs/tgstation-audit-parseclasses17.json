@@ -1,0 +1,2042 @@
+{
+  "name": "tgstation",
+  "dir": "/Users/russellrozario/Documents/antigravity/ss13-audit-corpora/tgstation",
+  "files": 7440,
+  "counters": {
+    "numElif": 2,
+    "numIfNumeric": 53,
+    "numIfError": 9,
+    "numPragmaOnce": 0,
+    "numDefineStringTruncation": 102,
+    "numGoto": 2,
+    "numSetModifiers": 153,
+    "numSwitchBraceForm": 1,
+    "numWeightedPick": 18,
+    "numMultiVarFor": 150,
+    "numForStepClause": 23,
+    "numForAsFilter": 3899,
+    "numVerbDecls": 12,
+    "numClientDecls": 182,
+    "numWorldDecls": 87,
+    "numGlobalVars": 1087,
+    "numClassicGlobalVars": 0,
+    "numGlobAccess": 6384,
+    "numTry": 19,
+    "numBreak": 1190,
+    "numContinue": 4828,
+    "numLabeledBlock": 20,
+    "numNew": 13060,
+    "numParentCall": 23371,
+    "numBinaryNull": 19009,
+    "numBinaryOutput": 26924,
+    "numCompileBreak": 7909,
+    "numAsCast": 219,
+    "numUnaryTilde": 1083,
+    "numSpawnExpr": 0,
+    "numWorldRef": 4045,
+    "numPathConstPropRead": 1098,
+    "numBrokenPropRead": 13144,
+    "numUnknownBuiltin": 3360,
+    "numBareGlobalProcCalls": 40468,
+    "numTypeResolvedBareCalls": 58407,
+    "numUnresolvedCalls": 3360,
+    "parseErrors": 170,
+    "parseWarnings": 39,
+    "totalLossSites": 127332,
+    "unknownBuiltins": {
+      "filter": {
+        "count": 12,
+        "samples": [
+          "code/__DEFINES/is_helpers.dm",
+          "code/__HELPERS/filters.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {}
+      },
+      "PLANE_TO_TRUE": {
+        "count": 7,
+        "samples": [
+          "code/__HELPERS/_planes.dm",
+          "code/__HELPERS/lighting.dm",
+          "code/__HELPERS/lighting.dm"
+        ],
+        "contexts": {}
+      },
+      "regex": {
+        "count": 90,
+        "samples": [
+          "code/__HELPERS/_string_lists.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/names.dm"
+        ],
+        "contexts": {}
+      },
+      "AREACOORD": {
+        "count": 270,
+        "samples": [
+          "code/__HELPERS/areas.dm",
+          "code/__HELPERS/logging/_logging.dm",
+          "code/__HELPERS/logging/attack.dm"
+        ],
+        "contexts": {}
+      },
+      "LOWER_TEXT": {
+        "count": 85,
+        "samples": [
+          "code/__HELPERS/atmospherics.dm",
+          "code/__HELPERS/atmospherics.dm",
+          "code/datums/brain_damage/hypnosis.dm"
+        ],
+        "contexts": {}
+      },
+      "bounds_dist": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/atoms.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_LOOKUPFLW": {
+        "count": 259,
+        "samples": [
+          "code/__HELPERS/chat_filter.dm",
+          "code/_globalvars/religion.dm",
+          "code/controllers/subsystem/dynamic/dynamic.dm"
+        ],
+        "contexts": {}
+      },
+      "num2hex": {
+        "count": 29,
+        "samples": [
+          "code/__HELPERS/colors.dm",
+          "code/__HELPERS/colors.dm",
+          "code/__HELPERS/colors.dm"
+        ],
+        "contexts": {}
+      },
+      "ftp": {
+        "count": 10,
+        "samples": [
+          "code/__HELPERS/files.dm",
+          "code/controllers/configuration/entries/jobs.dm",
+          "code/datums/json_savefile.dm"
+        ],
+        "contexts": {}
+      },
+      "findlasttext": {
+        "count": 7,
+        "samples": [
+          "code/__HELPERS/files.dm",
+          "code/__HELPERS/files.dm",
+          "code/__HELPERS/files.dm"
+        ],
+        "contexts": {}
+      },
+      "winset": {
+        "count": 60,
+        "samples": [
+          "code/__HELPERS/game.dm",
+          "code/_onclick/hud/screen_objects/map_popups.dm",
+          "code/_onclick/hud/screen_objects/map_popups.dm"
+        ],
+        "contexts": {}
+      },
+      "span_name": {
+        "count": 44,
+        "samples": [
+          "code/__HELPERS/game.dm",
+          "code/__HELPERS/game.dm",
+          "code/controllers/subsystem/shuttle.dm"
+        ],
+        "contexts": {}
+      },
+      "Rand": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/generators.dm"
+        ],
+        "contexts": {}
+      },
+      "MapColors": {
+        "count": 5,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {}
+      },
+      "Blend": {
+        "count": 5,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {}
+      },
+      "SetIntensity": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {}
+      },
+      "isicon": {
+        "count": 20,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {}
+      },
+      "SwapColor": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {}
+      },
+      "gradient": {
+        "count": 13,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/_onclick/hud/screen_objects/screen_objects.dm"
+        ],
+        "contexts": {}
+      },
+      "icon_states": {
+        "count": 55,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/_onclick/hud/screen_objects/credits.dm"
+        ],
+        "contexts": {}
+      },
+      "md5": {
+        "count": 4,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/logging/image.dm",
+          "code/game/machinery/telecomms/machines/server.dm"
+        ],
+        "contexts": {}
+      },
+      "findtextEx": {
+        "count": 15,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/text.dm"
+        ],
+        "contexts": {}
+      },
+      "splicetext": {
+        "count": 5,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/game/objects/items/tools/engineering/painter/paintable_decals.dm",
+          "code/modules/assembly/holder.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_QUE": {
+        "count": 7,
+        "samples": [
+          "code/__HELPERS/logging/attack.dm",
+          "code/controllers/subsystem/explosions.dm",
+          "code/game/objects/effects/effect_system/fluid_spread/effects_smoke.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_FLW": {
+        "count": 18,
+        "samples": [
+          "code/__HELPERS/logging/attack.dm",
+          "code/controllers/subsystem/explosions.dm",
+          "code/datums/components/revenant_prison.dm"
+        ],
+        "contexts": {}
+      },
+      "LAZYLEN": {
+        "count": 31,
+        "samples": [
+          "code/__HELPERS/logging/mob.dm",
+          "code/_onclick/hud/screen_objects/new_player.dm",
+          "code/_onclick/hud/screen_objects/new_player.dm"
+        ],
+        "contexts": {}
+      },
+      "arctan": {
+        "count": 12,
+        "samples": [
+          "code/__HELPERS/maths.dm",
+          "code/__HELPERS/maths.dm",
+          "code/__HELPERS/maths.dm"
+        ],
+        "contexts": {}
+      },
+      "Turn": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/matrices.dm"
+        ],
+        "contexts": {}
+      },
+      "Multiply": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/matrices.dm"
+        ],
+        "contexts": {}
+      },
+      "span_linkify": {
+        "count": 13,
+        "samples": [
+          "code/__HELPERS/mobs.dm",
+          "code/modules/admin/verbs/adminhelp.dm",
+          "code/modules/admin/verbs/adminhelp.dm"
+        ],
+        "contexts": {}
+      },
+      "astype": {
+        "count": 92,
+        "samples": [
+          "code/__HELPERS/priority_announce.dm",
+          "code/_onclick/hud/screen_objects/robot.dm",
+          "code/_onclick/hud/screen_objects/screen_objects.dm"
+        ],
+        "contexts": {}
+      },
+      "url_encode": {
+        "count": 19,
+        "samples": [
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/stat_tracking.dm",
+          "code/controllers/subsystem/mapping.dm"
+        ],
+        "contexts": {}
+      },
+      "span_redtext": {
+        "count": 8,
+        "samples": [
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {}
+      },
+      "PERCENT": {
+        "count": 13,
+        "samples": [
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {}
+      },
+      "span_greentext": {
+        "count": 7,
+        "samples": [
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {}
+      },
+      "shell": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/shell.dm",
+          "code/__HELPERS/shell.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_VERBOSEJMP": {
+        "count": 119,
+        "samples": [
+          "code/__HELPERS/shuttle.dm",
+          "code/__HELPERS/shuttle.dm",
+          "code/controllers/subsystem/explosions.dm"
+        ],
+        "contexts": {}
+      },
+      "get_area": {
+        "count": 43,
+        "samples": [
+          "code/__HELPERS/shuttle.dm",
+          "code/__HELPERS/shuttle.dm",
+          "code/controllers/subsystem/market.dm"
+        ],
+        "contexts": {}
+      },
+      "cmptext": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/text.dm",
+          "code/game/objects/structures/signboards/holosign.dm"
+        ],
+        "contexts": {}
+      },
+      "trimtext": {
+        "count": 3,
+        "samples": [
+          "code/__HELPERS/text.dm",
+          "code/game/objects/structures/signboards/holosign.dm",
+          "code/game/objects/structures/signboards/holosign.dm"
+        ],
+        "contexts": {}
+      },
+      ".": {
+        "count": 5,
+        "samples": [
+          "code/__HELPERS/text.dm",
+          "code/_onclick/hud/screen_objects/alert.dm",
+          "code/_onclick/hud/screen_objects/alert.dm"
+        ],
+        "contexts": {}
+      },
+      "replacetext_char": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/time.dm",
+          "code/game/machinery/announcement_system.dm"
+        ],
+        "contexts": {}
+      },
+      "REGEX_QUOTE": {
+        "count": 8,
+        "samples": [
+          "code/_globalvars/phobias.dm",
+          "code/controllers/configuration/configuration.dm",
+          "code/controllers/configuration/configuration.dm"
+        ],
+        "contexts": {}
+      },
+      "output": {
+        "count": 9,
+        "samples": [
+          "code/_js/byjax.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/admin/view_variables/view_variables.dm"
+        ],
+        "contexts": {}
+      },
+      "HAS_TRAIT": {
+        "count": 34,
+        "samples": [
+          "code/_onclick/click_alt.dm",
+          "code/datums/components/grillable.dm",
+          "code/datums/elements/prosthetic_icon.dm"
+        ],
+        "contexts": {}
+      },
+      "openToolTip": {
+        "count": 12,
+        "samples": [
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm"
+        ],
+        "contexts": {}
+      },
+      "closeToolTip": {
+        "count": 11,
+        "samples": [
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm"
+        ],
+        "contexts": {}
+      },
+      "UNLINT": {
+        "count": 50,
+        "samples": [
+          "code/_onclick/hud/screen_objects/alert.dm",
+          "code/controllers/master.dm",
+          "code/controllers/subsystem/fluids.dm"
+        ],
+        "contexts": {}
+      },
+      "span_userdanger": {
+        "count": 15,
+        "samples": [
+          "code/_onclick/hud/screen_objects/alert.dm",
+          "code/datums/components/food/edible.dm",
+          "code/datums/diseases/advance/symptoms/chills.dm"
+        ],
+        "contexts": {}
+      },
+      "winclone": {
+        "count": 1,
+        "samples": [
+          "code/_onclick/hud/screen_objects/map_popups.dm"
+        ],
+        "contexts": {}
+      },
+      "winshow": {
+        "count": 2,
+        "samples": [
+          "code/_onclick/hud/screen_objects/map_popups.dm",
+          "code/_onclick/hud/screen_objects/map_popups.dm"
+        ],
+        "contexts": {}
+      },
+      "CONFIG_GET": {
+        "count": 32,
+        "samples": [
+          "code/_onclick/hud/screen_objects/new_player.dm",
+          "code/controllers/subsystem/ipintel.dm",
+          "code/controllers/subsystem/ipintel.dm"
+        ],
+        "contexts": {}
+      },
+      "rand_seed": {
+        "count": 1,
+        "samples": [
+          "code/controllers/master.dm"
+        ],
+        "contexts": {}
+      },
+      "MIDROUND_CANCEL_HREF": {
+        "count": 2,
+        "samples": [
+          "code/controllers/subsystem/dynamic/dynamic.dm",
+          "code/controllers/subsystem/dynamic/dynamic.dm"
+        ],
+        "contexts": {}
+      },
+      "MIDROUND_REROLL_HREF": {
+        "count": 2,
+        "samples": [
+          "code/controllers/subsystem/dynamic/dynamic.dm",
+          "code/controllers/subsystem/dynamic/dynamic.dm"
+        ],
+        "contexts": {}
+      },
+      "span_notice": {
+        "count": 199,
+        "samples": [
+          "code/controllers/subsystem/dynamic/dynamic_ruleset_midround.dm",
+          "code/controllers/subsystem/dynamic/dynamic_ruleset_midround.dm",
+          "code/controllers/subsystem/dynamic/dynamic_ruleset_midround.dm"
+        ],
+        "contexts": {}
+      },
+      "span_danger": {
+        "count": 62,
+        "samples": [
+          "code/controllers/subsystem/dynamic/dynamic_ruleset_midround.dm",
+          "code/datums/brain_damage/imaginary_friend.dm",
+          "code/datums/brain_damage/split_personality.dm"
+        ],
+        "contexts": {}
+      },
+      "text_ref": {
+        "count": 19,
+        "samples": [
+          "code/controllers/subsystem/garbage.dm",
+          "code/controllers/subsystem/timer.dm",
+          "code/controllers/subsystem/timer.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_VV": {
+        "count": 7,
+        "samples": [
+          "code/controllers/subsystem/garbage.dm",
+          "code/game/objects/items/cards_ids.dm",
+          "code/modules/admin/tag.dm"
+        ],
+        "contexts": {}
+      },
+      "span_bold": {
+        "count": 102,
+        "samples": [
+          "code/controllers/subsystem/map_vote.dm",
+          "code/controllers/subsystem/vote.dm",
+          "code/datums/ai/_ai_behavior.dm"
+        ],
+        "contexts": {}
+      },
+      "OPTIMAL_COST": {
+        "count": 1,
+        "samples": [
+          "code/controllers/subsystem/materials.dm"
+        ],
+        "contexts": {}
+      },
+      "get_step_to": {
+        "count": 5,
+        "samples": [
+          "code/controllers/subsystem/movement/movement_types.dm",
+          "code/datums/ai/generic_behaviors/attack_obstacles.dm",
+          "code/datums/ai/generic_behaviors/attack_obstacles.dm"
+        ],
+        "contexts": {}
+      },
+      "get_step_rand": {
+        "count": 6,
+        "samples": [
+          "code/controllers/subsystem/movement/movement_types.dm",
+          "code/game/objects/items/teleportation.dm",
+          "code/modules/antagonists/cult/cult_items.dm"
+        ],
+        "contexts": {}
+      },
+      "span_ooc": {
+        "count": 1,
+        "samples": [
+          "code/controllers/subsystem/polling.dm"
+        ],
+        "contexts": {}
+      },
+      "link": {
+        "count": 17,
+        "samples": [
+          "code/controllers/subsystem/server_maint.dm",
+          "code/game/objects/items/wiki_manuals.dm",
+          "code/modules/admin/admin_verbs.dm"
+        ],
+        "contexts": {}
+      },
+      "GRID_INDEX_TO_COORDS": {
+        "count": 6,
+        "samples": [
+          "code/controllers/subsystem/spatial_gridmap.dm",
+          "code/controllers/subsystem/spatial_gridmap.dm",
+          "code/controllers/subsystem/spatial_gridmap.dm"
+        ],
+        "contexts": {}
+      },
+      "span_boldnotice": {
+        "count": 42,
+        "samples": [
+          "code/controllers/subsystem/ticker.dm",
+          "code/controllers/subsystem/ticker.dm",
+          "code/datums/actions/mobs/personality_commune.dm"
+        ],
+        "contexts": {}
+      },
+      "span_bolddanger": {
+        "count": 5,
+        "samples": [
+          "code/controllers/subsystem/ticker.dm",
+          "code/controllers/subsystem/ticker.dm",
+          "code/controllers/subsystem/ticker.dm"
+        ],
+        "contexts": {}
+      },
+      "DS2TICKS": {
+        "count": 4,
+        "samples": [
+          "code/controllers/subsystem/verb_manager.dm",
+          "code/controllers/subsystem/verb_manager.dm",
+          "code/controllers/subsystem/verb_manager.dm"
+        ],
+        "contexts": {}
+      },
+      "fract": {
+        "count": 2,
+        "samples": [
+          "code/controllers/subsystem/weather.dm",
+          "code/controllers/subsystem/weather.dm"
+        ],
+        "contexts": {}
+      },
+      "FOLLOW_LINK": {
+        "count": 10,
+        "samples": [
+          "code/datums/actions/mobs/personality_commune.dm",
+          "code/datums/brain_damage/imaginary_friend.dm",
+          "code/datums/candidate_poll.dm"
+        ],
+        "contexts": {}
+      },
+      "QDELETED": {
+        "count": 7,
+        "samples": [
+          "code/datums/ai/generic_behaviors/grab_target.dm",
+          "code/game/objects/items/tools/inducer.dm",
+          "code/modules/mob/living/basic/bots/medbot/medbot_ai.dm"
+        ],
+        "contexts": {}
+      },
+      "vector": {
+        "count": 8,
+        "samples": [
+          "code/datums/beam.dm",
+          "code/datums/beam.dm",
+          "code/datums/beam.dm"
+        ],
+        "contexts": {}
+      },
+      "span_warning": {
+        "count": 103,
+        "samples": [
+          "code/datums/brain_damage/mild.dm",
+          "code/datums/candidate_poll.dm",
+          "code/datums/components/bane.dm"
+        ],
+        "contexts": {}
+      },
+      "span_robot": {
+        "count": 4,
+        "samples": [
+          "code/datums/brain_damage/special.dm",
+          "code/game/objects/items/implants/implant_deathrattle.dm",
+          "code/modules/wiremod/shell/brain_computer_interface.dm"
+        ],
+        "contexts": {}
+      },
+      "winexists": {
+        "count": 4,
+        "samples": [
+          "code/datums/browser.dm",
+          "code/datums/browser.dm",
+          "code/modules/client/client_procs.dm"
+        ],
+        "contexts": {}
+      },
+      "winget": {
+        "count": 6,
+        "samples": [
+          "code/datums/browser.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/client/client_procs.dm"
+        ],
+        "contexts": {}
+      },
+      "browse_rsc": {
+        "count": 12,
+        "samples": [
+          "code/datums/browser.dm",
+          "code/game/machinery/newscaster/newscaster_machine.dm",
+          "code/game/machinery/newscaster/newscaster_machine.dm"
+        ],
+        "contexts": {}
+      },
+      "isobserver": {
+        "count": 4,
+        "samples": [
+          "code/datums/candidate_poll.dm",
+          "code/modules/admin/verbs/admingame.dm",
+          "code/modules/mob/living/basic/bots/mulebot/mulebot.dm"
+        ],
+        "contexts": {}
+      },
+      "EXAMINE_HINT": {
+        "count": 294,
+        "samples": [
+          "code/datums/components/aquarium.dm",
+          "code/datums/components/aquarium.dm",
+          "code/datums/components/aquarium.dm"
+        ],
+        "contexts": {}
+      },
+      "TURF_TEMPERATURE": {
+        "count": 28,
+        "samples": [
+          "code/datums/components/combustible_flooder.dm",
+          "code/game/machinery/nebula_shielding.dm",
+          "code/game/machinery/nebula_shielding.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_COORDJMP": {
+        "count": 16,
+        "samples": [
+          "code/datums/components/combustible_flooder.dm",
+          "code/datums/components/combustible_flooder.dm",
+          "code/game/machinery/computer/records/security.dm"
+        ],
+        "contexts": {}
+      },
+      "CEILING": {
+        "count": 3,
+        "samples": [
+          "code/datums/components/deadchat_control.dm",
+          "code/game/machinery/defibrillator_mount.dm",
+          "code/modules/power/power_store.dm"
+        ],
+        "contexts": {}
+      },
+      "span_blue": {
+        "count": 2,
+        "samples": [
+          "code/datums/components/fantasy/_fantasy.dm",
+          "code/modules/antagonists/malf_ai/malf_ai.dm"
+        ],
+        "contexts": {}
+      },
+      "span_phobia": {
+        "count": 5,
+        "samples": [
+          "code/datums/components/fearful/sources/phobia.dm",
+          "code/datums/components/fearful/sources/phobia.dm",
+          "code/datums/components/fearful/sources/phobia.dm"
+        ],
+        "contexts": {}
+      },
+      "isdatum": {
+        "count": 2,
+        "samples": [
+          "code/datums/components/infective.dm",
+          "code/modules/mob/living/carbon/carbon_defense.dm"
+        ],
+        "contexts": {}
+      },
+      "MONEY_NAME_AUTOPURAL": {
+        "count": 9,
+        "samples": [
+          "code/datums/components/payment.dm",
+          "code/game/machinery/slotmachine.dm",
+          "code/game/objects/items/cards_ids.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_JMP": {
+        "count": 21,
+        "samples": [
+          "code/datums/components/revenant_prison.dm",
+          "code/datums/components/supermatter_crystal.dm",
+          "code/datums/components/supermatter_crystal.dm"
+        ],
+        "contexts": {}
+      },
+      "COOLDOWN_TIMELEFT": {
+        "count": 18,
+        "samples": [
+          "code/datums/components/spin2win.dm",
+          "code/datums/json_savefile.dm",
+          "code/game/gamemodes/objective.dm"
+        ],
+        "contexts": {}
+      },
+      "bind_the_soule": {
+        "count": 2,
+        "samples": [
+          "code/datums/components/spirit_holding.dm",
+          "code/datums/components/spirit_holding.dm"
+        ],
+        "contexts": {}
+      },
+      "affix_spirit": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/spirit_holding.dm"
+        ],
+        "contexts": {}
+      },
+      "custom_name": {
+        "count": 2,
+        "samples": [
+          "code/datums/components/spirit_holding.dm",
+          "code/datums/components/spirit_holding.dm"
+        ],
+        "contexts": {}
+      },
+      "span_red": {
+        "count": 5,
+        "samples": [
+          "code/datums/components/trader/trader.dm",
+          "code/datums/components/trader/trader.dm",
+          "code/datums/components/trader/trader.dm"
+        ],
+        "contexts": {}
+      },
+      "span_green": {
+        "count": 6,
+        "samples": [
+          "code/datums/components/trader/trader.dm",
+          "code/datums/components/trader/trader.dm",
+          "code/datums/wounds/slash.dm"
+        ],
+        "contexts": {}
+      },
+      "span_boldwarning": {
+        "count": 13,
+        "samples": [
+          "code/datums/components/uplink.dm",
+          "code/datums/mood.dm",
+          "code/datums/mood.dm"
+        ],
+        "contexts": {}
+      },
+      "generator": {
+        "count": 5,
+        "samples": [
+          "code/datums/elements/can_shatter.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/admin/view_variables/particle_editor.dm"
+        ],
+        "contexts": {}
+      },
+      "span_info": {
+        "count": 83,
+        "samples": [
+          "code/datums/mind/skills.dm",
+          "code/datums/mood.dm",
+          "code/datums/mood.dm"
+        ],
+        "contexts": {}
+      },
+      "span_grey": {
+        "count": 4,
+        "samples": [
+          "code/datums/mood.dm",
+          "code/datums/mood.dm",
+          "code/datums/mood.dm"
+        ],
+        "contexts": {}
+      },
+      "span_boldnicegreen": {
+        "count": 5,
+        "samples": [
+          "code/datums/mood.dm",
+          "code/datums/mood.dm",
+          "code/datums/mood.dm"
+        ],
+        "contexts": {}
+      },
+      "span_nicegreen": {
+        "count": 5,
+        "samples": [
+          "code/datums/mood.dm",
+          "code/datums/mood.dm",
+          "code/datums/mood.dm"
+        ],
+        "contexts": {}
+      },
+      "oviewers": {
+        "count": 6,
+        "samples": [
+          "code/datums/storage/storage.dm",
+          "code/game/objects/items/plushes.dm",
+          "code/game/objects/items/plushes.dm"
+        ],
+        "contexts": {}
+      },
+      "span_deadsay": {
+        "count": 6,
+        "samples": [
+          "code/datums/wounds/burns.dm",
+          "code/datums/wounds/burns.dm",
+          "code/datums/wounds/burns.dm"
+        ],
+        "contexts": {}
+      },
+      "VV_HREF_TARGETREF": {
+        "count": 2,
+        "samples": [
+          "code/game/atom/atom_vv.dm",
+          "code/modules/mob/living/living.dm"
+        ],
+        "contexts": {}
+      },
+      "is_station_level": {
+        "count": 1,
+        "samples": [
+          "code/game/machinery/ai_core/_core.dm"
+        ],
+        "contexts": {}
+      },
+      "AI_CORE_BRAIN": {
+        "count": 6,
+        "samples": [
+          "code/game/machinery/ai_core/_core.dm",
+          "code/game/machinery/ai_core/_core.dm",
+          "code/game/machinery/ai_core/core_construction.dm"
+        ],
+        "contexts": {}
+      },
+      "MODULE_NAME": {
+        "count": 1,
+        "samples": [
+          "code/game/machinery/ai_core/law.dm"
+        ],
+        "contexts": {}
+      },
+      "COORD": {
+        "count": 27,
+        "samples": [
+          "code/game/machinery/computer/prisoner/gulag_teleporter.dm",
+          "code/game/machinery/computer/prisoner/gulag_teleporter.dm",
+          "code/game/objects/items/grenades/_grenade.dm"
+        ],
+        "contexts": {}
+      },
+      "span_alert": {
+        "count": 5,
+        "samples": [
+          "code/game/machinery/computer/robot.dm",
+          "code/modules/mob/living/silicon/robot/robot.dm",
+          "code/modules/mob/living/silicon/robot/robot.dm"
+        ],
+        "contexts": {}
+      },
+      "GET_TURF_PLANE_OFFSET": {
+        "count": 3,
+        "samples": [
+          "code/game/machinery/doors/airlock.dm",
+          "code/game/turfs/open/water.dm",
+          "code/game/turfs/open/water.dm"
+        ],
+        "contexts": {}
+      },
+      "span_small": {
+        "count": 1,
+        "samples": [
+          "code/game/machinery/hypnochair.dm"
+        ],
+        "contexts": {}
+      },
+      "span_bolditalic": {
+        "count": 4,
+        "samples": [
+          "code/game/machinery/newscaster/newspaper.dm",
+          "code/game/machinery/newscaster/newspaper.dm",
+          "code/modules/mob/living/basic/guardian/guardian_verbs.dm"
+        ],
+        "contexts": {}
+      },
+      "spantext_char": {
+        "count": 1,
+        "samples": [
+          "code/game/machinery/requests_console.dm"
+        ],
+        "contexts": {}
+      },
+      "splittext_char": {
+        "count": 3,
+        "samples": [
+          "code/game/machinery/requests_console.dm",
+          "code/game/machinery/requests_console.dm",
+          "code/modules/atmospherics/machinery/components/unary_devices/cryo.dm"
+        ],
+        "contexts": {}
+      },
+      "REVERSE_DIR": {
+        "count": 9,
+        "samples": [
+          "code/game/objects/effects/decals/cleanable/blood.dm",
+          "code/game/objects/effects/decals/cleanable/blood.dm",
+          "code/game/objects/effects/decals/cleanable/blood.dm"
+        ],
+        "contexts": {}
+      },
+      "step_to": {
+        "count": 4,
+        "samples": [
+          "code/game/objects/effects/decals/cleanable/blood.dm",
+          "code/game/objects/effects/decals/cleanable/blood.dm",
+          "code/game/objects/items/weaponry/melee/his_grace.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_SMITE": {
+        "count": 4,
+        "samples": [
+          "code/game/objects/items/charter.dm",
+          "code/modules/admin/topic.dm",
+          "code/modules/admin/verbs/adminhelp.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_CENTCOM_REPLY": {
+        "count": 3,
+        "samples": [
+          "code/game/objects/items/charter.dm",
+          "code/modules/admin/verbs/pray.dm",
+          "code/modules/admin/verbs/pray.dm"
+        ],
+        "contexts": {}
+      },
+      "ohearers": {
+        "count": 4,
+        "samples": [
+          "code/game/objects/items/clown_items.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/antagonists/malf_ai/malf_ai_modules.dm"
+        ],
+        "contexts": {}
+      },
+      "span_radio": {
+        "count": 2,
+        "samples": [
+          "code/game/objects/items/devices/radio/headset.dm",
+          "code/game/objects/items/devices/radio/radio.dm"
+        ],
+        "contexts": {}
+      },
+      "span_binarysay": {
+        "count": 2,
+        "samples": [
+          "code/game/objects/items/devices/radio/headset.dm",
+          "code/game/objects/items/devices/radio/headset.dm"
+        ],
+        "contexts": {}
+      },
+      "span_class": {
+        "count": 5,
+        "samples": [
+          "code/game/objects/items/devices/radio/headset.dm",
+          "code/game/objects/items/devices/radio/headset.dm",
+          "code/game/objects/items/devices/radio/headset.dm"
+        ],
+        "contexts": {}
+      },
+      "UNDERLINED_HTML_TEXT": {
+        "count": 4,
+        "samples": [
+          "code/game/objects/items/devices/scanners/autopsy_scanner.dm",
+          "code/game/objects/items/devices/scanners/health_analyzer.dm",
+          "code/modules/cargo/order.dm"
+        ],
+        "contexts": {}
+      },
+      "conditional_tooltip": {
+        "count": 6,
+        "samples": [
+          "code/game/objects/items/devices/scanners/health_analyzer.dm",
+          "code/game/objects/items/devices/scanners/health_analyzer.dm",
+          "code/game/objects/items/devices/scanners/health_analyzer.dm"
+        ],
+        "contexts": {}
+      },
+      "roll": {
+        "count": 9,
+        "samples": [
+          "code/game/objects/items/dice.dm",
+          "code/game/objects/items/dice.dm",
+          "code/game/objects/items/dice.dm"
+        ],
+        "contexts": {}
+      },
+      "span_clown": {
+        "count": 2,
+        "samples": [
+          "code/game/objects/items/grenades/_grenade.dm",
+          "code/modules/surgery/organs/internal/liver/_liver.dm"
+        ],
+        "contexts": {}
+      },
+      "iscyborg": {
+        "count": 5,
+        "samples": [
+          "code/game/objects/items/robot/items/generic.dm",
+          "code/game/turfs/open/floor/plating.dm",
+          "code/game/turfs/open/floor/plating.dm"
+        ],
+        "contexts": {}
+      },
+      "FLOOR": {
+        "count": 4,
+        "samples": [
+          "code/game/objects/items/weaponry/melee/spear.dm",
+          "code/modules/antagonists/blood_worm/actions/cocoon.dm",
+          "code/modules/antagonists/blood_worm/blood_worm_text_feedback.dm"
+        ],
+        "contexts": {}
+      },
+      "SOURCE_LADDER": {
+        "count": 2,
+        "samples": [
+          "code/game/objects/structures/ladders.dm",
+          "code/game/objects/structures/ladders.dm"
+        ],
+        "contexts": {}
+      },
+      "span_hypnophrase": {
+        "count": 7,
+        "samples": [
+          "code/game/objects/structures/mirror.dm",
+          "code/modules/admin/topic.dm",
+          "code/modules/antagonists/heretic/items/corrupted_organs.dm"
+        ],
+        "contexts": {}
+      },
+      "replacetextEx_char": {
+        "count": 1,
+        "samples": [
+          "code/game/objects/structures/signboards/holosign.dm"
+        ],
+        "contexts": {}
+      },
+      "sha1": {
+        "count": 2,
+        "samples": [
+          "code/game/say.dm",
+          "code/modules/mob/living/living_say.dm"
+        ],
+        "contexts": {}
+      },
+      "LAZYFIND": {
+        "count": 2,
+        "samples": [
+          "code/game/turfs/open/floor/light_floor.dm",
+          "code/game/turfs/open/floor/light_floor.dm"
+        ],
+        "contexts": {}
+      },
+      "shutdown": {
+        "count": 1,
+        "samples": [
+          "code/game/world.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_SHOW_PAPER": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/admin_fax_panel.dm",
+          "code/modules/paperwork/fax.dm"
+        ],
+        "contexts": {}
+      },
+      "ckeyEx": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/admin_verbs.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {}
+      },
+      "span_prefix": {
+        "count": 8,
+        "samples": [
+          "code/modules/admin/holder2.dm",
+          "code/modules/admin/sql_message_system.dm",
+          "code/modules/admin/sql_message_system.dm"
+        ],
+        "contexts": {}
+      },
+      "span_memo": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/sql_message_system.dm"
+        ],
+        "contexts": {}
+      },
+      "span_memoedit": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/sql_message_system.dm"
+        ],
+        "contexts": {}
+      },
+      "TAG_CARBON_HEALTH": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/tag.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_PP": {
+        "count": 6,
+        "samples": [
+          "code/modules/admin/tag.dm",
+          "code/modules/admin/tag.dm",
+          "code/modules/admin/tag.dm"
+        ],
+        "contexts": {}
+      },
+      "TAG_SIMPLE_HEALTH": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/tag.dm"
+        ],
+        "contexts": {}
+      },
+      "TAG_DEL": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/tag.dm"
+        ],
+        "contexts": {}
+      },
+      "TAG_MARK": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/tag.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_SM": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/topic.dm",
+          "code/modules/admin/verbs/adminhelp.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_TP": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/topic.dm",
+          "code/modules/admin/verbs/adminhelp.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_INDIVIDUALLOG": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/topic.dm",
+          "code/modules/admin/verbs/adminhelp.dm"
+        ],
+        "contexts": {}
+      },
+      "LAZYACCESS": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/topic.dm",
+          "code/modules/admin/topic.dm"
+        ],
+        "contexts": {}
+      },
+      "arcsin": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/wiremod/components/math/trigonometry.dm"
+        ],
+        "contexts": {}
+      },
+      "REGEX_QUOTE_REPLACEMENT": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {}
+      },
+      "walk": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {}
+      },
+      "walk_towards": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {}
+      },
+      "walk_to": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {}
+      },
+      "walk_away": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {}
+      },
+      "walk_rand": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {}
+      },
+      "step_rand": {
+        "count": 5,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/mob/living/basic/pets/dog/corgi.dm",
+          "code/modules/mob/living/basic/pets/dog/strippable_items.dm"
+        ],
+        "contexts": {}
+      },
+      "span_adminnotice": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/adminhelp.dm"
+        ],
+        "contexts": {}
+      },
+      "span_adminsay": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/verbs/adminsay.dm",
+          "code/modules/interview/interview.dm"
+        ],
+        "contexts": {}
+      },
+      "isAI": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/verbs/anonymousnames.dm",
+          "code/modules/admin/verbs/anonymousnames.dm"
+        ],
+        "contexts": {}
+      },
+      "span_tooltip": {
+        "count": 5,
+        "samples": [
+          "code/modules/admin/verbs/deadsay.dm",
+          "code/modules/clothing/clothing.dm",
+          "code/modules/clothing/clothing.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_TAG": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/debug.dm"
+        ],
+        "contexts": {}
+      },
+      "run": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/getlogs.dm"
+        ],
+        "contexts": {}
+      },
+      "issaved": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/map_export.dm"
+        ],
+        "contexts": {}
+      },
+      "CLIENT_COOLDOWN_TIMELEFT": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/playsound.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_FULLMONTY": {
+        "count": 7,
+        "samples": [
+          "code/modules/admin/verbs/pray.dm",
+          "code/modules/admin/verbs/pray.dm",
+          "code/modules/admin/verbs/pray.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_SC": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/verbs/pray.dm",
+          "code/modules/admin/verbs/request_internet_sound.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_SYNDICATE_REPLY": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/verbs/pray.dm",
+          "code/modules/antagonists/_common/antag_datum.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_PLAY_INTERNET": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/request_internet_sound.dm"
+        ],
+        "contexts": {}
+      },
+      "VV_HREF_TARGET_1V": {
+        "count": 6,
+        "samples": [
+          "code/modules/admin/view_variables/debug_variables.dm",
+          "code/modules/admin/view_variables/debug_variables.dm",
+          "code/modules/admin/view_variables/debug_variables.dm"
+        ],
+        "contexts": {}
+      },
+      "VV_HTML_ENCODE": {
+        "count": 4,
+        "samples": [
+          "code/modules/admin/view_variables/debug_variables.dm",
+          "code/modules/admin/view_variables/debug_variables.dm",
+          "code/modules/admin/view_variables/debug_variables.dm"
+        ],
+        "contexts": {}
+      },
+      "span_syndradio": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/_common/antag_datum.dm"
+        ],
+        "contexts": {}
+      },
+      "span_alertwarning": {
+        "count": 2,
+        "samples": [
+          "code/modules/antagonists/_common/antag_spawner.dm",
+          "code/modules/antagonists/_common/antag_spawner.dm"
+        ],
+        "contexts": {}
+      },
+      "HAS_TRAIT_FROM": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/abductor/equipment/gear/abductor_clothing.dm"
+        ],
+        "contexts": {}
+      },
+      "span_abductor": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/abductor/equipment/gear/abductor_items.dm"
+        ],
+        "contexts": {}
+      },
+      "ishuman": {
+        "count": 4,
+        "samples": [
+          "code/modules/antagonists/blood_worm/actions/spit_blood.dm",
+          "code/modules/antagonists/blood_worm/actions/spit_blood.dm",
+          "code/modules/antagonists/heretic/heretic_monsters.dm"
+        ],
+        "contexts": {}
+      },
+      "lerp": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/blood_worm/actions/spit_blood.dm"
+        ],
+        "contexts": {}
+      },
+      "span_hear": {
+        "count": 4,
+        "samples": [
+          "code/modules/antagonists/heretic/heretic_antag.dm",
+          "code/modules/fishing/sources/subtypes/rifts.dm",
+          "code/modules/mob/living/living_defense.dm"
+        ],
+        "contexts": {}
+      },
+      "span_mansus": {
+        "count": 2,
+        "samples": [
+          "code/modules/antagonists/heretic/heretic_antag.dm",
+          "code/modules/fishing/sources/subtypes/rifts.dm"
+        ],
+        "contexts": {}
+      },
+      "pick_list": {
+        "count": 2,
+        "samples": [
+          "code/modules/antagonists/heretic/heretic_antag.dm",
+          "code/modules/antagonists/heretic/heretic_knowledge.dm"
+        ],
+        "contexts": {}
+      },
+      "STRIP_HTML_FULL": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/heretic/knowledge/side_knowledge/tier_two.dm"
+        ],
+        "contexts": {}
+      },
+      "isspaceturf": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/heretic/knowledge/void_lore.dm"
+        ],
+        "contexts": {}
+      },
+      "span_revenbignotice": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/revenant/revenant_blight.dm"
+        ],
+        "contexts": {}
+      },
+      "values_cut_under": {
+        "count": 2,
+        "samples": [
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm"
+        ],
+        "contexts": {}
+      },
+      "values_dot": {
+        "count": 7,
+        "samples": [
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm"
+        ],
+        "contexts": {}
+      },
+      "values_sum": {
+        "count": 10,
+        "samples": [
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm"
+        ],
+        "contexts": {}
+      },
+      "SANITIZE_FILENAME": {
+        "count": 4,
+        "samples": [
+          "code/modules/autowiki/pages/soup.dm",
+          "code/modules/autowiki/pages/surgery.dm",
+          "code/modules/autowiki/pages/surgery.dm"
+        ],
+        "contexts": {}
+      },
+      "span_purple": {
+        "count": 1,
+        "samples": [
+          "code/modules/buildmode/submodes/variable_edit.dm"
+        ],
+        "contexts": {}
+      },
+      "boxed_message": {
+        "count": 1,
+        "samples": [
+          "code/modules/buildmode/submodes/variable_edit.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_KICK": {
+        "count": 3,
+        "samples": [
+          "code/modules/client/client_procs.dm",
+          "code/modules/client/client_procs.dm",
+          "code/modules/client/client_procs.dm"
+        ],
+        "contexts": {}
+      },
+      "IsByondMember": {
+        "count": 1,
+        "samples": [
+          "code/modules/client/client_procs.dm"
+        ],
+        "contexts": {}
+      },
+      "Export": {
+        "count": 1,
+        "samples": [
+          "code/modules/client/client_procs.dm",
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm"
+        ],
+        "contexts": {}
+      },
+      "span_big": {
+        "count": 1,
+        "samples": [
+          "code/modules/client/verbs/ooc.dm"
+        ],
+        "contexts": {}
+      },
+      "findtext_char": {
+        "count": 1,
+        "samples": [
+          "code/modules/client/verbs/ooc.dm"
+        ],
+        "contexts": {}
+      },
+      "HAS_MIND_TRAIT": {
+        "count": 3,
+        "samples": [
+          "code/modules/fishing/fish/_fish.dm",
+          "code/modules/fishing/fish/_fish.dm",
+          "code/modules/mob/living/basic/basic.dm"
+        ],
+        "contexts": {}
+      },
+      "pick_list_replacements": {
+        "count": 21,
+        "samples": [
+          "code/modules/hallucination/fake_chat.dm",
+          "code/modules/hallucination/fake_chat.dm",
+          "code/modules/hallucination/fake_chat.dm"
+        ],
+        "contexts": {}
+      },
+      "span_admin": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/dead/observer/observer.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_FULLMONTY_NONAME": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/dead/observer/observer.dm"
+        ],
+        "contexts": {}
+      },
+      "span_cult_large": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/basic/blob_minions/blobbernaut.dm"
+        ],
+        "contexts": {}
+      },
+      "issilicon": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/basic/bots/_bots.dm"
+        ],
+        "contexts": {}
+      },
+      "span_infoplain": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/basic/bots/medbot/medbot.dm"
+        ],
+        "contexts": {}
+      },
+      "RUNECHAT_BOLD": {
+        "count": 4,
+        "samples": [
+          "code/modules/mob/living/basic/bots/mulebot/mulebot_ai.dm",
+          "code/modules/mob/living/basic/bots/mulebot/mulebot_ai.dm",
+          "code/modules/mob/living/basic/bots/secbot/secbot.dm"
+        ],
+        "contexts": {}
+      },
+      "span_message": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/basic/drone/drone_say.dm"
+        ],
+        "contexts": {}
+      },
+      "span_boldbig": {
+        "count": 3,
+        "samples": [
+          "code/modules/mob/living/basic/pets/cat/keeki.dm",
+          "code/modules/mob/living/basic/pets/dog/dog_subtypes.dm",
+          "code/modules/mob/living/basic/space_fauna/bear/_bear.dm"
+        ],
+        "contexts": {}
+      },
+      "span_revenwarning": {
+        "count": 2,
+        "samples": [
+          "code/modules/mob/living/basic/space_fauna/revenant/revenant_harvest.dm",
+          "code/modules/mob/living/basic/space_fauna/revenant/revenant_harvest.dm"
+        ],
+        "contexts": {}
+      },
+      "span_noticealien": {
+        "count": 3,
+        "samples": [
+          "code/modules/mob/living/carbon/alien/adult/alien_powers.dm",
+          "code/modules/mob/living/carbon/alien/adult/alien_powers.dm",
+          "code/modules/mob/living/carbon/human/species_types/jellypeople.dm"
+        ],
+        "contexts": {}
+      },
+      "span_alertalien": {
+        "count": 2,
+        "samples": [
+          "code/modules/mob/living/carbon/alien/adult/alien_powers.dm",
+          "code/modules/mob/living/carbon/human/species_types/jellypeople.dm"
+        ],
+        "contexts": {}
+      },
+      "VV_HREF_TARGETREF_1V": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/living.dm"
+        ],
+        "contexts": {}
+      },
+      "NAMEOF": {
+        "count": 9,
+        "samples": [
+          "code/modules/mob/living/living.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {}
+      },
+      "APERTURE_TO_METERS": {
+        "count": 2,
+        "samples": [
+          "code/modules/modular_computers/file_system/programs/maintenance/camera.dm",
+          "code/modules/modular_computers/file_system/programs/maintenance/camera.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_LOOKUP": {
+        "count": 1,
+        "samples": [
+          "code/modules/modular_computers/file_system/programs/nanopaint.dm"
+        ],
+        "contexts": {}
+      },
+      "ADMIN_PRINT_FAX": {
+        "count": 1,
+        "samples": [
+          "code/modules/paperwork/fax.dm"
+        ],
+        "contexts": {}
+      },
+      "GET_TURF_BELOW": {
+        "count": 1,
+        "samples": [
+          "code/modules/power/multiz.dm"
+        ],
+        "contexts": {}
+      },
+      "GET_TURF_ABOVE": {
+        "count": 1,
+        "samples": [
+          "code/modules/power/multiz.dm"
+        ],
+        "contexts": {}
+      },
+      "IS_UNCONSCIOUS_OR_CRIT": {
+        "count": 1,
+        "samples": [
+          "code/modules/projectiles/guns/ballistic/revolver.dm"
+        ],
+        "contexts": {}
+      },
+      "isfloorturf": {
+        "count": 5,
+        "samples": [
+          "code/modules/projectiles/projectile/energy/stun.dm",
+          "code/modules/projectiles/projectile/energy/stun.dm",
+          "code/modules/projectiles/projectile/energy/stun.dm"
+        ],
+        "contexts": {}
+      },
+      "IS_HERETIC": {
+        "count": 1,
+        "samples": [
+          "code/modules/religion/dreams/dream_portent.dm"
+        ],
+        "contexts": {}
+      },
+      "HAS_SURGERY_STATE": {
+        "count": 1,
+        "samples": [
+          "code/modules/surgery/operations/_basic_surgery_state.dm"
+        ],
+        "contexts": {}
+      },
+      "FORMAT_LIMB_OWNER": {
+        "count": 165,
+        "samples": [
+          "code/modules/surgery/operations/operation_add_limb.dm",
+          "code/modules/surgery/operations/operation_add_limb.dm",
+          "code/modules/surgery/operations/operation_add_limb.dm"
+        ],
+        "contexts": {}
+      },
+      "CONDITIONAL_DAMAGE_MESSAGE": {
+        "count": 5,
+        "samples": [
+          "code/modules/surgery/operations/operation_healing.dm",
+          "code/modules/surgery/operations/operation_healing.dm",
+          "code/modules/surgery/operations/operation_healing.dm"
+        ],
+        "contexts": {}
+      },
+      "FORMAT_ORGAN_OWNER": {
+        "count": 85,
+        "samples": [
+          "code/modules/surgery/operations/operation_lobotomy.dm",
+          "code/modules/surgery/operations/operation_lobotomy.dm",
+          "code/modules/surgery/operations/operation_lobotomy.dm"
+        ],
+        "contexts": {}
+      },
+      "obj": {
+        "count": 1,
+        "samples": [
+          "code/modules/surgery/surgery_tray.dm"
+        ],
+        "contexts": {}
+      },
+      "file2text": {
+        "count": 4,
+        "samples": [
+          "code/modules/tgs/core/byond_world_export.dm",
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgui/tgui_window.dm"
+        ],
+        "contexts": {}
+      },
+      "TEST_ASSERT": {
+        "count": 4,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/fish_unit_tests.dm"
+        ],
+        "contexts": {}
+      },
+      "TEST_OUTPUT_YELLOW": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/unit_test.dm"
+        ],
+        "contexts": {}
+      },
+      "TEST_OUTPUT_GREEN": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/unit_test.dm"
+        ],
+        "contexts": {}
+      },
+      "TEST_OUTPUT_RED": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/unit_test.dm"
+        ],
+        "contexts": {}
+      },
+      "in_range": {
+        "count": 1,
+        "samples": [
+          "code/modules/vehicles/motorized_wheelchair.dm"
+        ],
+        "contexts": {}
+      },
+      "tan": {
+        "count": 1,
+        "samples": [
+          "code/modules/wiremod/components/math/trigonometry.dm"
+        ],
+        "contexts": {}
+      }
+    },
+    "brokenProps": {
+      "x": 1185,
+      "y": 1109,
+      "z": 2299,
+      "loc": 3090,
+      "type": 2003,
+      "len": 2244,
+      "contents": 491,
+      "dir": 597,
+      "overlays": 126
+    },
+    "topFiles": {},
+    "errorClasses": {
+      "#warn: TG0001 qdel REFERENCE_TRACKING enabled": {
+        "errors": 0,
+        "warnings": 1,
+        "samples": [
+          "code/__DEFINES/qdel.dm:22"
+        ],
+        "tokens": {}
+      },
+      "Unknown preprocessor directive '<x>' ignored": {
+        "errors": 0,
+        "warnings": 6,
+        "samples": [
+          "code/__HELPERS/logging/_logging.dm:79",
+          "code/game/atoms_movable.dm:163",
+          "code/game/atoms_movable.dm:164"
+        ],
+        "tokens": {}
+      },
+      "#warn: compiling in TESTING mode. testing() debug messages will be visible.": {
+        "errors": 0,
+        "warnings": 1,
+        "samples": [
+          "code/_compile_options.dm:156"
+        ],
+        "tokens": {}
+      },
+      "Unexpected token '<x>' in type block": {
+        "errors": 18,
+        "warnings": 0,
+        "samples": [
+          "code/controllers/subsystem/mobs.dm:10",
+          "code/controllers/subsystem/mobs.dm:10",
+          "code/controllers/subsystem/mobs.dm:11"
+        ],
+        "tokens": {}
+      },
+      "Unexpected token '<x>' in expression": {
+        "errors": 124,
+        "warnings": 0,
+        "samples": [
+          "code/datums/brain_damage/imaginary_friend.dm:190",
+          "code/datums/components/spirit_holding.dm:67",
+          "code/datums/components/spirit_holding.dm:67"
+        ],
+        "tokens": {}
+      },
+      "Unterminated regex literal": {
+        "errors": 6,
+        "warnings": 0,
+        "samples": [
+          "code/game/objects/items/devices/spyglasses.dm:85",
+          "code/game/objects/structures/cannons/cannon_instructions.dm:4",
+          "code/modules/antagonists/nukeop/equipment/overwatch_tools.dm:6"
+        ],
+        "tokens": {}
+      },
+      "Expected identifier after '<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/game/turfs/closed/wall/concrete_walls.dm:115"
+        ],
+        "tokens": {}
+      },
+      "#warn: The prefered_security_department check in code/modules/client/preferences/security_department.dm is no longer necessary.": {
+        "errors": 0,
+        "warnings": 1,
+        "samples": [
+          "code/modules/client/preferences_savefile.dm:401"
+        ],
+        "tokens": {}
+      },
+      "Unexpected top-level token '<x>'": {
+        "errors": 20,
+        "warnings": 0,
+        "samples": [
+          "code/modules/tgs/v5/__interop_version.dm:1",
+          "tools/CatchUnescapedBrackets/fail.dm:7",
+          "tools/CatchUnescapedBrackets/fail.dm:7"
+        ],
+        "tokens": {}
+      },
+      "Unterminated string literal": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/tooltip/tooltip.dm:117"
+        ],
+        "tokens": {}
+      },
+      "Unsupported #pragma '<x>' ignored": {
+        "errors": 0,
+        "warnings": 30,
+        "samples": [
+          "tools/ci/od_lints.dm:2",
+          "tools/ci/od_lints.dm:3",
+          "tools/ci/od_lints.dm:4"
+        ],
+        "tokens": {}
+      }
+    },
+    "procCount": 66502,
+    "typeCount": 48578
+  }
+}

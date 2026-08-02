@@ -117,6 +117,24 @@ export class DMParser {
 
       const token = this.peek();
 
+      // Leading-slash-less declarations: mob/verb/say(...), world/New(),
+      // obj/item/sword — the leading type name lexes as a Keyword/Identifier
+      // and the rest as a TypePath; synthesize the full path and fall
+      // through to the TypePath declaration handling below.
+      const nextTok = this.peekNext();
+      if ((token.type === TokenType.Keyword || token.type === TokenType.Identifier) &&
+          nextTok && nextTok.type === TokenType.TypePath) {
+        const kwTok = this.advance();
+        const pathTok = this.advance();
+        this.tokens.splice(this.pos, 0, {
+          type: TokenType.TypePath,
+          value: '/' + kwTok.value + pathTok.value,
+          line: pathTok.line,
+          column: pathTok.column
+        });
+        continue;
+      }
+
       // Top level type declaration (e.g. /obj/item/weapon/sword or /obj/item/proc/swing)
       if (token.type === TokenType.TypePath) {
         let rawPath = token.value;
@@ -480,6 +498,13 @@ export class DMParser {
     if (name && this.matchOperator('=')) {
       this.parseExpression();
     }
+    // `in`-clause: `target as mob in oview(1)` — the target expression is a
+    // visibility/range filter, not a parameter; consume it so it never
+    // becomes a phantom parameter (it would shift every call site).
+    if (name && this.peek().value === 'in') {
+      this.advance();
+      this.parseExpression();
+    }
     if (!name) return null;
     return { name, typeHint };
   }
@@ -519,15 +544,51 @@ export class DMParser {
    * full expression tree. Globals are declared at top level where no statement
    * parser is running, so their initializers are re-lexed into a sub-parser.
    */
-  public parseInitializerTextToExpr(text: string): ExpressionNode | null {
+  public parseInitializerTextToExpr(text: string, collector?: DiagnosticCollector): ExpressionNode | null {
     if (!text) return null;
     try {
       const tokens = new DMLexer(text).tokenize();
-      const sub = new DMParser(tokens, this.diagnostics);
-      return sub.parseExpression() ?? null;
+      const sub = new DMParser(tokens, collector ?? this.diagnostics);
+      const expr = sub.parseExpression() ?? null;
+      if (collector && collector.hasErrors()) return null;
+      return expr;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Split a raw string value into literal text and [interpolation] chunks,
+   * mirroring the lexer's bracket scan (nested brackets count). Returns a
+   * single element when there is no interpolation.
+   */
+  private splitInterpolation(value: string): Array<string | { interp: string }> {
+    const parts: Array<string | { interp: string }> = [];
+    let current = '';
+    let i = 0;
+    while (i < value.length) {
+      const ch = value[i];
+      if (ch === '[') {
+        let depth = 1;
+        let j = i + 1;
+        while (j < value.length && depth > 0) {
+          if (value[j] === '[') depth++;
+          else if (value[j] === ']') depth--;
+          j++;
+        }
+        if (depth === 0) {
+          parts.push(current);
+          current = '';
+          parts.push({ interp: value.substring(i + 1, j - 1) });
+          i = j;
+          continue;
+        }
+      }
+      current += ch;
+      i++;
+    }
+    parts.push(current);
+    return parts;
   }
 
   private parseMemberDecl(targetTypeNode: DMTypeDeclNode): void {
@@ -801,263 +862,23 @@ export class DMParser {
       }
 
       if (token.value === 'for') {
-        this.advance();
-        this.matchPunctuation('(');
-        let loopVar = '';
-        if (this.isType(TokenType.Identifier)) {
-          loopVar = this.advance().value;
-        } else if (this.peek().value === 'var') {
-          // for(var/i in list) or for(var i in list)
-          this.advance();
-          if (this.isType(TokenType.TypePath)) {
-            const pathVal = this.advance().value;
-            const lastSlash = pathVal.lastIndexOf('/');
-            loopVar = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
-          } else if (this.isType(TokenType.Identifier)) {
-            loopVar = this.advance().value;
-          } else if (this.isType(TokenType.Keyword)) {
-            // for(var/turf in turfs) — type keyword used as the loop variable name
-            loopVar = this.advance().value;
-          } else if (this.isType(TokenType.Operator) && this.peek().value === '/') {
-            this.advance();
-            if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
-              loopVar = this.advance().value;
-            }
-          }
-        }
-        this.skipNewlines();
-        // DM multi-var loop: for(var/gas_path, amount in gasmix.moles) — the
-        // ', X' groups are only loop variables when the head contains a
-        // top-level 'in'; otherwise the ',' starts a C-style for with a bare
-        // expression init: for(words, words > 0, words--).
-        if (this.peek().value === ',' && this.isMultiVarLoopHead()) {
-          while (this.matchPunctuation(',')) {
-            if (this.isType(TokenType.TypePath)) {
-              this.advance();
-            } else if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
-              this.advance();
-            }
-          }
-        }
-        // for(var/x as anything in list) — 'as' filter clause; parse and drop
-        // the type hint so the 'in' clause below still matches.
-        if (this.peek().value === 'as') {
-          this.advance();
-          while (!this.isType(TokenType.EOF) && this.peek().value !== 'in') {
-            this.advance();
-          }
-        }
-        if (this.peek().value === 'in') {
-          this.advance();
-          const loopRange = this.parseExpression();
-          let step: ExpressionNode | undefined;
-          if (this.peek().value === 'step') {
-            this.advance();
-            step = this.parseExpression();
-          }
-          this.matchPunctuation(')');
-          this.skipNewlines();
-          let loopBody: DMStatementNode[] = [];
-          if (this.isType(TokenType.Indent)) {
-            this.advance();
-            loopBody = this.parseProcBody();
-          } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-            this.advance();
-            loopBody = this.parseProcBody(true);
-            this.matchPunctuation('}');
-          }
-          statements.push({ type: 'ForStatement', loopVariable: loopVar, loopRange, step, loopBody });
-          continue;
-        }
-        if (loopVar && this.matchPunctuation(')')) {
-          // for(var/datum/thing) — iterate all instances of the declared type
-          this.skipNewlines();
-          let loopBody: DMStatementNode[] = [];
-          if (this.isType(TokenType.Indent)) {
-            this.advance();
-            loopBody = this.parseProcBody();
-          } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-            this.advance();
-            loopBody = this.parseProcBody(true);
-            this.matchPunctuation('}');
-          }
-          statements.push({ type: 'ForStatement', loopVariable: loopVar, loopRange: undefined, step: undefined, loopBody });
-          continue;
-        }
-        if (loopVar && this.matchOperator('=')) {
-          // DM C-style for: for(var/i = init, cond, incr)
-          const init = this.parseExpression();
-          if (init.type === 'binary' && init.operator === 'to') {
-            // Classic DM form: for(var/i = 1 to 5)
-            let step: ExpressionNode | undefined;
-            if (this.peek().value === 'step') {
-              this.advance();
-              step = this.parseExpression();
-            }
-            this.matchPunctuation(')');
-            this.skipNewlines();
-            let loopBody: DMStatementNode[] = [];
-            if (this.isType(TokenType.Indent)) {
-              this.advance();
-              loopBody = this.parseProcBody();
-            } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-              this.advance();
-              loopBody = this.parseProcBody(true);
-              this.matchPunctuation('}');
-            }
-            const loopRange: ExpressionNode = { type: 'range', start: init.left, end: init.right };
-            statements.push({ type: 'ForStatement', loopVariable: loopVar, loopRange, step, loopBody });
-            continue;
-          }
-          if (this.matchPunctuation(',') || this.matchPunctuation(';')) {
-            const condition = this.parseExpression();
-            this.matchPunctuation(',') || this.matchPunctuation(';');
-            const increment = this.parseExpression();
-            this.matchPunctuation(')');
-            this.skipNewlines();
-            let loopBody: DMStatementNode[] = [];
-            if (this.isType(TokenType.Indent)) {
-              this.advance();
-              loopBody = this.parseProcBody();
-            } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-              this.advance();
-              loopBody = this.parseProcBody(true);
-              this.matchPunctuation('}');
-            }
-            statements.push({
-              type: 'CForStatement',
-              loopVariable: loopVar,
-              init,
-              condition,
-              increment,
-              loopBody
-            });
-            continue;
-          }
-        }
-
-        // C-style for with a bare expression init: for(words, words>0, words--)
-        // — the first expression was already consumed as loopVar; the ';' form
-        // has an empty init; compound-assign inits (for(i += x, ...)) parse
-        // the whole init as an expression.
-        if (this.peek().value === ',' || this.peek().value === ';' ||
-            this.peek().value === '+=' || this.peek().value === '-=' || this.peek().value === '*=' || this.peek().value === '/=' ||
-            this.peek().value === '%=' || this.peek().value === '&=' || this.peek().value === '|=' || this.peek().value === '^=') {
-          let init: ExpressionNode | undefined;
-        if (this.peek().value === ',' || this.peek().value === ';') {
-          if (loopVar) {
-            init = { type: 'variable', name: loopVar };
-          }
-          if (this.peek().value === ',') this.advance();
-          else this.advance(); // ';'
-        } else if (loopVar) {
-          // for(i += 1, cond, incr) — loopVar already holds the bare loop var;
-          // rebuild the compound assignment from it.
-          const op = this.advance().value;
-          const right = this.parseExpression(1);
-          init = {
-            type: 'assignment',
-            target: loopVar,
-            value: {
-              type: 'binary',
-              operator: op.slice(0, -1),
-              left: { type: 'variable', name: loopVar },
-              right,
-            },
-          };
-          this.matchPunctuation(',') || this.matchPunctuation(';');
-        } else {
-          init = this.parseExpression();
-        }
-          const condition = this.parseExpression();
-          this.matchPunctuation(',') || this.matchPunctuation(';');
-          const increment = this.parseExpression();
-          this.matchPunctuation(')');
-          this.skipNewlines();
-          let loopBody: DMStatementNode[] = [];
-          if (this.isType(TokenType.Indent)) {
-            this.advance();
-            loopBody = this.parseProcBody();
-          } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-            this.advance();
-            loopBody = this.parseProcBody(true);
-            this.matchPunctuation('}');
-          }
-          statements.push({
-            type: 'CForStatement',
-            loopVariable: loopVar,
-            init,
-            condition,
-            increment,
-            loopBody
-          });
-          continue;
-        }
+        const forStmt = this.parseForStatement();
+        if (forStmt) statements.push(forStmt);
+        continue;
       }
 
       if (token.value === 'do') {
-        this.advance();
-        this.skipNewlines();
-        let loopBody: DMStatementNode[] = [];
-        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-          this.advance();
-          loopBody = this.parseProcBody(true);
-          this.matchPunctuation('}');
-        } else if (this.isType(TokenType.Indent)) {
-          this.advance();
-          loopBody = this.parseProcBody();
-        }
-        this.skipNewlines();
-        if (this.peek().value === 'while') {
-          this.advance();
-          const condition = this.parseExpression();
-          statements.push({ type: 'DoWhileStatement', condition, loopBody });
-          continue;
-        }
-        const bad = this.peek();
-        this.diagnostics.error(`Expected 'while (condition)' after 'do' block, found '${bad.value}'`, bad.line, bad.column);
-        statements.push({ type: 'DoWhileStatement', condition: undefined, loopBody });
+        statements.push(this.parseDoWhileStatement());
         continue;
       }
 
       if (token.value === 'while') {
-        this.advance();
-        const condition = this.parseExpression();
-        this.skipNewlines();
-        let loopBody: DMStatementNode[] = [];
-        if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-          this.advance();
-          loopBody = this.parseProcBody(true);
-          this.matchPunctuation('}');
-        } else if (this.isType(TokenType.Indent)) {
-          this.advance();
-          loopBody = this.parseProcBody();
-        }
-        statements.push({ type: 'WhileStatement', condition, loopBody });
+        statements.push(this.parseWhileStatement());
         continue;
       }
 
       if (token.value === 'sleep' || token.value === 'spawn') {
-        const kind = token.value;
-        this.advance();
-        let timeExpr: ExpressionNode | undefined;
-        if (this.matchPunctuation('(')) {
-          timeExpr = this.parseExpression();
-          this.matchPunctuation(')');
-        }
-        let body: DMStatementNode[] = [];
-        if (kind === 'spawn') {
-          this.skipNewlines();
-          if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-            this.advance();
-            body = this.parseProcBody(true);
-            this.matchPunctuation('}');
-          } else if (this.isType(TokenType.Indent)) {
-            this.advance();
-            body = this.parseProcBody();
-          }
-        }
-        statements.push({ type: kind === 'sleep' ? 'SleepStatement' : 'SpawnStatement', timeExpr, body });
+        statements.push(this.parseSleepSpawnStatement());
         continue;
       }
 
@@ -1093,114 +914,7 @@ export class DMParser {
 
       // switch (x) with BYOND case syntax: if (v1, v2) / else
       if (token.value === 'switch') {
-        this.advance();
-        const switchValue = this.parseExpression();
-        this.skipNewlines();
-        const cases: { values: ExpressionNode[]; body: DMStatementNode[] }[] = [];
-        let defaultBody: DMStatementNode[] | undefined;
-        // Brace form: switch(x) { if(1) {...} else {...} } — the '{' may sit
-        // on its own indented line (macro-expanded switch bodies).
-        let braceForm = this.isType(TokenType.Punctuation) && this.peek().value === '{';
-        // Indents this handler consumed; the matching Dedents are drained at
-        // the end so enclosing scopes still see their own Dedent.
-        let pendingIndents = 0;
-        if (this.isType(TokenType.Indent) || braceForm) {
-          if (this.isType(TokenType.Indent)) {
-            this.advance(); // block Indent
-            pendingIndents += 1;
-          }
-          if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-            this.advance();
-            braceForm = true;
-          }
-          while (true) {
-            if (this.isType(TokenType.EOF)) break;
-            if (!braceForm && this.isType(TokenType.Dedent)) break;
-            if (braceForm && this.isType(TokenType.Punctuation) && this.peek().value === '}') break;
-            this.skipNewlines();
-            if (braceForm && this.isType(TokenType.Indent)) {
-              this.advance(); // indentation is irrelevant inside { } switch blocks
-              pendingIndents += 1;
-            }
-            if (this.isType(TokenType.Dedent) || this.isType(TokenType.EOF)) break;
-            if (braceForm && this.isType(TokenType.Punctuation) && this.peek().value === '}') break;
-            if (this.peek().value === 'if') {
-              this.advance();
-              this.matchPunctuation('(');
-              const values: ExpressionNode[] = [];
-              while (!this.matchPunctuation(')') && !this.isType(TokenType.EOF)) {
-                values.push(this.parseExpression());
-                if (this.matchPunctuation(',')) continue;
-              }
-              this.skipNewlines();
-              let body: DMStatementNode[] = [];
-              if (this.isType(TokenType.Indent)) {
-                this.advance();
-                // parseProcBody drains its own first Dedent (back to the case
-                // level); further Dedents (switch end, enclosing scopes) are
-                // left for the break-check / end handling below.
-                body = this.parseProcBody();
-              } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-                this.advance();
-                body = this.parseProcBody(true);
-                this.matchPunctuation('}');
-              } else if (!braceForm && !this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !this.isType(TokenType.Newline)) {
-                body = [this.parseSingleStatement()];
-              } else if (braceForm && !this.isType(TokenType.Newline) && !this.isType(TokenType.EOF) && !(this.isType(TokenType.Punctuation) && this.peek().value === '}')) {
-                body = [this.parseSingleStatement()];
-              }
-              cases.push({ values, body });
-              this.skipNewlines();
-              if (!braceForm && !this.isType(TokenType.EOF) && this.peek().value !== 'if' && this.peek().value !== 'else') break;
-            } else if (this.peek().value === 'else') {
-              this.advance();
-              this.skipNewlines();
-              if (this.isType(TokenType.Indent)) {
-                this.advance();
-                defaultBody = this.parseProcBody();
-              } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-                this.advance();
-                defaultBody = this.parseProcBody(true);
-                this.matchPunctuation('}');
-              } else if (!braceForm && !this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !this.isType(TokenType.Newline)) {
-                defaultBody = [this.parseSingleStatement()];
-              } else if (braceForm && !this.isType(TokenType.Newline) && !this.isType(TokenType.EOF) && !(this.isType(TokenType.Punctuation) && this.peek().value === '}')) {
-                defaultBody = [this.parseSingleStatement()];
-              }
-              if (!braceForm && !this.isType(TokenType.EOF) && this.peek().value !== 'if' && this.peek().value !== 'else') break;
-            } else {
-              const bad = this.advance();
-              this.diagnostics.error(`Unexpected token '${bad.value}' in switch block`, bad.line, bad.column);
-            }
-          }
-          if (braceForm) {
-            // Inside braces, Dedents are cosmetic — skip them, then the '}'.
-            while (this.isType(TokenType.Dedent)) {
-              this.advance();
-              pendingIndents -= 1;
-            }
-            if (this.isType(TokenType.Punctuation) && this.peek().value === '}') {
-              this.advance();
-            }
-            // The '}' may sit deeper than the switch itself (indented '{');
-            // drain the Dedents back to the switch's own level.
-            while (pendingIndents > 0) {
-              this.skipNewlines();
-              if (!this.isType(TokenType.Dedent)) break;
-              this.advance();
-              pendingIndents -= 1;
-            }
-          } else {
-            this.skipNewlines();
-            // Return from the case level to the switch's own level; the
-            // enclosing scope's Dedent is left for the enclosing parse loop.
-            if (pendingIndents > 0 && this.isType(TokenType.Dedent)) {
-              this.advance();
-              pendingIndents -= 1;
-            }
-          }
-        }
-        statements.push({ type: 'SwitchStatement', switchValue, cases, defaultBody });
+        statements.push(this.parseSwitchStatement());
         continue;
       }
 
@@ -1297,6 +1011,328 @@ export class DMParser {
 
     return statements;
   }
+  /**
+   * Parse the body of a control-flow statement: a { } block, an indented
+   * block, a single-line body (if (x) return 5), or nothing at all. A
+   * newline-delimited statement on the following line is NOT the body — DM
+   * ends the statement at the newline.
+   */
+  private parseLoopBody(): DMStatementNode[] {
+    const parseBlock = (): DMStatementNode[] => {
+      if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+        this.advance();
+        const body = this.parseProcBody(true);
+        this.matchPunctuation('}');
+        return body;
+      }
+      if (this.isType(TokenType.Indent)) {
+        this.advance();
+        return this.parseProcBody();
+      }
+      return [];
+    };
+    if (this.isType(TokenType.Newline) || this.isType(TokenType.Dedent) || this.isType(TokenType.EOF)) {
+      this.skipNewlines();
+      return parseBlock();
+    }
+    if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+      return parseBlock();
+    }
+    if (this.isType(TokenType.Indent)) {
+      return parseBlock();
+    }
+    return [this.parseSingleStatement()];
+  }
+
+  private parseWhileStatement(): DMStatementNode {
+    this.advance(); // while
+    const condition = this.parseExpression();
+    const loopBody = this.parseLoopBody();
+    return { type: 'WhileStatement', condition, loopBody };
+  }
+
+  private parseDoWhileStatement(): DMStatementNode {
+    this.advance(); // do
+    const loopBody = this.parseLoopBody();
+    this.skipNewlines();
+    if (this.peek().value === 'while') {
+      this.advance();
+      const condition = this.parseExpression();
+      return { type: 'DoWhileStatement', condition, loopBody };
+    }
+    const bad = this.peek();
+    this.diagnostics.error(`Expected 'while (condition)' after 'do' block, found '${bad.value}'`, bad.line, bad.column);
+    return { type: 'DoWhileStatement', condition: undefined, loopBody };
+  }
+
+  private parseSleepSpawnStatement(): DMStatementNode {
+    const kind = this.advance().value; // sleep / spawn
+    let timeExpr: ExpressionNode | undefined;
+    if (this.matchPunctuation('(')) {
+      timeExpr = this.parseExpression();
+      this.matchPunctuation(')');
+    }
+    let body: DMStatementNode[] = [];
+    if (kind === 'spawn') {
+      this.skipNewlines();
+      if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+        this.advance();
+        body = this.parseProcBody(true);
+        this.matchPunctuation('}');
+      } else if (this.isType(TokenType.Indent)) {
+        this.advance();
+        body = this.parseProcBody();
+      } else if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF)) {
+        // spawn(5) foo() — single-line spawn body
+        body = [this.parseSingleStatement()];
+      }
+    }
+    return { type: kind === 'sleep' ? 'SleepStatement' : 'SpawnStatement', timeExpr, body };
+  }
+
+  private parseForStatement(): DMStatementNode | null {
+    this.advance();
+    this.matchPunctuation('(');
+    let loopVar = '';
+    if (this.isType(TokenType.Identifier)) {
+      loopVar = this.advance().value;
+    } else if (this.peek().value === 'var') {
+      // for(var/i in list) or for(var i in list)
+      this.advance();
+      if (this.isType(TokenType.TypePath)) {
+        const pathVal = this.advance().value;
+        const lastSlash = pathVal.lastIndexOf('/');
+        loopVar = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
+      } else if (this.isType(TokenType.Identifier)) {
+        loopVar = this.advance().value;
+      } else if (this.isType(TokenType.Keyword)) {
+        // for(var/turf in turfs) — type keyword used as the loop variable name
+        loopVar = this.advance().value;
+      } else if (this.isType(TokenType.Operator) && this.peek().value === '/') {
+        this.advance();
+        if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+          loopVar = this.advance().value;
+        }
+      }
+    }
+    this.skipNewlines();
+    // DM multi-var loop: for(var/gas_path, amount in gasmix.moles) — the
+    // ', X' groups are only loop variables when the head contains a
+    // top-level 'in'; otherwise the ',' starts a C-style for with a bare
+    // expression init: for(words, words > 0, words--).
+    if (this.peek().value === ',' && this.isMultiVarLoopHead()) {
+      while (this.matchPunctuation(',')) {
+        if (this.isType(TokenType.TypePath)) {
+          this.advance();
+        } else if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+          this.advance();
+        }
+      }
+    }
+    // for(var/x as anything in list) — 'as' filter clause; parse and drop
+    // the type hint so the 'in' clause below still matches.
+    if (this.peek().value === 'as') {
+      this.advance();
+      while (!this.isType(TokenType.EOF) && this.peek().value !== 'in') {
+        this.advance();
+      }
+    }
+    if (this.peek().value === 'in') {
+      this.advance();
+      const loopRange = this.parseExpression();
+      let step: ExpressionNode | undefined;
+      if (this.peek().value === 'step') {
+        this.advance();
+        step = this.parseExpression();
+      }
+      this.matchPunctuation(')');
+      const loopBody = this.parseLoopBody();
+      return { type: 'ForStatement', loopVariable: loopVar, loopRange, step, loopBody };
+    }
+    if (loopVar && this.matchPunctuation(')')) {
+      // for(var/datum/thing) — iterate all instances of the declared type
+      const loopBody = this.parseLoopBody();
+      return { type: 'ForStatement', loopVariable: loopVar, loopRange: undefined, step: undefined, loopBody };
+    }
+    if (loopVar && this.matchOperator('=')) {
+      // DM C-style for: for(var/i = init, cond, incr)
+      const init = this.parseExpression();
+      if (init.type === 'binary' && init.operator === 'to') {
+        // Classic DM form: for(var/i = 1 to 5)
+        let step: ExpressionNode | undefined;
+        if (this.peek().value === 'step') {
+          this.advance();
+          step = this.parseExpression();
+        }
+        this.matchPunctuation(')');
+        const loopBody = this.parseLoopBody();
+        const loopRange: ExpressionNode = { type: 'range', start: init.left, end: init.right };
+        return { type: 'ForStatement', loopVariable: loopVar, loopRange, step, loopBody };
+      }
+      if (this.matchPunctuation(',') || this.matchPunctuation(';')) {
+        const condition = this.parseExpression();
+        this.matchPunctuation(',') || this.matchPunctuation(';');
+        const increment = this.parseExpression();
+        this.matchPunctuation(')');
+        const loopBody = this.parseLoopBody();
+        return { type: 'CForStatement', loopVariable: loopVar, init, condition, increment, loopBody };
+      }
+    }
+
+    // C-style for with a bare expression init: for(words, words>0, words--)
+    // — the first expression was already consumed as loopVar; the ';' form
+    // has an empty init; compound-assign inits (for(i += x, ...)) parse
+    // the whole init as an expression.
+    if (this.peek().value === ',' || this.peek().value === ';' ||
+        this.peek().value === '+=' || this.peek().value === '-=' || this.peek().value === '*=' || this.peek().value === '/=' ||
+        this.peek().value === '%=' || this.peek().value === '&=' || this.peek().value === '|=' || this.peek().value === '^=') {
+      let init: ExpressionNode | undefined;
+      if (this.peek().value === ',' || this.peek().value === ';') {
+        if (loopVar) {
+          init = { type: 'variable', name: loopVar };
+        }
+        if (this.peek().value === ',') this.advance();
+        else this.advance(); // ';'
+      } else if (loopVar) {
+        // for(i += 1, cond, incr) — loopVar already holds the bare loop var;
+        // rebuild the compound assignment from it.
+        const op = this.advance().value;
+        const right = this.parseExpression(1);
+        init = {
+          type: 'assignment',
+          target: loopVar,
+          value: {
+            type: 'binary',
+            operator: op.slice(0, -1),
+            left: { type: 'variable', name: loopVar },
+            right,
+          },
+        };
+        this.matchPunctuation(',') || this.matchPunctuation(';');
+      } else {
+        init = this.parseExpression();
+      }
+      const condition = this.parseExpression();
+      this.matchPunctuation(',') || this.matchPunctuation(';');
+      const increment = this.parseExpression();
+      this.matchPunctuation(')');
+      const loopBody = this.parseLoopBody();
+      return { type: 'CForStatement', loopVariable: loopVar, init, condition, increment, loopBody };
+    }
+    return null;
+  }
+
+  private parseSwitchStatement(): DMStatementNode {
+    this.advance();
+    const switchValue = this.parseExpression();
+    this.skipNewlines();
+    const cases: { values: ExpressionNode[]; body: DMStatementNode[] }[] = [];
+    let defaultBody: DMStatementNode[] | undefined;
+    // Brace form: switch(x) { if(1) {...} else {...} } — the '{' may sit
+    // on its own indented line (macro-expanded switch bodies).
+    let braceForm = this.isType(TokenType.Punctuation) && this.peek().value === '{';
+    // Indents this handler consumed; the matching Dedents are drained at
+    // the end so enclosing scopes still see their own Dedent.
+    let pendingIndents = 0;
+    if (this.isType(TokenType.Indent) || braceForm) {
+      if (this.isType(TokenType.Indent)) {
+        this.advance(); // block Indent
+        pendingIndents += 1;
+      }
+      if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+        this.advance();
+        braceForm = true;
+      }
+      while (true) {
+        if (this.isType(TokenType.EOF)) break;
+        if (!braceForm && this.isType(TokenType.Dedent)) break;
+        if (braceForm && this.isType(TokenType.Punctuation) && this.peek().value === '}') break;
+        this.skipNewlines();
+        if (braceForm && this.isType(TokenType.Indent)) {
+          this.advance(); // indentation is irrelevant inside { } switch blocks
+          pendingIndents += 1;
+        }
+        if (this.isType(TokenType.Dedent) || this.isType(TokenType.EOF)) break;
+        if (braceForm && this.isType(TokenType.Punctuation) && this.peek().value === '}') break;
+        if (this.peek().value === 'if') {
+          this.advance();
+          this.matchPunctuation('(');
+          const values: ExpressionNode[] = [];
+          while (!this.matchPunctuation(')') && !this.isType(TokenType.EOF)) {
+            values.push(this.parseExpression());
+            if (this.matchPunctuation(',')) continue;
+          }
+          this.skipNewlines();
+          let body: DMStatementNode[] = [];
+          if (this.isType(TokenType.Indent)) {
+            this.advance();
+            // parseProcBody drains its own first Dedent (back to the case
+            // level); further Dedents (switch end, enclosing scopes) are
+            // left for the break-check / end handling below.
+            body = this.parseProcBody();
+          } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+            this.advance();
+            body = this.parseProcBody(true);
+            this.matchPunctuation('}');
+          } else if (!braceForm && !this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !this.isType(TokenType.Newline)) {
+            body = [this.parseSingleStatement()];
+          } else if (braceForm && !this.isType(TokenType.Newline) && !this.isType(TokenType.EOF) && !(this.isType(TokenType.Punctuation) && this.peek().value === '}')) {
+            body = [this.parseSingleStatement()];
+          }
+          cases.push({ values, body });
+          this.skipNewlines();
+          if (!braceForm && !this.isType(TokenType.EOF) && this.peek().value !== 'if' && this.peek().value !== 'else') break;
+        } else if (this.peek().value === 'else') {
+          this.advance();
+          this.skipNewlines();
+          if (this.isType(TokenType.Indent)) {
+            this.advance();
+            defaultBody = this.parseProcBody();
+          } else if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
+            this.advance();
+            defaultBody = this.parseProcBody(true);
+            this.matchPunctuation('}');
+          } else if (!braceForm && !this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF) && !this.isType(TokenType.Newline)) {
+            defaultBody = [this.parseSingleStatement()];
+          } else if (braceForm && !this.isType(TokenType.Newline) && !this.isType(TokenType.EOF) && !(this.isType(TokenType.Punctuation) && this.peek().value === '}')) {
+            defaultBody = [this.parseSingleStatement()];
+          }
+          if (!braceForm && !this.isType(TokenType.EOF) && this.peek().value !== 'if' && this.peek().value !== 'else') break;
+        } else {
+          const bad = this.advance();
+          this.diagnostics.error(`Unexpected token '${bad.value}' in switch block`, bad.line, bad.column);
+        }
+      }
+      if (braceForm) {
+        // Inside braces, Dedents are cosmetic — skip them, then the '}'.
+        while (this.isType(TokenType.Dedent)) {
+          this.advance();
+          pendingIndents -= 1;
+        }
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '}') {
+          this.advance();
+        }
+        // The '}' may sit deeper than the switch itself (indented '{');
+        // drain the Dedents back to the switch's own level.
+        while (pendingIndents > 0) {
+          this.skipNewlines();
+          if (!this.isType(TokenType.Dedent)) break;
+          this.advance();
+          pendingIndents -= 1;
+        }
+      } else {
+        this.skipNewlines();
+        // Return from the case level to the switch's own level; the
+        // enclosing scope's Dedent is left for the enclosing parse loop.
+        if (pendingIndents > 0 && this.isType(TokenType.Dedent)) {
+          this.advance();
+          pendingIndents -= 1;
+        }
+      }
+    }
+    return { type: 'SwitchStatement', switchValue, cases, defaultBody };
+  }
+
   private parseSingleStatement(): DMStatementNode {
     const token = this.peek();
     if (token.value === 'var') {
@@ -1329,7 +1365,8 @@ export class DMParser {
     if (token.value === 'return') {
       this.advance();
       let returnValue: ExpressionNode | undefined;
-      if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent)) {
+      const nextVal = this.peek().value;
+      if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && nextVal !== ';' && nextVal !== '}') {
         returnValue = this.parseExpression();
       }
       return { type: 'ReturnStatement', returnValue };
@@ -1341,22 +1378,30 @@ export class DMParser {
     if (token.value === 'if') {
       return this.parseIfStatement();
     }
+    // Control-flow statements as single-line bodies (else while(...) x,
+    // if (y) for(var/i in list) z) — DM allows any statement here.
+    if (token.value === 'while') {
+      return this.parseWhileStatement();
+    }
+    if (token.value === 'do') {
+      return this.parseDoWhileStatement();
+    }
+    if (token.value === 'for') {
+      return this.parseForStatement() ?? { type: 'ExpressionStatement', expression: { type: 'literal', value: null, literalType: 'null' } };
+    }
+    if (token.value === 'sleep' || token.value === 'spawn') {
+      return this.parseSleepSpawnStatement();
+    }
+    if (token.value === 'switch') {
+      return this.parseSwitchStatement();
+    }
     return { type: 'ExpressionStatement', expression: this.parseExpression() };
   }
 
   private parseIfStatement(): DMStatementNode {
     this.advance(); // consume 'if'
     const condition = this.parseExpression();
-    this.skipNewlines();
-    let thenBranch: DMStatementNode[] = [];
-    if (this.isType(TokenType.Punctuation) && this.peek().value === '{') {
-      this.advance();
-      thenBranch = this.parseProcBody(true);
-      this.matchPunctuation('}');
-    } else if (this.isType(TokenType.Indent)) {
-      this.advance();
-      thenBranch = this.parseProcBody();
-    }
+    const thenBranch = this.parseLoopBody();
     let elseBranch: DMStatementNode[] | undefined;
     this.skipNewlines();
     // Macro-expanded one-line chains produce `if(x) { ... }; else ...` — a
@@ -1379,6 +1424,9 @@ export class DMParser {
       } else if (this.isType(TokenType.Indent)) {
         this.advance();
         elseBranch = this.parseProcBody();
+      } else if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && !this.isType(TokenType.EOF)) {
+        // Single-line else body: if (x) a else b
+        elseBranch = [this.parseSingleStatement()];
       }
     }
     return { type: 'IfStatement', condition, thenBranch, elseBranch };
@@ -1421,11 +1469,17 @@ export class DMParser {
       const op = token.value;
 
       // x/type — a TypePath token directly after a complete expression is
-      // division by a type constant (the lexer cannot distinguish these).
+      // division by one or more identifiers (the lexer merges a/b into
+      // a + TypePath(/b) when no whitespace separates them). Treat each path
+      // segment as a variable: a/b/c -> (a / b) / c. Real type constants are
+      // never used in divisor position without a separating operator.
       if (token.type === TokenType.TypePath) {
         this.advance();
-        const right: ExpressionNode = { type: 'literal', value: token.value, literalType: 'string' };
-        left = { type: 'binary', operator: '/', left, right };
+        const segments = token.value.split('/').filter((s) => s.length > 0);
+        for (const segment of segments) {
+          const right: ExpressionNode = { type: 'variable', name: segment };
+          left = { type: 'binary', operator: '/', left, right };
+        }
         continue;
       }
 
@@ -1549,6 +1603,10 @@ export class DMParser {
           left = { type: 'property_assignment', target: left.target, property: left.property, value: right } as any;
         } else if (left.type === 'index') {
           left = { type: 'index_assignment', target: left.target, index: left.index, value: right } as any;
+        } else {
+          // list("a" = 1) — associative key/value pair (only valid inside a
+          // list()/alist() argument list, where the emitter handles it).
+          left = { type: 'assoc_pair', key: left, value: right } as any;
         }
         continue;
       }
@@ -1621,10 +1679,28 @@ export class DMParser {
       return this.parsePostfix({ type: 'list', elements });
     }
 
-    // String literal
+    // String literal (with optional [expr] interpolation)
     if (token.type === TokenType.StringLiteral) {
       this.advance();
-      return { type: 'literal', value: token.value, literalType: 'string' };
+      const parts = this.splitInterpolation(token.value);
+      if (parts.length === 1) {
+        return { type: 'literal', value: token.value, literalType: 'string' };
+      }
+      // "a [x] b" — interleave literal text and re-parsed expressions,
+      // chained with string concatenation (DMValue.Add concatenates text).
+      let node: ExpressionNode = { type: 'literal', value: '', literalType: 'string' };
+      for (const part of parts) {
+        let piece: ExpressionNode;
+        if (typeof part === 'string') {
+          piece = { type: 'literal', value: part, literalType: 'string' };
+        } else {
+          const collector = new DiagnosticCollector();
+          const expr = this.parseInitializerTextToExpr(part.interp, collector);
+          piece = expr ?? { type: 'literal', value: part.interp, literalType: 'string' };
+        }
+        node = { type: 'binary', operator: '+', left: node, right: piece };
+      }
+      return this.parsePostfix(node);
     }
 
     // File literal
@@ -1839,19 +1915,26 @@ export class DMParser {
   }
 
   private getOperatorPrecedence(op: string): number {
+    // DM operator precedence (loosest to tightest), per the BYOND reference:
+    // assignments < ?: < || < && < | < ^ < & < ==/!=/~/in/as < relational <
+    // shift < + - < range < * / % < ** < access. The previous table ranked
+    // '?' tighter than every binary operator (x == b ? c : d parsed as
+    // x == (b ? c : d)) and collapsed & | ^ and << >> into the wrong levels.
     switch (op) {
-      case '||': case 'as': return 1;
-      case '<<': case '>>': return 1;
-      case '&&': return 2;
-      case 'in': case 'to': return 2;
-      case '==': case '!=': case '~=': case '~!': return 3;
-      case '<': case '<=': case '>': case '>=': return 4;
-      case '&': case '|': case '^': return 4;
-      case '+': case '-': return 5;
-      case '..': return 5; // range literal (1..5)
-      case '*': case '/': case '%': case '%%': case '**': return 6;
-      case '::': case ':': case '[': return 12; // static / dynamic member access, index
-      case '?': return 7; // ternary
+      case '||': return 2;
+      case '&&': return 3;
+      case '|': return 4;
+      case '^': return 5;
+      case '&': return 6;
+      case '==': case '!=': case '~=': case '~!': case 'in': case 'as': case 'to': return 7;
+      case '<': case '<=': case '>': case '>=': return 8;
+      case '<<': case '>>': return 9;
+      case '+': case '-': return 10;
+      case '..': return 11; // range literal (1..5)
+      case '*': case '/': case '%': case '%%': return 12;
+      case '**': return 13; // power binds tighter than * /
+      case '::': case ':': case '[': return 14; // static / dynamic member access, index
+      case '?': return 1; // ternary — looser than || (a || b ? c : d)
       case '=': case '+=': case '-=': case '*=': case '/=': case '%=': case '<<=': case '>>=': case '&=': case '|=': case '^=': case '||=': case '&&=': return 0; // lowest (right-associative)
       default: return -1;
     }

@@ -568,6 +568,17 @@ namespace Content.Server.DM
         ).join(', ')})`
       : node.arguments.map((a: any) => this.transpileExpression(a)).join(', ');
 
+    // DM associative literal: list("a" = 1, "b" = 2) — arguments are
+    // key/value pairs emitted through MakeListAssoc (plain args are values).
+    if ((node.name === 'list' || node.name === 'alist') && node.arguments.some((a: any) => a.type === 'assoc_pair')) {
+      const kv = node.arguments.map((a: any) =>
+        a.type === 'assoc_pair'
+          ? `${this.transpileExpression(a.key)}, ${this.transpileExpression(a.value)}`
+          : this.transpileExpression(a)
+      ).join(', ');
+      return `DMRuntimeHelpers.MakeListAssoc(${kv})`;
+    }
+
     // Invocation of a proc reference built with call(): f(...) where f is a
     // call(...) expression parses to a call node with an empty name and a
     // target. Must be handled before the generic target branch below.

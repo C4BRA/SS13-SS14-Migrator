@@ -1523,6 +1523,17 @@ namespace SS13.DM.Runtime
         }
 
         /// <summary>
+        /// DM associative literal: list("a" = 1, "b" = 2). Keys are
+        /// stringified exactly like index assignment (L["a"] = 1).
+        /// </summary>
+        public static DMValue MakeListAssoc(params DMValue[] kv)
+        {
+            var list = new DMList();
+            for (var i = 0; i + 1 < kv.Length; i += 2) list.SetAssoc(kv[i].ToString(), kv[i + 1]);
+            return DMValue.FromList(list);
+        }
+
+        /// <summary>
         /// DM range literal: 1..5 -&gt; list [1, 2, 3, 4, 5]; descending ranges
         /// (5..1) are supported. Used by for(x in 1..N) loops.
         /// </summary>

@@ -338,6 +338,64 @@ async function runCSharpEmitterTests() {
   assertContains(move, `DMRuntimeHelpers.Viewers(DMValue.FromNumber(2), `, 'viewers mapping');
   assertContains(move, `DMRuntimeHelpers.Hearers(DMValue.FromDatum(comp))`, 'hearers mapping');
 
+  // Test 34: Plan 09 B1 — DM precedence: ?: binds looser than == (x == b ? c : d)
+  const prec = transpileProc(`/obj/foo/proc/run()
+    var/x = a == b ? c : d
+    var/y = m || n && o
+    var/z = p + q << 2
+`);
+  assertContains(prec, `DMValue.Equals(comp.GetVar("a"), comp.GetVar("b")).IsTrue() ? comp.GetVar("c") : comp.GetVar("d")`, 'ternary binds looser than ==');
+  assertContains(prec, `(comp.GetVar("m")) is var __dm_t1 && !__dm_t1.IsTrue()`, '|| binds looser than &&');
+  assertContains(prec, `DMValue.Output(DMValue.Add(comp.GetVar("p"), comp.GetVar("q")), DMValue.FromNumber(2))`, 'shift binds looser than +');
+
+  // Test 35: Plan 09 B1 — a/b is division by a variable (not a type-path literal)
+  const div = transpileProc(`/obj/foo/proc/run()
+    var/x = a/b
+    var/y = a/b/c
+`);
+  assertContains(div, `DMValue.Divide(comp.GetVar("a"), comp.GetVar("b"))`, 'a/b divides by variable b');
+  assertContains(div, `DMValue.Divide(DMValue.Divide(comp.GetVar("a"), comp.GetVar("b")), comp.GetVar("c"))`, 'a/b/c chains divisions');
+
+  // Test 36: Plan 09 B1 — single-line bodies (if/while/for) are not dropped
+  const oneLine = transpileProc(`/obj/foo/proc/run()
+    if (x) return 5
+    if (y) return 6 else return 7
+    while (x) x = x + 1
+    for(z in list) z = z + 1
+`);
+  assertContains(oneLine, `if (comp.GetVar("x").IsTrue())\n            {\n                return DMValue.FromNumber(5);`, 'single-line if body');
+  assertContains(oneLine, `else\n            {\n                return DMValue.FromNumber(7);`, 'single-line else body');
+  assertContains(oneLine, `while (comp.GetVar("x").IsTrue())\n            {\n                comp.SetVar("x", DMValue.Add(comp.GetVar("x"), DMValue.FromNumber(1)));`, 'single-line while body');
+  assertContains(oneLine, `comp.SetVar("z", DMValue.Add(comp.GetVar("z"), DMValue.FromNumber(1)));`, 'single-line for-in body');
+
+  // Test 37: Plan 09 B1 — associative list literals list("a" = 1)
+  const assoc = transpileProc(`/obj/foo/proc/run()
+    var/l = list("a" = 1, "b" = 2)
+`);
+  assertContains(assoc, `DMRuntimeHelpers.MakeListAssoc(DMValue.FromString("a"), DMValue.FromNumber(1), DMValue.FromString("b"), DMValue.FromNumber(2))`, 'assoc list literal');
+
+  // Test 38: Plan 09 B1 — leading-slash-less declarations (mob/verb/say)
+  const decl = transpileProc(`/mob/verb/say(msg)
+    return msg
+`);
+  assertContains(decl, `ProcRegistry.Register("/mob", "say", Proc_Mob_Say);`, 'mob/verb/say registers under /mob');
+
+  // Test 39: Plan 09 B1 — in-clause proc args are not phantom parameters
+  const inClause = transpileProc(`/obj/foo/proc/find_thing(atom/target as mob in oview(1), flag = 0)
+    return target
+`);
+  assertContains(inClause, `comp.SetVar("target", args.Length > 0 ? args[0] : DMValue.Null);`, 'in-clause arg is a real parameter');
+  assertContains(inClause, `comp.SetVar("flag", args.Length > 1 ? args[1] : DMValue.Null);`, 'second arg still positional');
+  assert(!inClause.includes('args.Length > 2'), 'no phantom parameter from in-clause');
+
+  // Test 40: Plan 09 B1 — string interpolation [expr] transpiles to concatenation
+  const interp = transpileProc(`/obj/foo/proc/run()
+    var/a = "hello [usr] world"
+    var/b = "a [5 + 1] c"
+`);
+  assertContains(interp, `DMRuntimeHelpers.CurrentUsr`, 'interpolated usr reads the variable');
+  assertContains(interp, `DMValue.Add(DMValue.Add(DMValue.Add(DMValue.FromString(""), DMValue.FromString("hello ")), DMRuntimeHelpers.CurrentUsr), DMValue.FromString(" world"))`, 'interpolation concatenates parts');
+
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }
 
