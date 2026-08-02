@@ -131,12 +131,16 @@ engine.pin                                    pinned RobustToolbox commit + API 
 ## Known limitations
 
 See `PLAN.md` ("Out of scope") and `FIDELITY-AUDIT.md` (honest loss counts;
-91/91 semantic probes preserved across the Phase 0.5 core + Plan 01 builtin
-batches). Corpus status: tgstation unresolved builtins 3,345 → **708**, parse
-errors 1,285 → **178**. Notable items: no argument macros, no screen/overlay/
-appearance handling, verb-to-command mapping is stubbed, and the generated
-solution builds against the real `Robust.Shared` engine project but does not yet
-run a live server/client (Robust.Server / Robust.Client integration is Phase 3).
+**134 semantic probes, 129/134 passing** — the 5 failures are root-caused in
+§3h; Plan 01 builtin batches added 67 probes). Corpus status (2026-08-02 Plan 11
+re-run): tgstation unresolved bare calls **3,360** (dominated by unexpanded
+fn-macros; see `FIDELITY-AUDIT.md` §3h), parse errors **170**. A full-codebase
+adversarial audit (Plan 11) logged 200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢)
+in `docs/audit/11-findings.md`; fix batches are proposed but not started.
+Notable items: no argument macros, no screen/overlay/appearance handling,
+verb-to-command mapping is stubbed, and the generated solution builds against
+the real `Robust.Shared` engine project but does not yet run a live
+server/client (Robust.Server / Robust.Client integration is Phase 3).
 
 ## License
 

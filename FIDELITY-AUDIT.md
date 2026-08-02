@@ -20,7 +20,7 @@ Severity: 🔴 Critical (generated code broken / core semantics destroyed) ·
 
 ---
 
-## 1. Semantic differential results (91 probes, 91/91 preserved)
+## 1. Semantic differential results (134 probes, 129/134 passing)
 
 Each probe runs the *converted* code; expected = BYOND behavior, observed =
 converted runtime.
@@ -52,8 +52,11 @@ converted runtime.
 | istype(null, /datum) | 0 | 0 | ✅ |
 | islist(list(1)) | 1 | 1 | ✅ |
 
-**Current: 91 probes, 91/91 preserved** — the core 24 above plus 67 added by the
-Plan 01 builtin batches (see §3e).
+**Current: 134 probes, 129/134 passing** — the core 24 above plus 110 added by
+the Plan 01 builtin batches (see §3e). The **5 failures are pre-existing and
+root-caused** (GlobalVars assoc assignment → CS0201 build error; `step_away`
+2-arg max; `7.0/2` float-division provenance; `copytext` negative-end dead
+branch; step-range `continue` infinite loop → timeout) — see §3h.
 
 **All 24 core-semantics probes preserved** (Phase 0.5 semantic core, done 2026-08):
 text semantics, operand-returning short-circuit `&&`/`||`, `DMList` (`len`,
@@ -86,6 +89,8 @@ trailing-slash normalization.
 
 Parse errors (unsupported syntax, source dropped): tgstation 5,359 · tgmc 7,327 ·
 paradise 14,118 · beestation 16,003 — beestation/paradise lose whole files.
+**2026-08-02 re-run (Plan 11): tgstation total loss sites 105,097, tgmc 44,745,
+paradise 58,493, beestation 72,900** (see §3h).
 
 ### The two biggest silent buckets (tgstation)
 
@@ -326,11 +331,179 @@ No symbol-resolution pass; unknown procs → `null`; `spawn()` as expression;
 DMI/RSI round-trips. **Update (Phase 0):** the generated solution now builds
 against the real RobustToolbox engine (previously a fabricated shim); the DM
 runtime is engine-free and the probe harness runs it standalone. Probe count is
-now 91/91 preserved — the Phase 0.5 semantic-core backlog is complete (text/list
+now **134 (129/134 passing — 5 pre-existing failures root-caused, §3h)** — the
+Phase 0.5 semantic-core backlog is complete (text/list
 semantics, short-circuit ops, break/continue, `..()`, world statics, builtins,
 `/proc` fallback, GLOB statics) and Plan 01 added its first three builtin batches
 (pure functions, file ops, movement). The 2026-08-02 adversarial audit (§3g)
 re-baselined the totals: **~105,198 real loss sites** (not 119,801) and **~593
-real unresolved builtins** (not 708). Remaining work is Tier 3+ scope: bitwise
+real unresolved builtins** (not 708); the 2026-08-02 Plan 11 re-run (§3h) now
+measures **105,097 loss sites** and **3,360 unresolved bare calls** on tgstation
+(the unresolved-call counter regrew vs the §3e-era 708 because unexpanded
+fn-macro call sites — `span_*`, `EXAMINE_HINT`, `AREACOORD`, `ADMIN_*`,
+`FORMAT_*` ≈ 2,400 of the 3,360 — are counted again; the §3g "113 macros"
+assumption is disproved and the miscount analysis is a Plan 10 B4 / Plan 11.12
+fix item). Remaining work is Tier 3+ scope: bitwise
 ops, remaining builtins (`regex`/`astype`/`winset`/`icon_states`/`span_*`…),
 `world.*`, the Plan 09 fix wave, and corpus-scale compile proof.
+
+### 3h. Plan 11 — full-codebase adversarial audit (VERIFIED, 2026-08-02, findings-only)
+
+13 parallel workstreams (WS1-13) covered every module + the audit tooling itself;
+**200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢)**, report in `docs/audit/11-findings.md`,
+baselines in `docs/audit/11-baseline-{before,after}.json`. No source changed —
+before/after baselines identical (semantic probes 129/134 — 5 pre-existing failures
+now root-caused; loss sites tgstation 105,097; compile-proof 1,500 procs: 0 errors,
+46,374 CS0162 warnings). Top NEW corrections vs §2/§3g:
+
+- **Semantic probes are 129/134, not 91/91** (suite grew to 134; 5 fail: GlobalVars
+  assoc assignment → CS0201; `step_away` 2-arg max; `7.0/2` floor-division provenance;
+  `copytext` negative-end dead branch; step-range `continue` infinite loop → timeout).
+- **`/global/var/` decls are dropped in production** (`index.ts` never passes globals
+  to the emitter) — `GLOB.x` reads Null in every transpiled solution; audit/tests
+  passed globals, hiding it.
+- **Case-insensitive type identity broken** (`/OBJ/x` ≡ `/obj/x` in DM) → duplicate
+  YAML ids, disjoint registries, wrong synthesized parents.
+- **Stub builtins counted as resolved**: animate/image/sound/matrix/browse/call_ext/
+  alert/input/icon/locate/refcount (~4,500 tgstation sites) return Null with zero loss
+  attributed; `.len/.x/.y/.z` (52% of "broken builtin prop reads") are runtime-handled
+  yet counted as losses.
+- **Builtin semantic errors**: `log(X,Y)` → CS1501 (7+), `round(A,B)` nearest-multiple
+  misimplemented, `turn` rotates the wrong way, `sorttext` sign reversed, `isloc`/
+  `ismovable` always 0, `rand(N)` 1..N vs 0..N, `ckey` keeps spaces, `findtext` End
+  inclusive, `findtextEx` unmapped, `replacetext` case-preservation missing, six
+  BYOND-legal arities → CS1501.
+- **Runtime value semantics**: `7.0/2`→3, `7.5 % 2`→1.5, div/mod-0 → 0 (BYOND errors),
+  text `<` should be case-sensitive, `"0"` should be truthy, `null==0/""` per BYOND ref,
+  `rgb()` no clamp, `ascii2text` 16-bit truncation, `"a"+list` precedence, assoc
+  `arglist`/`list2params` broken, `json_encode` emits invalid JSON (template escape
+  collapse), `typesof` misses var-only types, `step()` world-bounds dead.
+- **Media**: RSI 4-dir N/E sprite swap (color-row proof), PNG CRC never validated,
+  hostile PNG (100000×100000) hangs the process, IHDR/colorType/bounds unvalidated,
+  decode failure → metadata-only RSI silently.
+- **Maps**: chunk tile lines emitted OUTSIDE `chunks:` (wrong indent) — every converted
+  map loses all tiles; invented `TurfFloor` prototypes don't exist in SS14; header
+  whitespace / unterminated defs / quoted-attr `}`/`;` corrupt maps silently.
+- **Security**: GUI symlink escape proven end-to-end (wrote outside $HOME); the 429
+  single-flight guard is a no-op; 500 leaks absolute paths; forged zip sizes bypass the
+  cap; `fidelityAudit` `spawn(..., shell:true)` is shell-injection.
+- **Preprocessor**: `#define` bodies truncated at `//`-in-string (34 tgstation files,
+  all `byond://` hrefs), `#if NUM`/`#elif`/`#error` wrong, exponential macro expansion
+  hangs, `#pragma once` no-op, include-once semantics missing.
+- **Counter re-baseline (2026-08-02 re-run, tgstation)**: `totalLossSites` **105,097**
+  (was ~105,198 est.), parse errors **170** (was 178), unresolved bare calls **3,360**
+  (the §3e-era 708 did not reproduce — the re-run counts unexpanded fn-macro call sites
+  again: `span_*` ≈ 700+, `EXAMINE_HINT`/`AREACOORD`/`ADMIN_*`/`FORMAT_*` ≈ 2,400 of
+  the 3,360 total; the §3g "only ~113 macros" assumption is disproved). The miscount
+  analysis is an open Plan 10 B4 / Plan 11.12 item. 52% of "broken builtin prop reads"
+  (`.len/.x/.y/.z` = 6,837 of 13,144) are runtime-handled and miscounted (WS13-1);
+  stub builtins (`sound`/`locate`/`icon`/`animate`/… ≈ 4,500 sites) are counted as
+  resolved (WS7-16).
+
+### 3i. Plan 10 — ORANGE fix wave (VERIFIED, 2026-08-02)
+
+All six batches B1-B6 complete (`docs/plans/10-oranges.md`). Headline deltas vs §3h:
+
+- **Unresolved bare calls 3,360 → 1,018** — root cause: macros were never expanded
+  inside string interpolation `[expr]`; `expandMacros`/`substituteParams` now expand/
+  substitute there (quote-aware bracket matching). The span_*/EXAMINE_HINT/AREACOORD/
+  ADMIN_*/FORMAT_* bucket (~2,400 sites) is gone; the remaining 1,018 are the genuine
+  backlog (astype, regex, winset, icon_states, findtextEx, isicon, link, gradient,
+  filter, arctan…).
+- **`totalLossSites` 105,097 → 104,933** (preprocessor counters #elif/#if-numeric/
+  #error/#pragma-once/#define-truncation removed from the total as handled; new
+  `numParentTypeDecls` loss counter, tgstation 3). tgmc 44,745 → 45,077, paradise
+  58,493 → 58,391, beestation 72,900 → 73,737 — tgmc/beestation *rose* because
+  `#if` numeric eval + include-once now parse/count more of the corpus.
+- **Preprocessor (B6)**: `#if` numeric/relational/arithmetic eval (`#if VERSION >= 514`
+  selects the right branch), `#elif` chains, `#error` → real diagnostic, include-once
+  BYOND semantics (each file included at most once; `#pragma multiple` opts back;
+  recursive cycles silently skipped), string-aware `//`-in-define stripping (102
+  tgstation defines preserved), multi-line define bodies, named-variadic arg join,
+  string-aware `##`/`...`, stringification quote-escaping.
+- **Lexer (B3)**: text macros preserved verbatim (`\improper`/`\the`/`\th`/`\s`/`\ref`/
+  `\icon`/`\roman`), `\xHH`/`\uHHHH` decoded, unknown escapes keep their backslash.
+- **Emitter (B2)**: `return` inside `spawn()` emits `return;` (exits the block, DM
+  semantics) — the emitted lambda now compiles.
+- **Media (B5)**: pngCodec full 8-byte signature, IHDR sanity (dims ≤65536, color
+  type/bit depth combos, interlace=0), chunk-length bounds, scanline stream length,
+  bit-extraction for bitDepth<8, encodePNG dimension validation — hostile PNGs throw
+  instead of hanging/OOM (WS10-3); rsiWriter sheet-dimension bounds check + decode-
+  failure warning (WS10-6/8); DMM longest-match key decoding + space-separated rows
+  (WS11-6/11). deciseconds verified (no conversion needed); DMI pixel offsets verified
+  nonissue.
+- **Harness (B4)**: `parent_type` counter (counted as loss — IR still ignores it),
+  `filesWithParseErrors` in the JSON schema, snapshot committed to
+  `docs/audit/10-tgstation-audit.json`. Corpus scoping deferred (measurement item).
+- **Verification**: semantics **138 probes, 133/138** (134 + 4 new; the same 5
+  pre-existing failures remain — GlobalVars assoc CS0201, step_away max, float
+  division, copytext negative end, step-range continue; all Plan 11 fix-wave items);
+  `npm test` green; compile-proof 1,500 procs real engine **0 errors**, 46,174
+  warnings (CS0162 trailing-return class).
+
+### 3j. Plan 11 — fix wave 11.1-11.13 (VERIFIED, 2026-08-02)
+
+All 13 fix batches from `docs/audit/11-findings.md` §5 executed. Headline deltas vs §3i:
+
+- **Semantic probes: 129/134 → 139/139** — all 5 pre-existing failures fixed:
+  GlobalVars assoc CS0201 (index_assignment statements strip parens), `step_away`
+  default Max=5, `7.0/2` float provenance (`DMValue.IsInt` + `floatLiteral` literals),
+  `copytext`/`FindText` negative-end ordering, step-range `continue` label prefix.
+- **`totalLossSites` tgstation: 105,097 → 54,457** (−48%): bitwise/shift ops now
+  emitted (19k sites), `.len/.x/.y/.z` reclassified as runtime-resolved (6,837),
+  stub builtins counted as loss (5,209 — WS7-16), preprocessor + emitter REDs.
+  tgmc 45,077 → 42,967 · paradise 58,391 → 57,286 · beestation 73,737 → 68,482.
+- **Parser/lexer (11.1)**: nested block comments, quote-aware interpolation,
+  `in` = lowest precedence, division postfix (`x/b(...)`), child-type blocks
+  (relative + absolute + `sword/name = "x"`), top-level `var/x` → globals,
+  initializer depth clamp, macro expansion work budget (hangs bounded).
+- **Emitter (11.2/11.3/11.6)**: identifier sanitization (`operator""`, dot-paths,
+  case-colliding procs → CS0111 dedupe), `initial(x,"name")` escaping, default-only
+  switch → `if (true)`, spawn-as-expression → `SpawnExpr`, try/catch + labeled blocks
+  emitted (bodies no longer dropped), bitwise `& | ^ ~ << >>` + `%%` real ops,
+  `<<` shift-vs-output disambiguation, break/continue outside loops → comments,
+  trailing `return comp.GetVar(".")` skipped (CS0162 class gone), `in`-expression
+  GlobalVars wiring + case-insensitive registry (`OrdinalIgnoreCase`) + param-name
+  registration for named arglist.
+- **GlobalVars (11.3)**: production `index.ts` now passes `parser.globalVars` to the
+  emitter (previously dropped — `GLOB.x` was Null in every transpiled solution);
+  assignment/index-assignment expressions in global initializers route through
+  `GlobalVars.Set` (fixed a latent CS0103).
+- **Runtime (11.4/11.7)**: `DMValue.IsInt` provenance → DM floor division only for
+  int×int; `%` truncates operands; div/mod-by-zero throws; text `<` case-sensitive;
+  list rendering `list(...)`; `"a" + list(1)` → text concat; assoc `arglist` named
+  args via registry param names; `list2params` assoc keys; `round` nearest-multiple
+  half-down; `num2text` sig-figs; `turn`/`sorttext`/`rand`/`ckey` probe-locked;
+  `JsonEscape` rewritten with char codes (valid JSON for quotes/backslashes/control
+  chars — hardened probe passes); `text()` format literals kept raw; `typesof` sees
+  var-only types; world xmax/ymax bounds; `ascii2text`/`text2ascii`/string
+  iteration code-point aware; `rgb` clamped.
+- **Builtins (11.5)**: `findtextEx` mapped, `log(X,Y)` 2-arg, `findtext` End
+  exclusive, `replacetext` case-preserving, `isloc`/`ismovable` OR-composed,
+  6 BYOND-legal arities widened (`time2text` 3-arg, `get_step_away` 3-arg,
+  `splittext` 4-arg, `replacetextEx` 4-arg, `prob()` 0-arg, `turn()` 0-arg),
+  `step_away` Max=5, `rand(N)` 0..N.
+- **YAML (11.8)**: YAML 1.1 scalar quoting (yes/no/numbers quoted), backslash
+  escaping, `shape.type` survives, `pathToId` collision dedupe, case-insensitive
+  `.dmi→.rsi`, `name:`/`description:` always quoted + "null" guard.
+- **Media (11.9)**: RSI 4-dir N/E sprite remap `[0,2,1,3]`, PNG CRC validation
+  (corrupt chunks now throw), dirs=0/frames=0/delay validation, independent
+  `# BEGIN DMI` chunks, dirs=8 warning.
+- **Maps (11.10)**: chunk tiles emitted as `- lx,ly: tile` list items under the
+  chunk key (WS11-1 — all tiles previously lost), real SS14 turf prototypes
+  (Floor/Plating/Wall…), item prototypes PascalCase, quote-aware attr parsing,
+  unterminated-def swallow capped at grid headers, header whitespace tolerance,
+  duplicate-turf dedupe.
+- **Security (11.11)**: symlink escape via realpath + `~` expansion, real 429
+  single-flight promise, sanitized 500 responses, post-extraction zip-bomb bound,
+  `mkdtemp` temp dirs, array-form `spawn` (shell injection removed), graceful
+  EADDRINUSE.
+- **Harness (11.12)**: `BROKEN_PROP_NAMES` split (runtime-resolved bucket),
+  classic-globals relabeled, nested-Map JSON export, comment/string-aware GLOB
+  counter, dead counters removed, stub-builtin bucket, dotnet-skip branch,
+  hardened probes (json_encode escapes, L+=x content).
+- **IR (11.13)**: case-insensitive type identity (paths lowercased — `/OBJ/x` ≡
+  `/obj/x`), TRUE/yes coercion, `parent_type` honored, non-mutating merges,
+  runtime IsType OrdinalIgnoreCase.
+- **Compile-proof**: corpus build 1,500 procs real engine **0 errors**; hostile-name
+  corpus builds **0 errors** (was 11 CS error classes).

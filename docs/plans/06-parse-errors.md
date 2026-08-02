@@ -1,7 +1,7 @@
 # Plan 06 — Parse-Error Reduction
 
-Status: in progress (2026-08-02: 178 errors on TG; target <500 reached) ·
-Owner: lexer/parser/preprocessor · Effort: 2–4 weeks · Impact: 178 errors → <500
+Status: in progress (2026-08-02 Plan 11 re-run: **170** errors on TG; target <500 reached) ·
+Owner: lexer/parser/preprocessor · Effort: 2–4 weeks · Impact: 170 errors → <500
 
 ## Goal
 

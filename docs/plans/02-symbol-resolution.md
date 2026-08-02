@@ -2,6 +2,9 @@
 
 Status: in progress (2026-08-02: symbol table + audit triage landed; emitter resolution pending) · Owner: parser/emitter ·
 Effort: 2–4 weeks · Impact: **36,911 bare global proc call sites made deterministic**
+(2026-08-02 Plan 11 re-run: unresolved bare calls **3,360** on tgstation — see
+`FIDELITY-AUDIT.md` §3h; the §3e-era 708 did not reproduce and the fn-macro
+miscount analysis is an open Plan 10 B4 / Plan 11.12 item.)
 
 ## Goal
 

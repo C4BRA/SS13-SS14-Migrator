@@ -3,7 +3,11 @@
 Status: in progress · Owner: transpiler/runtime · Effort: weeks · Impact: **3,553 loss sites → <300**
 (2026-08-02: pure-function + file-ops + movement batches landed — 42 procs mapped, 41 probes
 green; audit 3,345 → **708** unresolved bare calls, 0 regressions. Movement batch also fixed
-the arg order of the pre-existing range/view/oview mappers to BYOND's (dist, center).)
+the arg order of the pre-existing range/view/oview mappers to BYOND's (dist, center).
+2026-08-02 Plan 11 re-run: **3,360 unresolved bare calls** — the §3e-era 708 did not
+reproduce; the re-run counts unexpanded fn-macro call sites again (`span_*`, `EXAMINE_HINT`,
+`AREACOORD`, `ADMIN_*`, `FORMAT_*` ≈ 2,400 of 3,360). Miscount analysis is a Plan 10 B4 /
+Plan 11.12 item. See `FIDELITY-AUDIT.md` §3h.)
 
 ## Goal
 

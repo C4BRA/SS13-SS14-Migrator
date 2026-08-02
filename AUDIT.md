@@ -93,3 +93,31 @@ The fabricated `Robust.Shared` shim is **deleted** and the runtime is decoupled 
 `Component` has no public virtual `Initialize()` — lifecycle is event-driven;
 component YAML type = class name minus "Component" suffix; `SpawnEntity` takes
 `EntityCoordinates`/`MapCoordinates` + optional overrides.
+
+---
+
+## Plan 11 — Full-Codebase Adversarial Audit (2026-08-02, findings-only)
+
+13 parallel workstreams, 200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢). Full report:
+`docs/audit/11-findings.md`; baselines: `docs/audit/11-baseline-{before,after}.json`
+(identical — the repo was not modified). Highlights:
+
+- 🔴 Emitter breaks on legal DM names (`operator""`, dot-paths, case-colliding procs →
+  CS1003/CS0246/CS0111); `initial(x,"name")` unescaped; default-only switch → CS8641;
+  spawn-as-expression → CS1503. Hostile corpus: 11 CS error classes.
+- 🔴 `/global/var/` dropped in production (globals never passed to the emitter);
+  case-insensitive type identity ignored (duplicate YAML ids/registries).
+- 🔴 Runtime: `7.0/2`→3, `7.5%2`→1.5, div-by-zero→0, `"a"+list`, assoc arglist/list2params,
+  `json_encode` invalid JSON, `rgb()` no clamp, text `<` case, `"0"` truthiness.
+- 🔴 Media/maps: RSI N/E sprite swap; PNG no CRC/IHDR checks (hostile PNG hangs the
+  process); map chunk tiles emitted outside `chunks:` (all tiles lost); `TurfFloor`
+  prototypes don't exist in SS14.
+- 🟠 Security: GUI symlink escape proven (write outside $HOME), 429 guard a no-op,
+  500 path leak, forged zip sizes, shell-in-string spawn in the audit harness.
+- 🟠 Harness: semantic probes actually 129/134 (5 failing, root-caused); stub builtins
+  (~4,500 tgstation sites) counted as zero loss; 52% of "broken prop reads" are
+  runtime-handled; 3 hangs found (macro expansion, PNG decode, step-range continue).
+- The 5 failing semantic probes: GlobalVars assoc CS0201, step_away max, float division
+  provenance, copytext negative end (dead branch), step-range `continue` infinite loop.
+
+Fix batches proposed in `docs/audit/11-findings.md` §5 (11.1-11.13, dependency-ordered).

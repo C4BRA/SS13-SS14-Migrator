@@ -1,7 +1,10 @@
 # Plan 07 — Builtin Property Reads / Writes
 
 Status: not started · Owner: runtime + emitter · Effort: 1–2 weeks ·
-Impact: **11,644 broken prop reads** + **6,384 GLOB.x accessor reads** (uninitialized)
+Impact: **13,144 builtin prop reads** (2026-08-02 Plan 11 re-run: `.loc` 3,090, `.z` 2,299,
+`.len` 2,244, `.type` 2,003, `.x` 1,185, `.y` 1,109, `.dir` 597, `.contents` 491,
+`.overlays` 126 — **6,837 of 13,144 (`.len/.x/.y/.z`) are runtime-handled and miscounted
+as broken, WS13-1**) + **6,384 GLOB.x accessor reads** (resolved since the GLOB batch, §3d)
 
 ## Goal
 
@@ -12,8 +15,10 @@ diagnose the 6,384 `GLOB.x` reads whose variable is never initialized.
 ## Current state
 
 - `BROKEN_PROP_NAMES` (`src/audit/fidelityAudit.ts:72`): `len, type, loc, dir, x,
-  y, z, overlays, contents` → counter 11,644: `loc 2,872 · z 2,064 · len 2,043 ·
-  type 1,558 · x 1,013 · y 942 · dir 588 · contents 447 · overlays 117`.
+  y, z, overlays, contents` → counter 13,144 (2026-08-02 Plan 11 re-run): `loc 3,090 ·
+  z 2,299 · len 2,244 · type 2,003 · x 1,185 · y 1,109 · dir 597 · contents 491 ·
+  overlays 126`. Note: `.len/.x/.y/.z` (6,837 of 13,144) are runtime-handled and
+  miscounted as broken — WS13-1.
 - Emitter: property reads emit `GetVar(comp, name)` on the current `comp` — there
   is no target-relative resolution and no universal-prop dispatch
   (`src/transpiler/csharpEmitter.ts`).
@@ -99,7 +104,8 @@ Dispatch by target kind:
 
 - Probes above assert BYOND values (e.g. `"abc".len == 3`, `list(1,2).len == 2`,
   `new /datum/x().type == "/datum/x"`).
-- Audit: 11,644 → ≤ documented floor (dynamic-target-only).
+- Audit: 13,144 → ≤ documented floor, minus the 6,837 runtime-handled
+  `.len/.x/.y/.z` miscount (WS13-1) → true-residual ≈ 6,307 (dynamic-target-only).
 - `npm test` green; compile proof green.
 
 ## Success criteria

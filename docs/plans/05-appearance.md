@@ -1,8 +1,10 @@
 # Plan 05 — Appearance / Icon / Overlay System
 
 Status: not started (largest architectural item; today out of scope) · Owner: runtime + render bridge ·
-Effort: months (phased) · Impact: unlocks the visual layer — `animate` (937), `image` (442),
-`overlays` props (117), `icon_states` (40), `matrix`, `flick`, `sound`, screen objects, verbs UI
+Effort: months (phased) · Impact: unlocks the visual layer — `animate` (939), `image` (678),
+`overlays` props (126), `icon_states` (55), `matrix` (254), `flick` (201), `sound` (183),
+screen objects, verbs UI — 2026-08-02 Plan 11 re-run counts (all currently stub → Null;
+WS7-16)
 
 ## Goal
 

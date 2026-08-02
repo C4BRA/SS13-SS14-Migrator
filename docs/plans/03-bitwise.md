@@ -1,7 +1,8 @@
 # Plan 03 — Bitwise Operators
 
 Status: not started · Owner: runtime + emitter · Effort: 1–2 weeks ·
-Impact: **18,060 binary + 1,038 unary sites** currently emitting `DMValue.Null`
+Impact: **19,009 binary + 1,083 unary sites** currently emitting `DMValue.Null`
+(2026-08-02 Plan 11 re-run, tgstation: `& | ^ ~ >>` → Null 19,009, unary `~` → Null 1,083)
 
 ## Goal
 
@@ -11,14 +12,15 @@ Make `& | ^ ~ >> <<` and unary `~` behave per BYOND semantics, and disambiguate
 ## Current state (ground truth from `src/transpiler/csharpEmitter.ts:489-541`)
 
 - `transpileBinary`:
-  - `& | ^ ~` → `'DMValue.Null'` (comment: "bitwise ops unsupported") — **18,060 sites**.
-  - `<<` → `DMValue.Output(...)` unconditionally — **25,581 sites**. In DM, `a << b`
+  - `& | ^ ~` → `'DMValue.Null'` (comment: "bitwise ops unsupported") — **19,009 sites**
+    (2026-08-02 Plan 11 re-run; plan-creation snapshot was 18,060).
+  - `<<` → `DMValue.Output(...)` unconditionally — **26,924 sites** (re-run). In DM, `a << b`
     is a *shift* in expression position and *output* only in statement position
     (`world << x`, `usr << x`, `src << x`); the unconditional output mapping is wrong
     for expressions.
   - `!=` → `DMValue.NotEquals` ✅, `~!` → `NotEquals` ✅, `**` → `DMValue.Power` ✅
     (runtime helpers exist, `dmRuntimeCS.ts`).
-- `transpileUnary`: `~` → `'DMValue.Null'` — **1,038 sites**.
+- `transpileUnary`: `~` → `'DMValue.Null'` — **1,083 sites** (2026-08-02 re-run; plan-creation snapshot was 1,038).
 - Runtime (`src/runtimeTemplate/dmRuntimeCS.ts`): `DMValue` is double-based
   (`NumberValue`), no bitwise helpers. `DMValue.Null` for all bitwise results.
 - Audit `numCompileBreak 7,172` counts `!= ~! **` — **stale/misleading**: the emitter
@@ -94,7 +96,8 @@ edge: `text2num` behavior for string operands).
 ## Implementation steps
 
 1. Fix the audit counter (split `numCompileBreak` / add `numBitwise`) and re-run for
-   a clean baseline — confirm `numBitwise` ≈ 18,060 + expression-`<<` sites.
+   a clean baseline — confirm `numBitwise` ≈ 19,009 + expression-`<<` sites
+   (2026-08-02 Plan 11 re-run).
 2. Add runtime helpers + unit tests (golden C# + direct runtime tests).
 3. Emitter: shift/output disambiguation with statement-context propagation; unary `~`.
 4. Compound-assignment support if missing.

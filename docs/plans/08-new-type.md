@@ -1,7 +1,7 @@
 # Plan 08 — `new /type(...)` Constructor Semantics
 
 Status: not started · Owner: runtime + emitter · Effort: 1–2 weeks ·
-Impact: **12,675 `new` sites** (currently "returns caller as placeholder")
+Impact: **13,060 `new` sites** (2026-08-02 Plan 11 re-run; currently "returns caller as placeholder")
 
 ## Goal
 
@@ -44,7 +44,8 @@ expression value is the new object (never the caller).
 
 Instrument `DMNew` temporarily: count per typePath (a) whether `New` resolved,
 (b) whether a `..()` chain ran, (c) `Initialize` invocation on `/obj/*`/`/mob/*`
-paths, over the corpus compile sample. Bucket the 12,675 sites by failure mode
+paths, over the corpus compile sample. Bucket the 13,060 sites (2026-08-02
+Plan 11 re-run) by failure mode
 (1–4 above). The fix set depends on the buckets — expected:
 
 ### 2. Constructor chain completeness
@@ -59,7 +60,7 @@ paths, over the corpus compile sample. Bucket the 12,675 sites by failure mode
   `Initialize()` follow-up: after `New` returns on entity-typed paths, call
   `Initialize(args...)` if the type has one (TG convention: `New` → `..()` →
   `Initialize`). This is TG-specific but is the dominant constructor pattern in
-  the corpus (all 12,675 sites are TG/derivatives).
+  the corpus (all 13,060 sites are TG/derivatives).
 - **Var initialization**: BYOND's `New` often sets vars from args; nothing
   extra needed beyond (correct) `New` execution — the var bag already stores.
 
@@ -101,7 +102,7 @@ paths, over the corpus compile sample. Bucket the 12,675 sites by failure mode
 
 - Probes: `New` arg propagation, parent-`New` chain, `Initialize` call order
   (log assertion), `loc` set, distinct-object identity, expression-position `new`.
-- Audit `numNew` re-classification (12,675 → true-residual only).
+- Audit `numNew` re-classification (13,060 → true-residual only).
 - Compile proof green; `npm test` green.
 
 ## Success criteria

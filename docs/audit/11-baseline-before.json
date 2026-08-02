@@ -1,0 +1,51 @@
+{
+  "audit": "dm2ss14 Plan 11 full-codebase adversarial audit \u2014 baseline before",
+  "date": "2026-08-02",
+  "working_tree": "Plan 10 WIP uncommitted (9 modified src files) \u2014 recorded at audit start",
+  "build": "clean (tsc strict, TS 7.0.2)",
+  "npm_test": "green; real-engine build step skipped (no repo-relative RobustToolbox checkout)",
+  "semantic_probes": {
+    "passed": 129,
+    "total": 134,
+    "failing": [
+      "assoc key on global list persists (BUILD FAILED CS0201 \u2014 ConvertedDMProcs.cs:24)",
+      "step_away() moves one step away (4 vs 3)",
+      "division with a fractional operand (3.5 vs 3)",
+      "copytext with negative end (b vs bc)",
+      "for range step with continue (ETIMEDOUT \u2014 infinite loop)"
+    ]
+  },
+  "fidelity_tgstation": {
+    "totalLossSites": 105097,
+    "parseErrors": 170,
+    "parseWarnings": 39,
+    "numUnknownBuiltin": 3360,
+    "numUnresolvedCalls": 3360,
+    "numGlobAccess": 6384,
+    "numGlobalVars": 1087,
+    "procCount": 66502,
+    "typeCount": 48578
+  },
+  "fidelity_other_corpora": {
+    "tgmc": {
+      "totalLossSites": 44745,
+      "unknownBuiltin": 2480
+    },
+    "paradise": {
+      "totalLossSites": 58493,
+      "unknownBuiltin": 1743
+    },
+    "beestation": {
+      "totalLossSites": 72900,
+      "unknownBuiltin": 2828
+    }
+  },
+  "compile_proof": {
+    "sample": 1500,
+    "engine": "RobustToolbox 9cefa116 (real)",
+    "errors": 0,
+    "warnings": 46374,
+    "warn_class": "CS0162 unreachable code (emitter trailing return, WS5-18)",
+    "full_scale_prior": "0 errors @ 44,826 procs (FIDELITY-AUDIT.md 3b-3e)"
+  }
+}

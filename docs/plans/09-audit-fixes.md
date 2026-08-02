@@ -1,6 +1,13 @@
 # Plan 09 — Adversarial Audit Fix Wave
 
-Status: **in progress** (2026-08-02) · Owner: full-pipeline adversarial audit (8 parallel workstreams, GitHub issue #1)
+Status: **done** (2026-08-02 — all batches B1-B7 complete, git 075d91f) · Owner: full-pipeline adversarial audit (8 parallel workstreams, GitHub issue #1)
+
+> Superseded as a *findings source* by Plan 11 (full-codebase adversarial audit,
+> `docs/plans/11-adversarial-audit.md` → 200 findings in `docs/audit/11-findings.md`,
+> fix batches 11.1-11.13). The 2026-08-02 Plan 11 re-run measures: total loss sites
+> tgstation **105,097**, unresolved bare calls **3,360**, parse errors **170** —
+> see `FIDELITY-AUDIT.md` §3h for the corrected counters (the §3g "~113 unexpanded
+> macros" estimate is disproved).
 
 ## Why this exists
 

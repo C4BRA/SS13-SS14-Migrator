@@ -59,11 +59,16 @@ Done 2026-08 — all 24 differential probes pass (7/24 → 24/24):
 - [x] Compile blockers: `DMValue.NotEquals`/`Power`, `DMIsType` non-datum → 0,
       IR + `new`-expression trailing-slash normalization
 
-Remaining (Phase 2+/Tier 3): bitwise ops, remaining builtins
-(`regex`, `astype`, `winset`, `icon_states`, `span_*` (preprocessor, not builtins),
-`findtextEx`, `arctan`, `isicon`, `link`), `world.*` statics, and the Plan 09
-audit-fix wave (adversarial audit 2026-08-02 surfaced 29 🔴 / 44 🟠 / 42 🟡
-findings; see `docs/plans/09-audit-fixes.md`).
+Remaining (Phase 2+/Tier 3): remaining builtins (`regex`, `astype`, `winset`,
+`icon_states`, `findtextEx` is mapped, `arctan`, `isicon`, `link`), `world.*`
+statics. Plan 09 (adversarial audit RED/ORANGE fix wave) is
+**done** — all B1-B7 complete (git 075d91f). Plan 10 (ORANGE wave) is **done** —
+B1-B6 complete (2026-08-02, `FIDELITY-AUDIT.md` §3i). Plan 11 (full-codebase
+adversarial audit) is **complete and its fix wave 11.1-11.13 has shipped** —
+200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢) in `docs/audit/11-findings.md`;
+probes 129/134 → **139/139**; tgstation loss sites 105,097 → **54,457**;
+hostile-name corpus and 1,500-proc real-engine compile-proof both **0 C# errors**
+(`FIDELITY-AUDIT.md` §3j).
 
 ---
 
@@ -143,20 +148,23 @@ Behavior matches DM semantics for the supported subset.
 ## Big-ticket implementation plans
 
 Detailed, code-grounded implementation plans for the remaining loss classes
-(baseline: tgstation audit re-run 2026-08-01, 118,030 total loss sites) live in
+(baseline: tgstation audit re-run 2026-08-01, 118,030 total loss sites; current
+measured baseline 2026-08-02: **105,097** — see `FIDELITY-AUDIT.md` §3h) live in
 `docs/plans/`:
 
 | Plan | Item | TG sites | Status |
 |---|---|---|---|
-| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls (708 unresolved; audit 2026-08-02: ~593 real — ~113 are unexpanded tgstation function macros) | in progress (2026-08-02: pure + file + movement batches landed) |
+| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls (2026-08-02 Plan 11 re-run: **3,360 unresolved bare calls** — dominated by unexpanded tgstation fn-macros, see `FIDELITY-AUDIT.md` §3h) | in progress (2026-08-02: pure + file + movement batches landed) |
 | [02-symbol-resolution.md](docs/plans/02-symbol-resolution.md) | Symbol resolution + global procs | 36,911 bare global calls (runtime fallback) | in progress (2026-08-02: milestone 1 — symbol table + audit triage; 93,573 verified) |
-| [03-bitwise.md](docs/plans/03-bitwise.md) | Bitwise operators | 18,060 binary + 1,038 unary → Null | not started |
+| [03-bitwise.md](docs/plans/03-bitwise.md) | Bitwise operators | 19,009 binary + 1,083 unary → Null (2026-08-02 re-run) | not started |
 | [04-live-server.md](docs/plans/04-live-server.md) | Live-server integration | whole-verification gap | not started |
-| [05-appearance.md](docs/plans/05-appearance.md) | Appearance/icon/overlay system | animate 937, image 442, overlays 117, ... | not started |
-| [06-parse-errors.md](docs/plans/06-parse-errors.md) | Parse-error reduction | 2,473 errors (+ silent classes) | in progress (2026-08-02: tgstation 1,285 → **178**; audit caveats: silent misparse classes + `tools/` fixture noise are excluded from the count) |
-| [07-props.md](docs/plans/07-props.md) | Builtin property reads | 11,644 prop reads + 6,384 GLOB.x | not started |
-| [08-new-type.md](docs/plans/08-new-type.md) | `new /type(...)` semantics | 12,675 sites | not started |
-| [09-audit-fixes.md](docs/plans/09-audit-fixes.md) | Adversarial audit fixes (Plan 09) | audit REDs 29 + ORANGEs 44 | in progress (2026-08-02: full-pipeline adversarial audit, 115 findings, GitHub issue #1) |
+| [05-appearance.md](docs/plans/05-appearance.md) | Appearance/icon/overlay system | animate 939, image 678, overlays 126, ... (2026-08-02 re-run) | not started |
+| [06-parse-errors.md](docs/plans/06-parse-errors.md) | Parse-error reduction | 2,473 errors (+ silent classes) | in progress (2026-08-02 Plan 11 re-run: tgstation **170** errors; audit caveats: silent misparse classes + `tools/` fixture noise are excluded from the count) |
+| [07-props.md](docs/plans/07-props.md) | Builtin property reads | 13,144 prop reads (6,837 runtime-handled `.len/.x/.y/.z` miscounted — WS13-1) + 6,384 GLOB.x | not started |
+| [08-new-type.md](docs/plans/08-new-type.md) | `new /type(...)` semantics | 13,060 sites (2026-08-02 re-run) | not started |
+| [09-audit-fixes.md](docs/plans/09-audit-fixes.md) | Adversarial audit fixes (Plan 09) | audit REDs 29 + ORANGEs 44 | **done** (2026-08-02: all B1-B7 complete) |
+| [10-oranges.md](docs/plans/10-oranges.md) | ORANGE fix wave (runtime value semantics, emitter control flow, parser literals, harness accounting, media validation, preprocessor conditionals) | Plan 09 deferred ORANGEs | **done** (2026-08-02: B1-B6 complete — unresolved bare calls 3,360 → 1,018; probes 138/133; see `FIDELITY-AUDIT.md` §3i) |
+| [11-adversarial-audit.md](docs/plans/11-adversarial-audit.md) | Full-codebase adversarial audit → fix batches 11.1-11.13 | **200 findings (56 🔴 / 64 🟠 / 56 🟡 / 24 🟢)** — `docs/audit/11-findings.md` | audit done; **fix wave 11.1-11.13 done** (2026-08-02: probes 129/134 → 139/139; loss sites 105,097 → 54,457; see `FIDELITY-AUDIT.md` §3j) |
 
 ---
 

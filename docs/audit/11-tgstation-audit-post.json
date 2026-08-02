@@ -1,0 +1,3597 @@
+{
+  "name": "tgstation",
+  "dir": "/Users/russellrozario/Documents/antigravity/ss13-audit-corpora/tgstation",
+  "files": 7440,
+  "counters": {
+    "numElif": 2,
+    "numIfNumeric": 53,
+    "numIfError": 9,
+    "numPragmaOnce": 0,
+    "numDefineStringTruncation": 102,
+    "numGoto": 2,
+    "numSetModifiers": 153,
+    "numSwitchBraceForm": 1,
+    "numWeightedPick": 18,
+    "numMultiVarFor": 150,
+    "numForStepClause": 23,
+    "numForAsFilter": 3899,
+    "numVerbDecls": 12,
+    "numClientDecls": 182,
+    "numWorldDecls": 87,
+    "numParentTypeDecls": 3,
+    "numGlobalVars": 1321,
+    "numClassicGlobalVars": 0,
+    "numGlobAccess": 6030,
+    "filesWithParseErrors": {
+      "code/__HELPERS/icon_smoothing.dm": 4,
+      "code/__HELPERS/roundend.dm": 2,
+      "code/__byond_version_compat.dm": 2,
+      "code/_onclick/hud/screen_objects/alert.dm": 65,
+      "code/controllers/subsystem/mobs.dm": 9,
+      "code/controllers/subsystem/shuttle.dm": 40,
+      "code/datums/brain_damage/hypnosis.dm": 12,
+      "code/datums/brain_damage/imaginary_friend.dm": 14,
+      "code/datums/brain_damage/mild.dm": 15,
+      "code/datums/brain_damage/split_personality.dm": 42,
+      "code/datums/components/anomalock_module.dm": 4,
+      "code/datums/components/clothing_dirt.dm": 1,
+      "code/datums/components/food/edible.dm": 13,
+      "code/datums/components/spirit_holding.dm": 6,
+      "code/datums/components/trader/trader.dm": 5,
+      "code/datums/diseases/advance/symptoms/chills.dm": 1,
+      "code/datums/diseases/advance/symptoms/choking.dm": 20,
+      "code/datums/diseases/advance/symptoms/cough.dm": 1,
+      "code/datums/diseases/advance/symptoms/fever.dm": 1,
+      "code/datums/diseases/advance/symptoms/hallucigen.dm": 1,
+      "code/datums/diseases/advance/symptoms/sensory.dm": 1,
+      "code/datums/diseases/advance/symptoms/vomit.dm": 2,
+      "code/datums/diseases/advance/symptoms/weight.dm": 1,
+      "code/datums/diseases/chronic_illness.dm": 1,
+      "code/datums/diseases/wizarditis.dm": 3,
+      "code/datums/dog_fashion.dm": 2,
+      "code/datums/elements/art.dm": 27,
+      "code/datums/materials/meat.dm": 2,
+      "code/datums/mood.dm": 2,
+      "code/datums/mutations/antenna.dm": 18,
+      "code/datums/status_effects/debuffs/strandling.dm": 4,
+      "code/datums/status_effects/drug_effects.dm": 6,
+      "code/datums/wounds/bones.dm": 52,
+      "code/datums/wounds/burns.dm": 3,
+      "code/datums/wounds/pierce.dm": 15,
+      "code/datums/wounds/slash.dm": 14,
+      "code/game/atom/atoms_initializing_EXPENSIVE.dm": 4,
+      "code/game/machinery/ai_core/_core.dm": 10,
+      "code/game/machinery/iv_drip.dm": 2,
+      "code/game/machinery/pipe/construction.dm": 1,
+      "code/game/objects/effects/posters/contraband.dm": 2,
+      "code/game/objects/effects/posters/official.dm": 2,
+      "code/game/objects/items/cards_ids.dm": 2,
+      "code/game/objects/items/crab17.dm": 1,
+      "code/game/objects/items/credit_holochip.dm": 1,
+      "code/game/objects/items/debug_items.dm": 1,
+      "code/game/objects/items/devices/flashlight.dm": 2,
+      "code/game/objects/items/devices/spyglasses.dm": 1,
+      "code/game/objects/items/grenades/flashbang.dm": 5,
+      "code/game/objects/items/kirby_plants/kirbyplants.dm": 2,
+      "code/game/objects/items/robot/robot_parts.dm": 26,
+      "code/game/objects/items/stacks/medical.dm": 15,
+      "code/game/objects/items/stacks/sheets/sheet_types.dm": 26,
+      "code/game/objects/items/storage/boxes/food_boxes.dm": 2,
+      "code/game/objects/items.dm": 2,
+      "code/game/objects/objs.dm": 3,
+      "code/game/objects/structures/cannons/cannon_instructions.dm": 1,
+      "code/game/objects/structures/crates_lockers/closets.dm": 1,
+      "code/game/objects/structures/mirror.dm": 3,
+      "code/game/objects/structures/signs/sign_eyechart.dm": 2,
+      "code/game/objects/structures/wall_support.dm": 7,
+      "code/game/turfs/closed/wall/concrete_walls.dm": 7,
+      "code/game/turfs/open/lava.dm": 3,
+      "code/game/turfs/open/water.dm": 3,
+      "code/game/turfs/turf.dm": 4,
+      "code/modules/admin/IsBanned.dm": 1,
+      "code/modules/admin/admin_verbs.dm": 1,
+      "code/modules/admin/callproc/callproc.dm": 1,
+      "code/modules/admin/known_alts.dm": 2,
+      "code/modules/admin/permissionedit.dm": 2,
+      "code/modules/admin/topic.dm": 2,
+      "code/modules/admin/verbs/admingame.dm": 3,
+      "code/modules/admin/verbs/debug.dm": 2,
+      "code/modules/admin/verbs/mapping.dm": 2,
+      "code/modules/admin/verbs/secrets.dm": 8,
+      "code/modules/admin/view_variables/modify_variables.dm": 1,
+      "code/modules/admin/view_variables/reference_tracking.dm": 43,
+      "code/modules/antagonists/_common/antag_spawner.dm": 104,
+      "code/modules/antagonists/abductor/abductee/abductee.dm": 1,
+      "code/modules/antagonists/blood_worm/blood_worm_tester.dm": 2,
+      "code/modules/antagonists/cult/blood_magic.dm": 9,
+      "code/modules/antagonists/cult/cult_comms.dm": 10,
+      "code/modules/antagonists/heretic/items/heretic_grenade.dm": 1,
+      "code/modules/antagonists/heretic/items/heretic_lantern.dm": 6,
+      "code/modules/antagonists/heretic/knowledge/cosmic_lore.dm": 3,
+      "code/modules/antagonists/nukeop/equipment/overwatch_tools.dm": 1,
+      "code/modules/antagonists/paradox_clone/paradox_clone.dm": 1,
+      "code/modules/antagonists/revenant/revenant_blight.dm": 1,
+      "code/modules/antagonists/wizard/grand_ritual/finales/captaincy.dm": 1,
+      "code/modules/antagonists/wizard/grand_ritual/finales/clown.dm": 1,
+      "code/modules/antagonists/wizard/slaughter_antag.dm": 2,
+      "code/modules/atmospherics/machinery/components/binary_devices/volume_pump.dm": 2,
+      "code/modules/atmospherics/machinery/components/electrolyzer/electrolyzer.dm": 3,
+      "code/modules/buildmode/submodes/delete.dm": 3,
+      "code/modules/buildmode/submodes/variable_edit.dm": 8,
+      "code/modules/client/preferences/pixel_size.dm": 3,
+      "code/modules/clothing/clothing.dm": 1,
+      "code/modules/clothing/masks/hailer.dm": 1,
+      "code/modules/clothing/neck/horrific_necktie.dm": 4,
+      "code/modules/clothing/shoes/magboots.dm": 1,
+      "code/modules/clothing/under/_under.dm": 2,
+      "code/modules/fishing/bait.dm": 23,
+      "code/modules/fishing/fish/_fish.dm": 10,
+      "code/modules/fishing/fish/types/rift.dm": 2,
+      "code/modules/food_and_drinks/machinery/gibber.dm": 1,
+      "code/modules/food_and_drinks/machinery/processor.dm": 1,
+      "code/modules/food_and_drinks/recipes/soup_mixtures.dm": 1,
+      "code/modules/hallucination/fake_chat.dm": 8,
+      "code/modules/holiday/holidays.dm": 1,
+      "code/modules/hydroponics/hydroponics.dm": 10,
+      "code/modules/jobs/job_types/_job.dm": 18,
+      "code/modules/mapping/map_specific_code/Tramstation.dm": 1,
+      "code/modules/mob/inventory.dm": 1,
+      "code/modules/mob/living/basic/bots/_bots.dm": 1,
+      "code/modules/mob/living/basic/cytology/vatbeast.dm": 4,
+      "code/modules/mob/living/basic/drone/interaction.dm": 5,
+      "code/modules/mob/living/basic/guardian/guardian_creator.dm": 14,
+      "code/modules/mob/living/basic/guardian/guardian_verbs.dm": 47,
+      "code/modules/mob/living/basic/pets/parrot/_parrot.dm": 1,
+      "code/modules/mob/living/basic/space_fauna/revenant/revenant_harvest.dm": 8,
+      "code/modules/mob/living/brain/MMI.dm": 1,
+      "code/modules/mob/living/carbon/human/human_helpers.dm": 1,
+      "code/modules/mob/living/carbon/human/human_say.dm": 1,
+      "code/modules/mob/living/living.dm": 3,
+      "code/modules/mob/living/living_defense.dm": 19,
+      "code/modules/mob/living/living_say.dm": 4,
+      "code/modules/mob/living/silicon/ai/ai_say.dm": 1,
+      "code/modules/mob/mob.dm": 2,
+      "code/modules/mob/mob_say.dm": 3,
+      "code/modules/modular_computers/computers/item/laptop.dm": 1,
+      "code/modules/paperwork/paper.dm": 1,
+      "code/modules/photography/photos/photo.dm": 1,
+      "code/modules/point/point.dm": 1,
+      "code/modules/power/port_gen.dm": 2,
+      "code/modules/power/singularity/narsie.dm": 2,
+      "code/modules/projectiles/ammunition/ballistic/foam.dm": 2,
+      "code/modules/projectiles/guns/ballistic/pistol.dm": 3,
+      "code/modules/projectiles/guns/ballistic.dm": 2,
+      "code/modules/projectiles/guns/special/blastcannon.dm": 23,
+      "code/modules/reagents/chemistry/machinery/chem_dispenser.dm": 1,
+      "code/modules/reagents/chemistry/reagents/food_reagents.dm": 13,
+      "code/modules/reagents/chemistry/reagents/impure_reagents/impure_medicine_reagents.dm": 4,
+      "code/modules/reagents/reagent_containers/spray.dm": 1,
+      "code/modules/research/xenobiology/xenobiology.dm": 1,
+      "code/modules/spells/spell_types/summon/servant.dm": 3,
+      "code/modules/surgery/operations/operation_add_limb.dm": 2,
+      "code/modules/surgery/operations/operation_bone_repair.dm": 2,
+      "code/modules/surgery/operations/operation_cavity_implant.dm": 28,
+      "code/modules/surgery/operations/operation_debride.dm": 2,
+      "code/modules/surgery/operations/operation_dental.dm": 2,
+      "code/modules/surgery/operations/operation_generic.dm": 2,
+      "code/modules/surgery/operations/operation_generic_mechanic.dm": 2,
+      "code/modules/surgery/operations/operation_organ_manip.dm": 2,
+      "code/modules/surgery/operations/operation_plastic_surgery.dm": 8,
+      "code/modules/surgery/operations/operation_puncture.dm": 60,
+      "code/modules/surgery/organs/internal/heart/_heart.dm": 27,
+      "code/modules/surgery/organs/internal/lungs/_lungs.dm": 15,
+      "code/modules/surgery/organs/internal/tongue/_tongue.dm": 31,
+      "code/modules/tgs/core/_definitions.dm": 1,
+      "code/modules/tgs/core/core.dm": 6,
+      "code/modules/tgs/includes.dm": 55,
+      "code/modules/tgs/v3210/commands.dm": 7,
+      "code/modules/tgs/v4/commands.dm": 3,
+      "code/modules/tgs/v5/__interop_version.dm": 1,
+      "code/modules/tgs/v5/commands.dm": 5,
+      "code/modules/tgui/tgui.dm": 1,
+      "code/modules/tgui_input/list.dm": 1,
+      "code/modules/tooltip/tooltip.dm": 2,
+      "code/modules/unit_tests/_unit_tests.dm": 1765,
+      "code/modules/unit_tests/abductor_baton_spell.dm": 3,
+      "code/modules/unit_tests/ablative_hud.dm": 4,
+      "code/modules/unit_tests/anonymous_themes.dm": 3,
+      "code/modules/unit_tests/antag_moodlets.dm": 7,
+      "code/modules/unit_tests/armor_verification.dm": 11,
+      "code/modules/unit_tests/bake_a_cake.dm": 6,
+      "code/modules/unit_tests/baseturfs.dm": 3,
+      "code/modules/unit_tests/bee.dm": 3,
+      "code/modules/unit_tests/bitrunning.dm": 3,
+      "code/modules/unit_tests/blindness.dm": 48,
+      "code/modules/unit_tests/blood_volume_procs.dm": 15,
+      "code/modules/unit_tests/bloody_footprints.dm": 5,
+      "code/modules/unit_tests/boulder_processing.dm": 14,
+      "code/modules/unit_tests/breath.dm": 15,
+      "code/modules/unit_tests/cargo_selling.dm": 3,
+      "code/modules/unit_tests/chat_filter.dm": 5,
+      "code/modules/unit_tests/combat.dm": 3,
+      "code/modules/unit_tests/combat_eyestab.dm": 3,
+      "code/modules/unit_tests/connect_loc.dm": 3,
+      "code/modules/unit_tests/door_access.dm": 3,
+      "code/modules/unit_tests/dragon_expiration.dm": 3,
+      "code/modules/unit_tests/embedding.dm": 3,
+      "code/modules/unit_tests/ethereal_revival.dm": 14,
+      "code/modules/unit_tests/find_reference_sanity.dm": 26,
+      "code/modules/unit_tests/fish_unit_tests.dm": 89,
+      "code/modules/unit_tests/full_heal.dm": 1,
+      "code/modules/unit_tests/held_slowdown.dm": 2,
+      "code/modules/unit_tests/high_five.dm": 8,
+      "code/modules/unit_tests/holder_loving.dm": 2,
+      "code/modules/unit_tests/holidays.dm": 7,
+      "code/modules/unit_tests/hunger_curse.dm": 5,
+      "code/modules/unit_tests/hydroponics_extractor_storage.dm": 10,
+      "code/modules/unit_tests/id_card.dm": 3,
+      "code/modules/unit_tests/json_savefile_importing.dm": 3,
+      "code/modules/unit_tests/knockoff_component.dm": 13,
+      "code/modules/unit_tests/language_transfer.dm": 32,
+      "code/modules/unit_tests/lesserform.dm": 3,
+      "code/modules/unit_tests/ling_decap.dm": 14,
+      "code/modules/unit_tests/lootpanel.dm": 3,
+      "code/modules/unit_tests/lungs.dm": 16,
+      "code/modules/unit_tests/machine_disassembly.dm": 8,
+      "code/modules/unit_tests/mafia.dm": 1,
+      "code/modules/unit_tests/market.dm": 8,
+      "code/modules/unit_tests/mecha_damage.dm": 3,
+      "code/modules/unit_tests/metabolizing.dm": 5,
+      "code/modules/unit_tests/mob_damage.dm": 3,
+      "code/modules/unit_tests/modsuit.dm": 1,
+      "code/modules/unit_tests/move_pulled.dm": 3,
+      "code/modules/unit_tests/neurine_trauma_cleanup.dm": 7,
+      "code/modules/unit_tests/novaflower_burn.dm": 4,
+      "code/modules/unit_tests/nuke_cinematic.dm": 15,
+      "code/modules/unit_tests/omnitools.dm": 3,
+      "code/modules/unit_tests/organ_bodypart_shuffle.dm": 12,
+      "code/modules/unit_tests/organs.dm": 17,
+      "code/modules/unit_tests/pills.dm": 3,
+      "code/modules/unit_tests/reagent_mod_procs.dm": 2,
+      "code/modules/unit_tests/required_map_items.dm": 1,
+      "code/modules/unit_tests/say.dm": 8,
+      "code/modules/unit_tests/screenshot_high_luminosity_eyes.dm": 3,
+      "code/modules/unit_tests/security_officer_distribution.dm": 3,
+      "code/modules/unit_tests/slime_mood.dm": 1,
+      "code/modules/unit_tests/spawn_humans.dm": 7,
+      "code/modules/unit_tests/species_change_clothing.dm": 3,
+      "code/modules/unit_tests/species_change_organs.dm": 6,
+      "code/modules/unit_tests/spell_jaunt.dm": 3,
+      "code/modules/unit_tests/spell_mindswap.dm": 2,
+      "code/modules/unit_tests/spell_shapeshift.dm": 14,
+      "code/modules/unit_tests/stomach.dm": 13,
+      "code/modules/unit_tests/style_hotswapping.dm": 3,
+      "code/modules/unit_tests/suit_sensor.dm": 23,
+      "code/modules/unit_tests/surgeries.dm": 3,
+      "code/modules/unit_tests/teleporters.dm": 3,
+      "code/modules/unit_tests/tgui_create_message.dm": 3,
+      "code/modules/unit_tests/trait_addition_and_removal.dm": 18,
+      "code/modules/unit_tests/tutorial_sanity.dm": 3,
+      "code/modules/unit_tests/weird_food.dm": 5,
+      "code/modules/vehicles/mecha/equipment/tools/medical_tools.dm": 4,
+      "code/modules/vehicles/mecha/mecha_ui.dm": 3,
+      "code/modules/vehicles/motorized_wheelchair.dm": 2,
+      "code/modules/vending/custom.dm": 1,
+      "code/world.dm": 6,
+      "tools/CatchUnescapedBrackets/fail.dm": 7,
+      "tools/CatchUnescapedBrackets/pass.dm": 12
+    },
+    "numTry": 17,
+    "numLabeledBlock": 32,
+    "numNew": 12872,
+    "numParentCall": 23040,
+    "numBinaryNull": 18784,
+    "numBinaryOutput": 27162,
+    "numAsCast": 247,
+    "numUnaryTilde": 1048,
+    "numSpawnExpr": 0,
+    "numStubbedBuiltin": 5209,
+    "numWorldRef": 4040,
+    "numPathConstPropRead": 81,
+    "numBrokenPropRead": 6251,
+    "numRuntimeResolvedProps": 6747,
+    "numUnknownBuiltin": 1012,
+    "numBareGlobalProcCalls": 41284,
+    "numTypeResolvedBareCalls": 53993,
+    "numUnresolvedCalls": 1012,
+    "parseErrors": 3746,
+    "parseWarnings": 38,
+    "totalLossSites": 54457,
+    "unknownBuiltins": {
+      "filter": {
+        "count": 12,
+        "samples": [
+          "code/__DEFINES/is_helpers.dm",
+          "code/__HELPERS/filters.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {
+          "/datum/controller/global_vars": 1,
+          "/proc": 1,
+          "/atom/movable": 2,
+          "/datum": 3,
+          "/obj/structure/carving_block": 2,
+          "/obj/structure/statue/custom": 1,
+          "/obj/machinery/portable_atmospherics/canister": 1,
+          "/mob/living/carbon/human": 1
+        }
+      },
+      "regex": {
+        "count": 92,
+        "samples": [
+          "code/__HELPERS/_string_lists.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/names.dm"
+        ],
+        "contexts": {
+          "/proc": 40,
+          "/datum": 1,
+          "/datum/controller/global_vars": 11,
+          "/datum/controller/configuration": 2,
+          "/datum/controller/subsystem/discord": 1,
+          "/datum/controller/subsystem/modular_computers": 1,
+          "/datum/controller/subsystem/tts": 1,
+          "/datum/changelog": 1,
+          "/datum/component/beetlejuice": 1,
+          "/datum/mood_event": 1,
+          "/datum/mutation/medieval": 1,
+          "/datum/status_effect/speech/stutter": 1,
+          "/datum/status_effect/speech/slurring": 1,
+          "/datum/voice_of_god_command": 1,
+          "/datum/voice_of_god_command/say_my_name": 1,
+          "/atom": 6,
+          "/mob": 4,
+          "/datum/antagonist/santa": 1,
+          "/datum/asset/spritesheet": 1,
+          "/client": 2,
+          "/obj/item/clothing/head/fedora/inspector_hat": 1,
+          "/world": 1,
+          "/obj/item/exodrone": 1,
+          "/datum/language": 1,
+          "/datum/parsed_map": 1,
+          "/datum/emote/living/custom": 1,
+          "/obj/item/organ/tongue/zombie": 5,
+          "/datum/tgui_list_input": 1,
+          "/datum/unit_test/tutorial_sanity": 1
+        }
+      },
+      "bounds_dist": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/atoms.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "ftp": {
+        "count": 10,
+        "samples": [
+          "code/__HELPERS/files.dm",
+          "code/controllers/configuration/entries/jobs.dm",
+          "code/datums/json_savefile.dm"
+        ],
+        "contexts": {
+          "/client": 2,
+          "/datum/controller/subsystem/job": 1,
+          "/datum/json_savefile": 1,
+          "/datum/outfit": 1,
+          "/atom": 1,
+          "/datum/admin_verb/count_instances": 1,
+          "/datum/admin_verb/browse_jukebox_music": 1,
+          "/proc": 1,
+          "/obj/item/integrated_circuit": 1
+        }
+      },
+      "findlasttext": {
+        "count": 7,
+        "samples": [
+          "code/__HELPERS/files.dm",
+          "code/__HELPERS/files.dm",
+          "code/__HELPERS/files.dm"
+        ],
+        "contexts": {
+          "/proc": 4,
+          "/client": 1,
+          "/datum/asset_cache_item": 1,
+          "/obj/machinery/chem_recipe_debug": 1
+        }
+      },
+      "winset": {
+        "count": 60,
+        "samples": [
+          "code/__HELPERS/game.dm",
+          "code/_onclick/hud/screen_objects/map_popups.dm",
+          "code/_onclick/hud/screen_objects/map_popups.dm"
+        ],
+        "contexts": {
+          "/proc": 3,
+          "/client": 26,
+          "/datum/browser/modal": 2,
+          "/datum/keybinding/client/communication/say": 3,
+          "/datum/keybinding/client/communication/radio": 3,
+          "/datum/keybinding/client/communication/ooc": 3,
+          "/datum/keybinding/client/communication/me": 3,
+          "/datum/keybinding/client/communication/pray": 3,
+          "/datum/view_data": 3,
+          "/datum/spawnpanel": 2,
+          "/datum/admin_verb/allow_browser_inspect": 1,
+          "/datum/preference/toggle/status_bar": 1,
+          "/datum/escape_menu": 1,
+          "/datum/interview": 1,
+          "/mob/dead": 1,
+          "/datum/tgui": 1,
+          "/datum/tgui_window": 1,
+          "/datum/tgui_say": 2
+        }
+      },
+      "Rand": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/generators.dm"
+        ],
+        "contexts": {
+          "/generator": 1
+        }
+      },
+      "MapColors": {
+        "count": 5,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {
+          "/icon": 5
+        }
+      },
+      "Blend": {
+        "count": 5,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {
+          "/icon": 5
+        }
+      },
+      "SetIntensity": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {
+          "/icon": 1
+        }
+      },
+      "isicon": {
+        "count": 20,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {
+          "/icon": 1,
+          "/proc": 9,
+          "/atom": 2,
+          "/datum/record/crew": 1,
+          "/datum/appearance_debugger": 1,
+          "/client": 1,
+          "/datum/particle_editor": 1,
+          "/datum/asset/json/icon_ref_map": 1,
+          "/datum/universal_icon": 1,
+          "/datum/asset/spritesheet_batched/preferences": 1,
+          "/mob/eye/camera/remote": 1
+        }
+      },
+      "SwapColor": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm"
+        ],
+        "contexts": {
+          "/icon": 2
+        }
+      },
+      "gradient": {
+        "count": 13,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/_onclick/hud/screen_objects/screen_objects.dm"
+        ],
+        "contexts": {
+          "/proc": 3,
+          "/atom/movable/screen/hunger_bar": 1,
+          "/datum/round_event/aurora_caelus": 7,
+          "/obj/item/organ/brain": 1,
+          "/datum/chemical_reaction/meth_crystal": 1
+        }
+      },
+      "icon_states": {
+        "count": 49,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/__HELPERS/icons.dm",
+          "code/_onclick/hud/screen_objects/credits.dm"
+        ],
+        "contexts": {
+          "/proc": 6,
+          "/client": 1,
+          "/obj/item/aicard": 1,
+          "/datum/spawnpanel": 4,
+          "/datum/asset/simple/icon_states": 1,
+          "/datum/asset/spritesheet_batched/achievements": 1,
+          "/datum/asset/spritesheet_batched/bibles": 1,
+          "/datum/asset/spritesheet_batched/research_designs": 1,
+          "/datum/asset/spritesheet/escape_menu_icons": 2,
+          "/datum/asset/spritesheet_batched/vending": 1,
+          "/datum/asset/spritesheet_batched": 1,
+          "/datum/asset/spritesheet": 2,
+          "/obj/effect/sliding_puzzle": 1,
+          "/datum/unit_test/fish_evolution": 10,
+          "/datum/unit_test/barsigns_icon": 1,
+          "/datum/unit_test/missing_icons/worn_icons": 9,
+          "/datum/unit_test/missing_icons": 1,
+          "/datum/unit_test/paintings": 1,
+          "/datum/unit_test/slime_mood": 1,
+          "/datum/unit_test/maptest_turf_icons": 2,
+          "/datum/unit_test/verify_emoji_names": 1
+        }
+      },
+      "splicetext": {
+        "count": 5,
+        "samples": [
+          "code/__HELPERS/icons.dm",
+          "code/game/objects/items/tools/engineering/painter/paintable_decals.dm",
+          "code/modules/assembly/holder.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/datum/paintable_decal_category": 1,
+          "/obj/item/assembly_holder": 1,
+          "/obj/machinery/materials_market": 1,
+          "/obj/machinery/computer/shuttle/pod": 1
+        }
+      },
+      "arctan": {
+        "count": 12,
+        "samples": [
+          "code/__HELPERS/maths.dm",
+          "code/__HELPERS/maths.dm",
+          "code/__HELPERS/maths.dm"
+        ],
+        "contexts": {
+          "/proc": 3,
+          "/matrix": 1,
+          "/datum/beam": 1,
+          "/obj/machinery/holopad": 2,
+          "/obj/machinery/atmospherics/components/unary/hypertorus/core": 1,
+          "/datum/fish_movement": 2,
+          "/obj/item/circuit_component/arctan2": 1,
+          "/obj/item/circuit_component/trigonometry": 1
+        }
+      },
+      "Turn": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/matrices.dm"
+        ],
+        "contexts": {
+          "/matrix": 1
+        }
+      },
+      "Multiply": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/matrices.dm"
+        ],
+        "contexts": {
+          "/matrix": 1
+        }
+      },
+      "astype": {
+        "count": 91,
+        "samples": [
+          "code/__HELPERS/priority_announce.dm",
+          "code/_onclick/hud/screen_objects/robot.dm",
+          "code/_onclick/hud/screen_objects/screen_objects.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/atom/movable/screen/robot/lamp": 1,
+          "/atom/movable/screen/spacesuit": 3,
+          "/obj/item": 1,
+          "/datum/controller/subsystem/economy": 1,
+          "/datum/controller/subsystem/id_access": 3,
+          "/datum/action/cooldown/guardian/check_type": 1,
+          "/datum/action/cooldown/guardian/communicate": 1,
+          "/datum/action/cooldown/guardian/manifest": 1,
+          "/datum/action/cooldown/guardian/recall": 1,
+          "/datum/action/cooldown/guardian/toggle_light": 1,
+          "/datum/action/cooldown/guardian/toggle_mode": 1,
+          "/datum/component/houlihan_teleport": 1,
+          "/datum/material": 3,
+          "/datum/material_slot/weapon_head": 2,
+          "/datum/material_slot/handle": 1,
+          "/datum/material_property/vampires_bane": 1,
+          "/datum/status_effect/slime_food": 1,
+          "/datum/timed_action": 2,
+          "/atom": 2,
+          "/obj/machinery/ai_law_rack": 2,
+          "/obj/machinery/camera": 1,
+          "/obj/item/ai_module/law": 1,
+          "/obj/machinery/door/puzzle/keycard": 1,
+          "/obj/item/nuke_core": 1,
+          "/obj/item/melee/baton/security": 1,
+          "/obj/item/melee/powerfist": 1,
+          "/obj/item/pneumatic_cannon": 1,
+          "/datum/closet_see_inside": 4,
+          "/obj/structure/closet/secure_closet/brig/genpop": 2,
+          "/obj/structure/signboard/holosign": 1,
+          "/obj/structure/tripwire": 1,
+          "/obj/structure/sink": 2,
+          "/turf/open/floor/light": 1,
+          "/turf/open/lava": 1,
+          "/datum/action/cooldown/mob_cooldown/blood_worm/spit": 1,
+          "/datum/action/changeling/biodegrade": 1,
+          "/obj/machinery/nuclearbomb": 1,
+          "/obj/item/spellbook": 1,
+          "/obj/machinery/airalarm": 1,
+          "/datum/component/avatar_connection": 1,
+          "/obj/machinery/quantum_server": 1,
+          "/obj/item/clothing/head/helmet/perceptomatrix": 2,
+          "/obj/structure/closet/crate/grave": 1,
+          "/datum/component/meteor_combat": 1,
+          "/obj/item/kinetic_crusher": 1,
+          "/obj/machinery/ore_silo": 4,
+          "/mob/eye/camera/remote": 1,
+          "/obj/projectile/tentacle_lash": 1,
+          "/mob/living/carbon": 1,
+          "/datum/species": 2,
+          "/mob/living/carbon/human": 4,
+          "/datum/emote/living/deathgasp": 1,
+          "/datum/emote/living/yawn": 1,
+          "/datum/action/innate/core_return": 1,
+          "/obj/structure/floodlight_frame": 1,
+          "/obj/item/gun/energy/recharge/kinetic_accelerator": 1,
+          "/obj/item/reagent_containers/cup/glass/bottle": 1,
+          "/obj/structure/disposalpipe/sorting/mail": 1,
+          "/obj/item/delivery": 1,
+          "/datum/gizpulse/activate_puzzle": 1,
+          "/datum/gizpulse/cycle_position": 1,
+          "/datum/gizpulse/cycle_digit": 1,
+          "/datum/gizpulse/try_crack": 1,
+          "/obj/docking_port/mobile/supply": 1,
+          "/datum/action/cooldown/spell/conjure/simian": 1,
+          "/obj/item/organ/eyes/robotic/tacvisor": 1,
+          "/obj/item/wallframe/tram": 1
+        }
+      },
+      "antag_report": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/ticker": 1
+        }
+      },
+      "hardcore_random_report": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/ticker": 1
+        }
+      },
+      "medal_report": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/ticker": 1
+        }
+      },
+      "cheevo_report": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/ticker": 1
+        }
+      },
+      "give_show_report_button": {
+        "count": 1,
+        "samples": [
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/ticker": 1
+        }
+      },
+      "award_service": {
+        "count": 3,
+        "samples": [
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/ticker": 3
+        }
+      },
+      "printplayer": {
+        "count": 19,
+        "samples": [
+          "code/__HELPERS/roundend.dm",
+          "code/__HELPERS/roundend.dm",
+          "code/modules/antagonists/_common/antag_datum.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/ticker": 2,
+          "/datum/antagonist": 1,
+          "/datum/team/abductor_team": 1,
+          "/datum/antagonist/changeling": 1,
+          "/datum/team/fugitive": 1,
+          "/datum/team/fugitive_hunters": 1,
+          "/datum/antagonist/heretic": 1,
+          "/datum/antagonist/malf_ai": 1,
+          "/datum/antagonist/obsessed": 1,
+          "/datum/antagonist/enemy_of_the_state": 1,
+          "/datum/team/revolution": 1,
+          "/datum/antagonist/space_dragon": 1,
+          "/datum/antagonist/spy": 1,
+          "/datum/antagonist/traitor": 1,
+          "/datum/antagonist/wizard": 1,
+          "/datum/team/xeno/captive": 3
+        }
+      },
+      "shell": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/shell.dm",
+          "code/__HELPERS/shell.dm"
+        ],
+        "contexts": {
+          "/world": 2
+        }
+      },
+      "cmptext": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/text.dm",
+          "code/game/objects/structures/signboards/holosign.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/obj/structure/signboard/holosign": 1
+        }
+      },
+      "trimtext": {
+        "count": 3,
+        "samples": [
+          "code/__HELPERS/text.dm",
+          "code/game/objects/structures/signboards/holosign.dm",
+          "code/game/objects/structures/signboards/holosign.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/obj/structure/signboard/holosign": 2
+        }
+      },
+      ".": {
+        "count": 6,
+        "samples": [
+          "code/__HELPERS/text.dm",
+          "code/_onclick/hud/screen_objects/alert.dm",
+          "code/_onclick/hud/screen_objects/alert.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/mob": 2,
+          "/datum/controller/subsystem/blackbox": 1,
+          "/datum/brain_trauma/severe/split_personality": 1,
+          "/obj/machinery/holopad": 1
+        }
+      },
+      "replacetext_char": {
+        "count": 2,
+        "samples": [
+          "code/__HELPERS/time.dm",
+          "code/game/machinery/announcement_system.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/datum/aas_config_entry": 1
+        }
+      },
+      "REGEX_QUOTE": {
+        "count": 8,
+        "samples": [
+          "code/_globalvars/phobias.dm",
+          "code/controllers/configuration/configuration.dm",
+          "code/controllers/configuration/configuration.dm"
+        ],
+        "contexts": {
+          "/proc": 2,
+          "/datum/controller/configuration": 2,
+          "/datum/brain_trauma/hypnosis": 1,
+          "/datum/brain_trauma/severe/hypnotic_trigger": 1,
+          "/datum/component/beetlejuice": 1,
+          "/datum/mutation/medieval": 1
+        }
+      },
+      "output": {
+        "count": 9,
+        "samples": [
+          "code/_js/byjax.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/admin/view_variables/view_variables.dm"
+        ],
+        "contexts": {
+          "/proc": 2,
+          "/client": 2,
+          "/datum/tgui_window": 4,
+          "/datum/tooltip": 1
+        }
+      },
+      "openToolTip": {
+        "count": 12,
+        "samples": [
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm"
+        ],
+        "contexts": {
+          "/atom/movable/screen/movable/action_button": 1,
+          "/atom/movable/screen/button_palette": 1,
+          "/atom/movable/screen/palette_scroll": 1,
+          "/atom/movable/screen/alert": 1,
+          "/atom/movable/screen/blob": 1,
+          "/atom/movable/screen/lobby/button/sign_up": 1,
+          "/atom/movable/screen/lobby/new_player_info": 1,
+          "/atom/movable/screen/radial/slice": 1,
+          "/obj/effect/abstract/info": 1,
+          "/obj/item": 2,
+          "/atom/movable/screen/minimap_toolbar_button": 1
+        }
+      },
+      "closeToolTip": {
+        "count": 11,
+        "samples": [
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm",
+          "code/_onclick/hud/screen_objects/action_button.dm"
+        ],
+        "contexts": {
+          "/atom/movable/screen/movable/action_button": 1,
+          "/atom/movable/screen/button_palette": 2,
+          "/atom/movable/screen/palette_scroll": 1,
+          "/atom/movable/screen/alert": 1,
+          "/atom/movable/screen/blob": 1,
+          "/atom/movable/screen/lobby/button/sign_up": 1,
+          "/atom/movable/screen/lobby/new_player_info": 1,
+          "/atom/movable/screen/radial/slice": 1,
+          "/obj/item": 1,
+          "/atom/movable/screen/minimap_toolbar_button": 1
+        }
+      },
+      "span_userdanger": {
+        "count": 5,
+        "samples": [
+          "code/_onclick/hud/screen_objects/alert.dm",
+          "code/datums/diseases/advance/symptoms/chills.dm",
+          "code/datums/diseases/advance/symptoms/cough.dm"
+        ],
+        "contexts": {
+          "/atom/movable/screen/alert/give/highfive": 1,
+          "/datum/symptom/chills": 1,
+          "/datum/symptom/cough": 1,
+          "/datum/symptom/hallucigen": 1,
+          "/mob/living": 1
+        }
+      },
+      "switch": {
+        "count": 3,
+        "samples": [
+          "code/_onclick/hud/screen_objects/alert.dm",
+          "code/datums/diseases/advance/symptoms/choking.dm",
+          "code/game/machinery/ai_core/_core.dm"
+        ],
+        "contexts": {
+          "/atom/movable/screen/alert/give/highfive": 1,
+          "/datum/symptom/choking": 1,
+          "/obj/structure/ai_core": 1
+        }
+      },
+      "winclone": {
+        "count": 1,
+        "samples": [
+          "code/_onclick/hud/screen_objects/map_popups.dm"
+        ],
+        "contexts": {
+          "/client": 1
+        }
+      },
+      "winshow": {
+        "count": 2,
+        "samples": [
+          "code/_onclick/hud/screen_objects/map_popups.dm",
+          "code/_onclick/hud/screen_objects/map_popups.dm"
+        ],
+        "contexts": {
+          "/client": 2
+        }
+      },
+      "check_block": {
+        "count": 11,
+        "samples": [
+          "code/_onclick/item_attack.dm",
+          "code/modules/mob/living/basic/basic_defense.dm",
+          "code/modules/mob/living/carbon/human/human_defense.dm"
+        ],
+        "contexts": {
+          "/mob/living": 9,
+          "/mob/living/basic": 1,
+          "/mob/living/carbon/human": 4,
+          "/mob/living/silicon/robot": 1,
+          "/mob/living/simple_animal": 1
+        }
+      },
+      "apply_damage": {
+        "count": 3,
+        "samples": [
+          "code/_onclick/item_attack.dm",
+          "code/modules/mob/living/basic/basic_defense.dm",
+          "code/modules/mob/living/basic/basic_defense.dm"
+        ],
+        "contexts": {
+          "/mob/living": 18,
+          "/mob/living/basic": 11,
+          "/mob/living/basic/blob_minion/blobbernaut/minion": 1,
+          "/mob/living/basic/construct/juggernaut": 1,
+          "/mob/living/basic/heretic_summon/maid_in_the_mirror": 1,
+          "/mob/living/basic/snail": 1,
+          "/mob/living/basic/spider": 1,
+          "/mob/living/carbon/alien/adult": 1,
+          "/mob/living/carbon/alien": 5,
+          "/mob/living/carbon/alien/larva": 1,
+          "/mob/living/carbon": 1,
+          "/mob/living/carbon/human": 10,
+          "/mob/living/simple_animal": 6,
+          "/datum/unit_test/on_mob_end_metabolize": 3,
+          "/datum/unit_test/mob_damage": 2,
+          "/datum/unit_test/mob_damage/animal": 2
+        }
+      },
+      "rand_seed": {
+        "count": 1,
+        "samples": [
+          "code/controllers/master.dm"
+        ],
+        "contexts": {
+          "/datum/controller/master": 1
+        }
+      },
+      "get_step_to": {
+        "count": 5,
+        "samples": [
+          "code/controllers/subsystem/movement/movement_types.dm",
+          "code/datums/ai/generic_behaviors/attack_obstacles.dm",
+          "code/datums/ai/generic_behaviors/attack_obstacles.dm"
+        ],
+        "contexts": {
+          "/datum/move_loop/has_target/dist_bound/move_to": 1,
+          "/datum/bt_node/ai_behavior/attack_obstructions": 2,
+          "/datum/station_trait/revenge_of_pun_pun": 2
+        }
+      },
+      "get_step_rand": {
+        "count": 6,
+        "samples": [
+          "code/controllers/subsystem/movement/movement_types.dm",
+          "code/game/objects/items/teleportation.dm",
+          "code/modules/antagonists/cult/cult_items.dm"
+        ],
+        "contexts": {
+          "/datum/move_loop/move_to_rand": 1,
+          "/obj/item/syndicate_teleporter": 1,
+          "/turf/open": 1,
+          "/datum/antagonist/heretic": 1,
+          "/datum/heretic_knowledge/hunt_and_sacrifice": 1,
+          "/obj/item/relic": 1
+        }
+      },
+      "link": {
+        "count": 17,
+        "samples": [
+          "code/controllers/subsystem/server_maint.dm",
+          "code/game/objects/items/wiki_manuals.dm",
+          "code/modules/admin/admin_verbs.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/server_maint": 1,
+          "/obj/item/book/manual/wiki": 1,
+          "/datum/admin_verb/display_sendmaps": 1,
+          "/proc": 1,
+          "/client": 11,
+          "/mob/dead": 1,
+          "/datum/tgui_window": 1
+        }
+      },
+      "check_backup_emergency_shuttle": {
+        "count": 1,
+        "samples": [
+          "code/controllers/subsystem/shuttle.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/shuttle": 1
+        }
+      },
+      "register": {
+        "count": 1,
+        "samples": [
+          "code/controllers/subsystem/shuttle.dm",
+          "code/modules/asset_cache/asset_list.dm",
+          "code/modules/asset_cache/asset_list.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/shuttle": 1,
+          "/datum/asset": 2,
+          "/obj/docking_port/stationary": 1
+        }
+      },
+      "announcements": {
+        "count": 1,
+        "samples": [
+          "code/controllers/subsystem/shuttle.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/shuttle": 1
+        }
+      },
+      "getDock": {
+        "count": 3,
+        "samples": [
+          "code/controllers/subsystem/shuttle.dm",
+          "code/controllers/subsystem/shuttle.dm",
+          "code/controllers/subsystem/shuttle.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/shuttle": 3
+        }
+      },
+      "Remove": {
+        "count": 1,
+        "samples": [
+          "code/controllers/subsystem/vote.dm",
+          "code/datums/actions/action.dm",
+          "code/datums/actions/action.dm"
+        ],
+        "contexts": {
+          "/datum/action/vote": 1,
+          "/datum/action": 4,
+          "/datum/action/cooldown/mob_cooldown/projectile_attack/colossus_final": 1,
+          "/datum/action/innate/blobpop": 1,
+          "/datum/action/innate/cult/master/finalreck": 1,
+          "/datum/action/innate/ai/ranged": 1,
+          "/obj/item/organ/heart/nightmare": 1,
+          "/datum/action/item_action/hands_free/memento_mori": 1,
+          "/datum/action/innate/swap_body": 1,
+          "/datum/action/innate/core_return": 1,
+          "/datum/action/innate/deploy_last_shell": 1,
+          "/obj/item/organ": 3,
+          "/datum/unit_test/organ_bodypart_shuffle": 1,
+          "/obj/item/organ/zombie_infection": 1
+        }
+      },
+      "fract": {
+        "count": 2,
+        "samples": [
+          "code/controllers/subsystem/weather.dm",
+          "code/controllers/subsystem/weather.dm"
+        ],
+        "contexts": {
+          "/datum/controller/subsystem/weather": 2
+        }
+      },
+      "faction_check_atom": {
+        "count": 1,
+        "samples": [
+          "code/datums/actions/mobs/create_legion_turrets.dm",
+          "code/game/machinery/porta_turret/portable_turret.dm",
+          "code/game/objects/items/devices/traitordevices.dm"
+        ],
+        "contexts": {
+          "/obj/structure/legionturret": 1,
+          "/obj/machinery/porta_turret": 1,
+          "/obj/machinery/porta_turret/syndicate/toolbox": 2,
+          "/obj/structure/spawner": 1,
+          "/obj/effect/overloader_trap": 2,
+          "/mob/living/basic/mining/legion_brood": 1,
+          "/mob/living/simple_animal/hostile": 3,
+          "/mob/living/simple_animal/hostile/megafauna/bubblegum": 3,
+          "/mob/living/simple_animal/hostile/asteroid/elite": 1,
+          "/mob/living/simple_animal/hostile/asteroid/elite/legionnaire": 1,
+          "/mob/living/simple_animal": 1,
+          "/datum/unit_test/human_tox_damage": 1
+        }
+      },
+      "vector": {
+        "count": 8,
+        "samples": [
+          "code/datums/beam.dm",
+          "code/datums/beam.dm",
+          "code/datums/beam.dm"
+        ],
+        "contexts": {
+          "/datum/beam": 6,
+          "/obj/vehicle/ridden/golfcart": 2
+        }
+      },
+      "span_notice": {
+        "count": 27,
+        "samples": [
+          "code/datums/brain_damage/hypnosis.dm",
+          "code/datums/components/anomalock_module.dm",
+          "code/datums/components/spirit_holding.dm"
+        ],
+        "contexts": {
+          "/datum/brain_trauma/hypnosis": 1,
+          "/datum/component/anomaly_locked_module": 1,
+          "/datum/component/spirit_holding": 1,
+          "/datum/component/trader": 1,
+          "/datum/symptom/sensory_restoration": 1,
+          "/datum/wound/burn/flesh": 1,
+          "/obj/structure/ai_core": 1,
+          "/obj/machinery/fat_sucker": 3,
+          "/obj/machinery/recharger": 2,
+          "/obj/item/robot_suit": 1,
+          "/obj/item/stack/sheet/mineral/wood": 1,
+          "/obj/item/portable_wind_turbine": 2,
+          "/obj/structure/sign/eyechart": 1,
+          "/obj/item/flashlight/lantern/heretic": 1,
+          "/datum/grand_finale/usurp": 1,
+          "/datum/grand_finale/clown": 1,
+          "/obj/machinery/electrolyzer": 1,
+          "/obj/item/organ/ears/babbelfish": 1,
+          "/obj/machinery/hydroponics": 1,
+          "/datum/action/cooldown/tentacle_slap": 1,
+          "/mob/living/basic/drone": 1,
+          "/mob/living/carbon/human": 1,
+          "/datum/surgery_operation/limb/plastic_surgery": 1
+        }
+      },
+      "say": {
+        "count": 1,
+        "samples": [
+          "code/datums/brain_damage/imaginary_friend.dm",
+          "code/game/machinery/autolathe.dm",
+          "code/game/machinery/autolathe.dm"
+        ],
+        "contexts": {
+          "/datum/brain_trauma/special/imaginary_friend": 1,
+          "/obj/machinery/autolathe": 11,
+          "/obj/machinery/computer/bank_machine": 7,
+          "/obj/machinery/computer/piratepad_control/civilian": 1,
+          "/obj/machinery/computer/aifixer": 1,
+          "/obj/machinery/computer/apc_control": 1,
+          "/obj/machinery/computer/arcade": 1,
+          "/obj/machinery/computer/arcade/battle": 8,
+          "/obj/machinery/computer/arcade/orion_trail": 4,
+          "/obj/item/orion_ship": 3,
+          "/obj/machinery/computer/dna_console": 4,
+          "/obj/machinery/computer/order_console/cook": 1,
+          "/obj/machinery/computer/order_console/mining": 1,
+          "/obj/machinery/computer/order_console": 4,
+          "/obj/machinery/computer/pod": 1,
+          "/obj/machinery/computer/prisoner/gulag_teleporter_computer": 2,
+          "/obj/machinery/computer/teleporter": 7,
+          "/obj/machinery/computer/security/telescreen/entertainment": 1,
+          "/obj/item/assembly/control/showtime": 1,
+          "/obj/machinery/dish_drive": 1,
+          "/obj/machinery/door/airlock": 1,
+          "/obj/machinery/ecto_sniffer": 1,
+          "/obj/machinery/fat_sucker": 2,
+          "/obj/machinery/flatpacker": 4,
+          "/obj/machinery/gulag_item_reclaimer": 1,
+          "/obj/machinery/harvester": 6,
+          "/obj/machinery/holopad": 2,
+          "/obj/machinery/medical_kiosk": 4,
+          "/obj/machinery/newscaster": 11,
+          "/obj/machinery/prisongate": 6,
+          "/obj/machinery/prisongate/labour": 2,
+          "/obj/machinery/recharger": 3,
+          "/obj/machinery/recharge_station": 4,
+          "/obj/machinery/requests_console": 1,
+          "/obj/machinery/roulette": 7,
+          "/obj/machinery/scanner_gate": 2,
+          "/obj/machinery/computer/slot_machine": 10,
+          "/obj/machinery/suit_storage_unit": 1,
+          "/obj/machinery/power/singularity_beacon": 2,
+          "/obj/machinery/power/singularity_beacon/syndicate/no_escape": 2,
+          "/obj/item/taperecorder": 2,
+          "/obj/item/toy/eightball": 1,
+          "/obj/item/machine_remote": 5,
+          "/obj/item/pinpointer/material_sniffer": 1,
+          "/obj/item/toy/plush/ratplush": 3,
+          "/obj/item/toy/plush/whiny_plushie": 2,
+          "/obj/item/access_key": 2,
+          "/obj/item/toy/mecha": 7,
+          "/obj/item/toy/mecha/deathripley": 1,
+          "/obj/item/toy/talking": 1,
+          "/obj/item/toy/intento": 2,
+          "/obj/item/portable_wind_turbine": 1,
+          "/obj/machinery/computer/camera_advanced/base_construction/aux": 1,
+          "/obj/structure/closet/secure_closet/brig/genpop": 2,
+          "/obj/structure/training_machine": 2,
+          "/obj/machinery/abductor/console": 3,
+          "/obj/machinery/abductor/experiment": 4,
+          "/obj/machinery/fugitive_locator": 2,
+          "/obj/machinery/nuclearbomb": 1,
+          "/obj/machinery/loot_locator": 2,
+          "/obj/item/grenade/c4/ninja": 1,
+          "/obj/item/assembly/voice": 4,
+          "/obj/machinery/airalarm": 1,
+          "/obj/machinery/atmospherics/components/unary/hypertorus/core": 1,
+          "/obj/machinery/atmospherics/components/unary/airlock_pump": 6,
+          "/obj/structure/speaking_tile": 1,
+          "/obj/machinery/computer/order_console/bitrunning": 1,
+          "/obj/machinery/quantum_server": 4,
+          "/obj/machinery/computer/cargo/express": 2,
+          "/obj/machinery/ltsrbt": 8,
+          "/obj/machinery/materials_market": 8,
+          "/obj/machinery/computer/cargo": 17,
+          "/obj/item/clothing/head/helmet/monkey_sentience": 1,
+          "/obj/structure/holopay": 1,
+          "/obj/machinery/destructive_scanner": 1,
+          "/obj/machinery/computer/exodrone_control_console": 1,
+          "/obj/item/survivalcapsule/fishing": 5,
+          "/obj/item/food/burger/ghost": 1,
+          "/obj/machinery/computer/holodeck": 4,
+          "/obj/machinery/biogenerator": 3,
+          "/obj/machinery/computer/libraryconsole": 3,
+          "/obj/machinery/computer/libraryconsole/bookmanagement": 16,
+          "/obj/machinery/libraryscanner": 1,
+          "/obj/machinery/bookbinder": 1,
+          "/obj/machinery/power/manufacturing/crafter": 2,
+          "/obj/structure/cursed_slot_machine": 1,
+          "/obj/machinery/computer/auxiliary_base": 3,
+          "/obj/machinery/bouldertech": 2,
+          "/obj/machinery/mineral/labor_claim_console": 9,
+          "/obj/machinery/mineral/labor_points_checker": 4,
+          "/obj/item/hierophant_club": 1,
+          "/obj/machinery/mineral/ore_redemption": 1,
+          "/obj/machinery/ore_silo": 1,
+          "/mob/living/basic/bot/secbot": 4,
+          "/mob/living/basic/goat": 1,
+          "/mob/living/basic/guardian/standard": 1,
+          "/mob/living/basic/node_drone": 1,
+          "/mob/living/carbon/human": 1,
+          "/mob/living": 1,
+          "/mob/living/simple_animal": 2,
+          "/mob": 1,
+          "/obj/machinery/fax": 1,
+          "/obj/machinery/ticket_machine": 1,
+          "/obj/machinery/power/apc": 2,
+          "/obj/machinery/chem_dispenser": 3,
+          "/obj/machinery/chem_heater": 2,
+          "/obj/machinery/chem_mass_spec": 3,
+          "/obj/machinery/chem_master": 3,
+          "/obj/machinery/research/anomaly_refinery": 7,
+          "/obj/machinery/rnd/destructive_analyzer": 1,
+          "/obj/machinery/rnd/production": 11,
+          "/obj/machinery/doppler_array": 1,
+          "/obj/machinery/atmospherics/components/binary/tank_compressor": 4,
+          "/obj/machinery/computer/rdconsole": 16,
+          "/obj/structure/table/abductor/wabbajack": 1,
+          "/obj/machinery/scanner_gate/luxury_shuttle": 3,
+          "/obj/machinery/computer/shuttle/custom_shuttle": 2,
+          "/obj/machinery/computer/camera_advanced/shuttle_docker/custom": 2,
+          "/obj/machinery/computer/emergency_shuttle": 6,
+          "/obj/machinery/computer/shuttle": 1,
+          "/obj/machinery/satellite/meteor_shield": 5,
+          "/obj/machinery/door/airlock/tram": 2,
+          "/obj/item/assembly/control/transport": 8,
+          "/obj/machinery/mecha_part_fabricator": 6,
+          "/obj/machinery/mailsorter": 4,
+          "/obj/machinery/vending": 2,
+          "/obj/machinery/component_printer": 1,
+          "/obj/machinery/module_duplicator": 1,
+          "/obj/item/multitool/circuit": 2,
+          "/obj/machinery/bci_implanter": 4
+        }
+      },
+      "group_clients": {
+        "count": 6,
+        "samples": [
+          "code/datums/brain_damage/imaginary_friend.dm",
+          "code/datums/brain_damage/imaginary_friend.dm",
+          "code/datums/brain_damage/imaginary_friend.dm"
+        ],
+        "contexts": {
+          "/mob/eye/imaginary_friend": 6
+        }
+      },
+      "Show": {
+        "count": 1,
+        "samples": [
+          "code/datums/brain_damage/imaginary_friend.dm"
+        ],
+        "contexts": {
+          "/mob/eye/imaginary_friend": 1
+        }
+      },
+      "span_warning": {
+        "count": 14,
+        "samples": [
+          "code/datums/brain_damage/mild.dm",
+          "code/datums/components/clothing_dirt.dm",
+          "code/datums/diseases/advance/symptoms/choking.dm"
+        ],
+        "contexts": {
+          "/datum/brain_trauma/mild/nervous_cough": 1,
+          "/datum/component/clothing_dirt": 1,
+          "/datum/symptom/choking": 1,
+          "/datum/symptom/fever": 1,
+          "/datum/symptom/vomit": 1,
+          "/datum/symptom/weight_loss": 1,
+          "/datum/action/cooldown/spell/pointed/mindread": 1,
+          "/datum/status_effect/strandling": 1,
+          "/datum/status_effect/seizure": 1,
+          "/datum/wound/blunt/bone/moderate": 1,
+          "/datum/wound/pierce/bleed": 1,
+          "/obj/item/stack/medical/wrap": 1,
+          "/obj/item/melee/blood_magic/manipulator": 1,
+          "/datum/reagent/impurity/inacusiate": 1
+        }
+      },
+      "switch_personalities": {
+        "count": 2,
+        "samples": [
+          "code/datums/brain_damage/split_personality.dm",
+          "code/datums/brain_damage/split_personality.dm"
+        ],
+        "contexts": {
+          "/datum/brain_trauma/severe/split_personality": 2
+        }
+      },
+      "winexists": {
+        "count": 4,
+        "samples": [
+          "code/datums/browser.dm",
+          "code/datums/browser.dm",
+          "code/modules/client/client_procs.dm"
+        ],
+        "contexts": {
+          "/datum/browser": 1,
+          "/datum/browser/modal": 1,
+          "/client": 1,
+          "/datum/tgui_window": 1
+        }
+      },
+      "winget": {
+        "count": 6,
+        "samples": [
+          "code/datums/browser.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/client/client_procs.dm"
+        ],
+        "contexts": {
+          "/datum/browser/modal": 1,
+          "/proc": 1,
+          "/client": 4
+        }
+      },
+      "browse_rsc": {
+        "count": 12,
+        "samples": [
+          "code/datums/browser.dm",
+          "code/game/machinery/newscaster/newscaster_machine.dm",
+          "code/game/machinery/newscaster/newscaster_machine.dm"
+        ],
+        "contexts": {
+          "/datum/browser/modal/pref_like_picker": 1,
+          "/obj/machinery/newscaster": 2,
+          "/obj/item/newspaper": 2,
+          "/obj/structure/detectiveboard": 1,
+          "/obj/structure/safe": 1,
+          "/datum/newspanel": 2,
+          "/client": 1,
+          "/datum/asset_transport": 1,
+          "/obj/item/photo": 1
+        }
+      },
+      "get_perceived_food_quality": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/food/edible.dm"
+        ],
+        "contexts": {
+          "/datum/component/edible": 1
+        }
+      },
+      "checkLiked": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/food/edible.dm",
+          "code/modules/reagents/reagent_containers/cups/_cup.dm"
+        ],
+        "contexts": {
+          "/datum/component/edible": 1,
+          "/obj/item/reagent_containers/cup": 1
+        }
+      },
+      "CanConsume": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/food/edible.dm"
+        ],
+        "contexts": {
+          "/datum/component/edible": 1
+        }
+      },
+      "span_danger": {
+        "count": 8,
+        "samples": [
+          "code/datums/components/food/edible.dm",
+          "code/datums/components/spirit_holding.dm",
+          "code/datums/diseases/chronic_illness.dm"
+        ],
+        "contexts": {
+          "/datum/component/edible": 1,
+          "/datum/component/spirit_holding": 1,
+          "/datum/disease/chronic_illness": 1,
+          "/datum/disease/wizarditis": 1,
+          "/datum/reagent/heretic_rust": 1,
+          "/obj/item/gun/ballistic/automatic/pistol/doohickey": 1,
+          "/obj/item/gun/blastcannon": 1,
+          "/datum/reagent/consumable/condensedcapsaicin": 1
+        }
+      },
+      "bind_the_soule": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/spirit_holding.dm"
+        ],
+        "contexts": {
+          "/datum/component/spirit_holding": 1
+        }
+      },
+      "restock_products": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/trader/trader.dm"
+        ],
+        "contexts": {
+          "/datum/component/trader": 1
+        }
+      },
+      "renew_item_demands": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/trader/trader.dm"
+        ],
+        "contexts": {
+          "/datum/component/trader": 1
+        }
+      },
+      "can_trade": {
+        "count": 10,
+        "samples": [
+          "code/datums/components/trader/trader.dm",
+          "code/datums/components/trader/trader.dm",
+          "code/datums/components/trader/trader.dm"
+        ],
+        "contexts": {
+          "/datum/component/trader": 10
+        }
+      },
+      "trader_sells_what": {
+        "count": 1,
+        "samples": [
+          "code/datums/components/trader/trader.dm"
+        ],
+        "contexts": {
+          "/datum/component/trader": 1
+        }
+      },
+      "Asphyxiate_stage_3_4": {
+        "count": 1,
+        "samples": [
+          "code/datums/diseases/advance/symptoms/choking.dm"
+        ],
+        "contexts": {
+          "/datum/symptom/choking": 1
+        }
+      },
+      "Asphyxiate": {
+        "count": 1,
+        "samples": [
+          "code/datums/diseases/advance/symptoms/choking.dm"
+        ],
+        "contexts": {
+          "/datum/symptom/choking": 1
+        }
+      },
+      "Asphyxiate_death": {
+        "count": 1,
+        "samples": [
+          "code/datums/diseases/advance/symptoms/choking.dm"
+        ],
+        "contexts": {
+          "/datum/symptom/choking": 1
+        }
+      },
+      "init_spells": {
+        "count": 1,
+        "samples": [
+          "code/datums/diseases/wizarditis.dm"
+        ],
+        "contexts": {
+          "/datum/disease/wizarditis": 1
+        }
+      },
+      "generator": {
+        "count": 5,
+        "samples": [
+          "code/datums/elements/can_shatter.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/admin/view_variables/particle_editor.dm"
+        ],
+        "contexts": {
+          "/datum/element/can_shatter": 1,
+          "/proc": 1,
+          "/datum/particle_editor": 1,
+          "/obj/projectile/bullet/mining_missile": 2
+        }
+      },
+      "check_area_mood": {
+        "count": 1,
+        "samples": [
+          "code/datums/mood.dm"
+        ],
+        "contexts": {
+          "/datum/mood": 1
+        }
+      },
+      "adjust_sanity": {
+        "count": 9,
+        "samples": [
+          "code/datums/mood.dm",
+          "code/datums/mood.dm",
+          "code/datums/mood.dm"
+        ],
+        "contexts": {
+          "/datum/mood": 9
+        }
+      },
+      "get_descriptor": {
+        "count": 8,
+        "samples": [
+          "code/datums/mood_events/death.dm",
+          "code/datums/mood_events/death.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/mood_event/conditional/see_death": 1,
+          "/datum/mood_event/conditional/see_death/naive": 1,
+          "/datum/unit_test/anonymous_themes": 8,
+          "/datum/unit_test/baton": 8
+        }
+      },
+      "oviewers": {
+        "count": 6,
+        "samples": [
+          "code/datums/storage/storage.dm",
+          "code/game/objects/items/plushes.dm",
+          "code/game/objects/items/plushes.dm"
+        ],
+        "contexts": {
+          "/datum/storage": 1,
+          "/obj/item/toy/plush/monkey": 2,
+          "/proc": 1,
+          "/obj/singularity": 1,
+          "/obj/item/relic": 1
+        }
+      },
+      "adjust_blood_flow": {
+        "count": 2,
+        "samples": [
+          "code/datums/wounds/_wounds.dm",
+          "code/datums/wounds/pierce.dm",
+          "code/datums/wounds/pierce.dm"
+        ],
+        "contexts": {
+          "/datum/wound": 1,
+          "/datum/wound/pierce/bleed": 9,
+          "/datum/wound/slash/flesh": 8,
+          "/datum/reagent/consumable/condensedcapsaicin": 2
+        }
+      },
+      "tool_cauterize": {
+        "count": 1,
+        "samples": [
+          "code/datums/wounds/pierce.dm",
+          "code/datums/wounds/slash.dm"
+        ],
+        "contexts": {
+          "/datum/wound/pierce/bleed": 1,
+          "/datum/wound/slash/flesh": 1
+        }
+      },
+      "las_cauterize": {
+        "count": 1,
+        "samples": [
+          "code/datums/wounds/slash.dm"
+        ],
+        "contexts": {
+          "/datum/wound/slash/flesh": 1
+        }
+      },
+      "span_green": {
+        "count": 1,
+        "samples": [
+          "code/datums/wounds/slash.dm"
+        ],
+        "contexts": {
+          "/datum/wound/slash/flesh": 1
+        }
+      },
+      "add_faction": {
+        "count": 1,
+        "samples": [
+          "code/game/atoms_movable.dm",
+          "code/modules/mob/living/basic/guardian/guardian.dm",
+          "code/modules/mob/living/basic/vermin/mouse.dm"
+        ],
+        "contexts": {
+          "/atom/movable": 1,
+          "/mob/living/basic/guardian": 1,
+          "/mob/living/basic/mouse": 2,
+          "/mob/living": 1,
+          "/mob/living/silicon": 1,
+          "/datum/unit_test/human_tox_damage": 1
+        }
+      },
+      "remove_faction": {
+        "count": 2,
+        "samples": [
+          "code/game/atoms_movable.dm",
+          "code/modules/mob/living/basic/guardian/guardian.dm",
+          "code/modules/mob/living/basic/illusion/illusion.dm"
+        ],
+        "contexts": {
+          "/atom/movable": 1,
+          "/mob/living/basic/guardian": 1,
+          "/mob/living/basic/illusion": 1,
+          "/mob/living/basic/mining/lobstrosity": 1,
+          "/mob/living/basic/mining": 1,
+          "/datum/unit_test/human_tox_damage": 2
+        }
+      },
+      "check_access": {
+        "count": 10,
+        "samples": [
+          "code/game/machinery/atmos_field_gen.dm",
+          "code/game/machinery/bank_machine.dm",
+          "code/game/machinery/buttons.dm"
+        ],
+        "contexts": {
+          "/obj/machinery/atmos_shield_gen": 1,
+          "/obj/machinery/computer/bank_machine": 1,
+          "/obj/machinery/button": 1,
+          "/obj/machinery/computer/apc_control": 1,
+          "/obj/machinery/computer/communications": 1,
+          "/obj/machinery/door": 2,
+          "/obj/machinery/door/window": 1,
+          "/obj/machinery/porta_turret/syndicate/energy/ruin": 1,
+          "/obj/machinery/turretid": 1,
+          "/obj/item/circuitboard/computer/rdconsole": 1,
+          "/obj/item/storage/lockbox": 1,
+          "/obj/structure/displaycase/forsale": 3,
+          "/obj/machinery/food_cart": 1,
+          "/atom/movable": 1,
+          "/obj/machinery/mineral/ore_redemption": 1,
+          "/obj/machinery/transport/tram_controller": 1,
+          "/datum/unit_test/fish_evolution": 10,
+          "/datum/unit_test/id_access": 10
+        }
+      },
+      "has_faction": {
+        "count": 1,
+        "samples": [
+          "code/game/machinery/porta_turret/portable_turret.dm",
+          "code/modules/mob/living/basic/lavaland/mining.dm",
+          "code/modules/mob/living/basic/slime/feeding.dm"
+        ],
+        "contexts": {
+          "/obj/machinery/porta_turret": 1,
+          "/mob/living/basic/mining": 1,
+          "/mob/living/basic/slime": 1,
+          "/mob/living/silicon/robot": 1,
+          "/datum/unit_test/human_tox_damage": 1
+        }
+      },
+      "spantext_char": {
+        "count": 1,
+        "samples": [
+          "code/game/machinery/requests_console.dm"
+        ],
+        "contexts": {
+          "/obj/machinery/requests_console": 1
+        }
+      },
+      "splittext_char": {
+        "count": 3,
+        "samples": [
+          "code/game/machinery/requests_console.dm",
+          "code/game/machinery/requests_console.dm",
+          "code/modules/atmospherics/machinery/components/unary_devices/cryo.dm"
+        ],
+        "contexts": {
+          "/datum/aas_config_entry/rc_emergency": 1,
+          "/datum/aas_config_entry/rc_reta_announcement": 1,
+          "/datum/aas_config_entry/medical_cryo_announcements": 1
+        }
+      },
+      "step_to": {
+        "count": 4,
+        "samples": [
+          "code/game/objects/effects/decals/cleanable/blood.dm",
+          "code/game/objects/effects/decals/cleanable/blood.dm",
+          "code/game/objects/items/weaponry/melee/his_grace.dm"
+        ],
+        "contexts": {
+          "/obj/effect/decal/cleanable/blood/gibs": 2,
+          "/obj/item/his_grace": 1,
+          "/proc": 1
+        }
+      },
+      "Insert": {
+        "count": 1,
+        "samples": [
+          "code/game/objects/items/body_egg.dm",
+          "code/modules/antagonists/nightmare/nightmare_organs.dm",
+          "code/modules/antagonists/nightmare/nightmare_organs.dm"
+        ],
+        "contexts": {
+          "/obj/item/organ/body_egg": 1,
+          "/obj/item/organ/heart/nightmare": 2,
+          "/datum/asset/spritesheet/escape_menu_icons": 2,
+          "/datum/asset/spritesheet": 1,
+          "/datum/asset/spritesheet/simple": 1,
+          "/obj/item/organ/cyberimp/arm/toolkit/shard": 1,
+          "/obj/item/organ/brain": 2,
+          "/obj/item/organ": 1,
+          "/obj/item/organ/heart/cybernetic/anomalock": 1,
+          "/datum/unit_test/organ_bodypart_shuffle": 1,
+          "/obj/item/organ/zombie_infection": 1
+        }
+      },
+      "update_label": {
+        "count": 2,
+        "samples": [
+          "code/game/objects/items/cards_ids.dm",
+          "code/game/objects/items/cards_ids.dm",
+          "code/game/objects/items/storage/wallets.dm"
+        ],
+        "contexts": {
+          "/obj/item/card/id": 2,
+          "/obj/item/storage/wallet": 1
+        }
+      },
+      "update_honorific": {
+        "count": 1,
+        "samples": [
+          "code/game/objects/items/cards_ids.dm"
+        ],
+        "contexts": {
+          "/obj/item/card/id": 1
+        }
+      },
+      "ohearers": {
+        "count": 4,
+        "samples": [
+          "code/game/objects/items/clown_items.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/antagonists/malf_ai/malf_ai_modules.dm"
+        ],
+        "contexts": {
+          "/obj/item/bikehorn/golden": 1,
+          "/proc": 1,
+          "/datum/action/innate/ai/honk": 1,
+          "/obj/item/mecha_parts/mecha_equipment/weapon/honker": 1
+        }
+      },
+      "get_fuel": {
+        "count": 2,
+        "samples": [
+          "code/game/objects/items/devices/flashlight.dm",
+          "code/game/objects/items/devices/flashlight.dm",
+          "code/game/objects/items/lighter.dm"
+        ],
+        "contexts": {
+          "/obj/item/flashlight": 2,
+          "/obj/item/lighter": 6,
+          "/obj/item/weldingtool": 6,
+          "/obj/item/weldingtool/abductor": 1,
+          "/obj/item/weldingtool/experimental": 1
+        }
+      },
+      "roll": {
+        "count": 9,
+        "samples": [
+          "code/game/objects/items/dice.dm",
+          "code/game/objects/items/dice.dm",
+          "code/game/objects/items/dice.dm"
+        ],
+        "contexts": {
+          "/obj/item/dice": 3,
+          "/proc": 1,
+          "/obj/item/nullrod/nullblade": 4,
+          "/obj/effect/spawner/random/mining_loot/shoe_factory": 1
+        }
+      },
+      "bench": {
+        "count": 3,
+        "samples": [
+          "code/game/objects/items/stacks/sheets/sheet_types.dm",
+          "code/game/objects/items/stacks/sheets/sheet_types.dm",
+          "code/game/objects/items/stacks/sheets/sheet_types.dm"
+        ],
+        "contexts": {
+          "/obj/item/stack/sheet/mineral/wood": 3
+        }
+      },
+      "span_hypnophrase": {
+        "count": 1,
+        "samples": [
+          "code/game/objects/structures/mirror.dm"
+        ],
+        "contexts": {
+          "/obj/structure/mirror/magic/lesser/heretic": 1
+        }
+      },
+      "replacetextEx_char": {
+        "count": 1,
+        "samples": [
+          "code/game/objects/structures/signboards/holosign.dm"
+        ],
+        "contexts": {
+          "/obj/item/circuit_component/holo_signboard": 1
+        }
+      },
+      "sha1": {
+        "count": 2,
+        "samples": [
+          "code/game/say.dm",
+          "code/modules/mob/living/living_say.dm"
+        ],
+        "contexts": {
+          "/atom/movable": 1,
+          "/mob/living": 1
+        }
+      },
+      "shutdown": {
+        "count": 1,
+        "samples": [
+          "code/game/world.dm"
+        ],
+        "contexts": {
+          "/world": 1
+        }
+      },
+      "TgsTopic": {
+        "count": 1,
+        "samples": [
+          "code/game/world.dm"
+        ],
+        "contexts": {
+          "/world": 1
+        }
+      },
+      "ckeyEx": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/admin_verbs.dm",
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {
+          "/client": 1,
+          "/proc": 1
+        }
+      },
+      "sync_lastadminrank": {
+        "count": 3,
+        "samples": [
+          "code/modules/admin/holder2.dm",
+          "code/modules/admin/permissionedit.dm",
+          "code/modules/admin/permissionedit.dm"
+        ],
+        "contexts": {
+          "/datum/admins": 3
+        }
+      },
+      "change_admin_flags": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/permissionedit.dm"
+        ],
+        "contexts": {
+          "/datum/admins": 1
+        }
+      },
+      "CONFIG_GET": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/poll_management.dm"
+        ],
+        "contexts": {
+          "/datum/admins": 1
+        }
+      },
+      "add_rank": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/topic.dm"
+        ],
+        "contexts": {
+          "/datum/admins": 1
+        }
+      },
+      "remove_rank": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/topic.dm",
+          "code/modules/admin/topic.dm"
+        ],
+        "contexts": {
+          "/datum/admins": 2
+        }
+      },
+      "change_rank": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/topic.dm"
+        ],
+        "contexts": {
+          "/datum/admins": 1
+        }
+      },
+      "arcsin": {
+        "count": 2,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/wiremod/components/math/trigonometry.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/obj/item/circuit_component/trigonometry": 1
+        }
+      },
+      "REGEX_QUOTE_REPLACEMENT": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "walk": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "walk_towards": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "walk_to": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "walk_away": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "walk_rand": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "step_rand": {
+        "count": 5,
+        "samples": [
+          "code/modules/admin/verbs/SDQL2/SDQL_2_wrappers.dm",
+          "code/modules/mob/living/basic/pets/dog/corgi.dm",
+          "code/modules/mob/living/basic/pets/dog/strippable_items.dm"
+        ],
+        "contexts": {
+          "/proc": 1,
+          "/mob/living/basic/pet/dog/corgi": 1,
+          "/datum/strippable_item/corgi_back": 1,
+          "/obj/structure/filingcabinet": 1,
+          "/obj/item/mecha_parts/mecha_equipment/ejector": 1
+        }
+      },
+      "run": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/getlogs.dm"
+        ],
+        "contexts": {
+          "/client": 1
+        }
+      },
+      "issaved": {
+        "count": 1,
+        "samples": [
+          "code/modules/admin/verbs/map_export.dm"
+        ],
+        "contexts": {
+          "/proc": 1
+        }
+      },
+      "printobjectives": {
+        "count": 7,
+        "samples": [
+          "code/modules/antagonists/_common/antag_datum.dm",
+          "code/modules/antagonists/abductor/abductor.dm",
+          "code/modules/antagonists/ashwalker/ashwalker.dm"
+        ],
+        "contexts": {
+          "/datum/antagonist": 1,
+          "/datum/team/abductor_team": 1,
+          "/datum/team/ashwalkers": 1,
+          "/datum/antagonist/obsessed": 1,
+          "/datum/antagonist/enemy_of_the_state": 1,
+          "/datum/antagonist/space_dragon": 1,
+          "/datum/antagonist/spy": 1
+        }
+      },
+      "Operative": {
+        "count": 2,
+        "samples": [
+          "code/modules/antagonists/_common/antag_spawner.dm",
+          "code/modules/antagonists/_common/antag_spawner.dm"
+        ],
+        "contexts": {
+          "/obj/item/antag_spawner/contract": 2
+        }
+      },
+      "check_usability": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/_common/antag_spawner.dm",
+          "code/modules/antagonists/_common/antag_spawner.dm",
+          "code/modules/antagonists/heretic/items/heretic_blades.dm"
+        ],
+        "contexts": {
+          "/obj/item/antag_spawner/loadout": 2,
+          "/obj/item/melee/sickly_blade": 3,
+          "/obj/item/antag_spawner/nuke_ops/ed209_nukie": 1
+        }
+      },
+      "setup_pod": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/_common/antag_spawner.dm",
+          "code/modules/mob/living/basic/bots/ed209/ed209_nukie_spawner.dm"
+        ],
+        "contexts": {
+          "/obj/item/antag_spawner/loadout": 1,
+          "/obj/item/antag_spawner/nuke_ops/ed209_nukie": 1
+        }
+      },
+      "printplayerlist": {
+        "count": 11,
+        "samples": [
+          "code/modules/antagonists/_common/antag_team.dm",
+          "code/modules/antagonists/ashwalker/ashwalker.dm",
+          "code/modules/antagonists/blood_worm/blood_worm_team.dm"
+        ],
+        "contexts": {
+          "/datum/team": 1,
+          "/datum/team/ashwalkers": 1,
+          "/datum/team/blood_worm": 1,
+          "/datum/team/cult": 2,
+          "/datum/team/nuclear": 1,
+          "/datum/team/pirate": 1,
+          "/datum/team/revolution": 2,
+          "/datum/team/wizard": 1,
+          "/datum/team/xeno": 1
+        }
+      },
+      "give_objective": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/abductor/abductee/abductee.dm",
+          "code/modules/antagonists/santa/santa.dm"
+        ],
+        "contexts": {
+          "/datum/antagonist/abductee": 1,
+          "/datum/antagonist/santa": 1
+        }
+      },
+      "lerp": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/blood_worm/actions/spit_blood.dm"
+        ],
+        "contexts": {
+          "/datum/action/cooldown/mob_cooldown/blood_worm/spit": 1
+        }
+      },
+      "blood_draw": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/cult/blood_magic.dm"
+        ],
+        "contexts": {
+          "/obj/item/melee/blood_magic/manipulator": 1
+        }
+      },
+      "drain_victim": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/cult/blood_magic.dm"
+        ],
+        "contexts": {
+          "/obj/item/melee/blood_magic/manipulator": 1
+        }
+      },
+      "Barrage": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/cult/blood_magic.dm"
+        ],
+        "contexts": {
+          "/obj/item/melee/blood_magic/manipulator": 1
+        }
+      },
+      "Clone": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/paradox_clone/paradox_clone.dm"
+        ],
+        "contexts": {
+          "/datum/objective/paradox_clone_replace": 1
+        }
+      },
+      "span_revenbignotice": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/revenant/revenant_blight.dm"
+        ],
+        "contexts": {
+          "/datum/disease/revblight": 1
+        }
+      },
+      "Captain": {
+        "count": 1,
+        "samples": [
+          "code/modules/antagonists/wizard/grand_ritual/finales/captaincy.dm"
+        ],
+        "contexts": {
+          "/datum/grand_finale/usurp": 1
+        }
+      },
+      "values_cut_under": {
+        "count": 2,
+        "samples": [
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm"
+        ],
+        "contexts": {
+          "/datum/gas_mixture": 2
+        }
+      },
+      "values_dot": {
+        "count": 7,
+        "samples": [
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm"
+        ],
+        "contexts": {
+          "/datum/gas_mixture": 2,
+          "/datum/gas_mixture/turf": 2,
+          "/obj/machinery/atmospherics/components/unary/hypertorus/core": 2,
+          "/datum/pipeline": 1
+        }
+      },
+      "values_sum": {
+        "count": 10,
+        "samples": [
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm",
+          "code/modules/atmospherics/gasmixtures/gas_mixture.dm"
+        ],
+        "contexts": {
+          "/datum/gas_mixture": 6,
+          "/obj/item/fishing_hook/anomaly": 1,
+          "/obj/item/stack/ore": 2,
+          "/datum/reagent/drug/cannabis": 1
+        }
+      },
+      "create_icon": {
+        "count": 1,
+        "samples": [
+          "code/modules/autowiki/pages/stockparts.dm",
+          "code/modules/unit_tests/screenshot_high_luminosity_eyes.dm"
+        ],
+        "contexts": {
+          "/datum/autowiki/stock_parts": 1,
+          "/datum/unit_test/screenshot_high_luminosity_eyes": 1
+        }
+      },
+      "span_purple": {
+        "count": 1,
+        "samples": [
+          "code/modules/buildmode/submodes/variable_edit.dm"
+        ],
+        "contexts": {
+          "/datum/buildmode_mode/varedit": 1
+        }
+      },
+      "boxed_message": {
+        "count": 1,
+        "samples": [
+          "code/modules/buildmode/submodes/variable_edit.dm"
+        ],
+        "contexts": {
+          "/datum/buildmode_mode/varedit": 1
+        }
+      },
+      "IsByondMember": {
+        "count": 1,
+        "samples": [
+          "code/modules/client/client_procs.dm"
+        ],
+        "contexts": {
+          "/client": 1
+        }
+      },
+      "findtext_char": {
+        "count": 1,
+        "samples": [
+          "code/modules/client/verbs/ooc.dm"
+        ],
+        "contexts": {
+          "/client": 1
+        }
+      },
+      "retrieve_bait": {
+        "count": 1,
+        "samples": [
+          "code/modules/fishing/bait.dm"
+        ],
+        "contexts": {
+          "/obj/item/bait_can": 1
+        }
+      },
+      "span_info": {
+        "count": 3,
+        "samples": [
+          "code/modules/fishing/bait.dm",
+          "code/modules/surgery/bodyparts/robot_bodyparts.dm",
+          "code/modules/surgery/bodyparts/robot_bodyparts.dm"
+        ],
+        "contexts": {
+          "/obj/item/bait_can": 1,
+          "/obj/item/bodypart/chest/robot": 1,
+          "/obj/item/bodypart/head/robot": 1
+        }
+      },
+      "update_size_and_weight": {
+        "count": 7,
+        "samples": [
+          "code/modules/fishing/fish/_fish.dm",
+          "code/modules/fishing/fish/_fish.dm",
+          "code/modules/fishing/fish/_fish.dm"
+        ],
+        "contexts": {
+          "/obj/item/fish": 6,
+          "/obj/item/fish/mossglob": 1
+        }
+      },
+      "get_health_warnings": {
+        "count": 1,
+        "samples": [
+          "code/modules/fishing/fish/_fish.dm"
+        ],
+        "contexts": {
+          "/obj/item/fish": 1
+        }
+      },
+      "set_max_size_and_weight": {
+        "count": 1,
+        "samples": [
+          "code/modules/fishing/fish/_fish.dm"
+        ],
+        "contexts": {
+          "/obj/item/fish": 1
+        }
+      },
+      "propagate_plant": {
+        "count": 2,
+        "samples": [
+          "code/modules/hydroponics/hydroponics.dm",
+          "code/modules/hydroponics/hydroponics.dm"
+        ],
+        "contexts": {
+          "/obj/machinery/hydroponics": 2
+        }
+      },
+      "remove_plant": {
+        "count": 1,
+        "samples": [
+          "code/modules/hydroponics/hydroponics.dm"
+        ],
+        "contexts": {
+          "/obj/machinery/hydroponics": 1
+        }
+      },
+      "get_radio_information": {
+        "count": 1,
+        "samples": [
+          "code/modules/jobs/job_types/_job.dm"
+        ],
+        "contexts": {
+          "/datum/job": 1
+        }
+      },
+      "span_boldnotice": {
+        "count": 1,
+        "samples": [
+          "code/modules/jobs/job_types/_job.dm"
+        ],
+        "contexts": {
+          "/datum/job": 1
+        }
+      },
+      "num2hex": {
+        "count": 1,
+        "samples": [
+          "code/modules/mapfluff/ruins/spaceruin_code/hilbertshotel.dm"
+        ],
+        "contexts": {
+          "/obj/item/paper/crumpled/ruins/note_institute": 1
+        }
+      },
+      "set_faction": {
+        "count": 2,
+        "samples": [
+          "code/modules/mob/living/basic/bots/_bots.dm",
+          "code/modules/mob/living/basic/cytology/vatbeast.dm",
+          "code/modules/mob/living/basic/illusion/illusion.dm"
+        ],
+        "contexts": {
+          "/mob/living/basic/bot": 1,
+          "/mob/living/basic/vatbeast": 1,
+          "/mob/living/basic/illusion": 1,
+          "/mob/living/basic/mining/legion_brood": 1,
+          "/datum/unit_test/human_tox_damage": 2
+        }
+      },
+      "liberate": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/basic/drone/extra_drone_types.dm"
+        ],
+        "contexts": {
+          "/mob/living/basic/drone/polymorphed": 1
+        }
+      },
+      "add_ally": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/basic/guardian/guardian.dm",
+          "code/modules/mob/living/basic/lavaland/legion/legion_brood.dm",
+          "code/modules/mob/living/basic/space_fauna/lightgeist.dm"
+        ],
+        "contexts": {
+          "/mob/living/basic/guardian": 1,
+          "/mob/living/basic/mining/legion_brood": 1,
+          "/mob/living/basic/lightgeist": 1,
+          "/mob/living": 2,
+          "/datum/unit_test/human_tox_damage": 1
+        }
+      },
+      "get_generic_humanoid_static_appearance": {
+        "count": 10,
+        "samples": [
+          "code/modules/mob/living/basic/revolutionary.dm",
+          "code/modules/mob/living/basic/ruin_defender/dark_wizard.dm",
+          "code/modules/mob/living/basic/ruin_defender/skeleton.dm"
+        ],
+        "contexts": {
+          "/mob/living/basic/revolutionary": 1,
+          "/mob/living/basic/paper_wizard": 2,
+          "/mob/living/basic/skeleton": 1,
+          "/mob/living/basic/wizard": 1,
+          "/mob/living/basic/zombie": 1,
+          "/mob/living/basic/cat_butcherer": 1,
+          "/mob/living/basic/trader": 1,
+          "/mob/living/basic/trooper": 1,
+          "/mob/living/carbon/human": 1
+        }
+      },
+      "span_revenwarning": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/basic/space_fauna/revenant/revenant_harvest.dm"
+        ],
+        "contexts": {
+          "/mob/living/basic/revenant": 1
+        }
+      },
+      "pull_force_change": {
+        "count": 2,
+        "samples": [
+          "code/modules/mob/living/init_signals.dm",
+          "code/modules/mob/living/init_signals.dm"
+        ],
+        "contexts": {
+          "/mob/living": 2
+        }
+      },
+      "set_pull_force": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/living.dm"
+        ],
+        "contexts": {
+          "/mob/living": 1
+        }
+      },
+      "VV_HREF_TARGETREF": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/living.dm"
+        ],
+        "contexts": {
+          "/mob/living": 1
+        }
+      },
+      "VV_HREF_TARGETREF_1V": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/living.dm"
+        ],
+        "contexts": {
+          "/mob/living": 1
+        }
+      },
+      "NAMEOF": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/living.dm"
+        ],
+        "contexts": {
+          "/mob/living": 1
+        }
+      },
+      "remove_ally": {
+        "count": 2,
+        "samples": [
+          "code/modules/mob/living/living.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/mob/living": 1,
+          "/datum/unit_test/human_tox_damage": 2
+        }
+      },
+      "check_hit_limb_zone_name": {
+        "count": 2,
+        "samples": [
+          "code/modules/mob/living/living_defense.dm",
+          "code/modules/mob/living/living_defense.dm"
+        ],
+        "contexts": {
+          "/mob/living": 2
+        }
+      },
+      "can_disarm": {
+        "count": 1,
+        "samples": [
+          "code/modules/mob/living/living_defense.dm"
+        ],
+        "contexts": {
+          "/mob/living": 1
+        }
+      },
+      "narsie_spawn_animation": {
+        "count": 1,
+        "samples": [
+          "code/modules/power/singularity/narsie.dm"
+        ],
+        "contexts": {
+          "/obj/narsie": 1
+        }
+      },
+      "get_ammo": {
+        "count": 8,
+        "samples": [
+          "code/modules/projectiles/guns/ballistic/bows/_bow.dm",
+          "code/modules/projectiles/guns/ballistic/launchers.dm",
+          "code/modules/projectiles/guns/ballistic/revolver.dm"
+        ],
+        "contexts": {
+          "/obj/item/gun/ballistic/bow": 1,
+          "/obj/item/gun/ballistic/rocketlauncher": 1,
+          "/obj/item/gun/ballistic/revolver": 3,
+          "/obj/item/gun/ballistic/revolver/russian": 3,
+          "/obj/item/gun/ballistic/shotgun/automatic/dual_tube": 1,
+          "/obj/item/gun/ballistic": 5
+        }
+      },
+      "sawoff": {
+        "count": 1,
+        "samples": [
+          "code/modules/projectiles/guns/ballistic.dm"
+        ],
+        "contexts": {
+          "/obj/item/gun/ballistic": 1
+        }
+      },
+      "blow_up": {
+        "count": 1,
+        "samples": [
+          "code/modules/projectiles/guns/ballistic.dm"
+        ],
+        "contexts": {
+          "/obj/item/gun/ballistic": 1
+        }
+      },
+      "get_ammo_list": {
+        "count": 1,
+        "samples": [
+          "code/modules/projectiles/guns/ballistic.dm"
+        ],
+        "contexts": {
+          "/obj/item/gun/ballistic": 1
+        }
+      },
+      "fire_debug": {
+        "count": 1,
+        "samples": [
+          "code/modules/projectiles/guns/special/blastcannon.dm"
+        ],
+        "contexts": {
+          "/obj/item/gun/blastcannon": 1
+        }
+      },
+      "Servant": {
+        "count": 1,
+        "samples": [
+          "code/modules/spells/spell_types/summon/servant.dm"
+        ],
+        "contexts": {
+          "/datum/action/cooldown/spell/summon_mob": 1
+        }
+      },
+      "on_success_insert_organ": {
+        "count": 1,
+        "samples": [
+          "code/modules/surgery/operations/operation_organ_manip.dm"
+        ],
+        "contexts": {
+          "/datum/surgery_operation/limb/organ_manipulation": 1
+        }
+      },
+      "span_boldwarning": {
+        "count": 2,
+        "samples": [
+          "code/modules/surgery/organs/internal/heart/_heart.dm",
+          "code/modules/surgery/organs/internal/lungs/_lungs.dm"
+        ],
+        "contexts": {
+          "/obj/item/organ/heart": 1,
+          "/obj/item/organ/lungs": 1
+        }
+      },
+      "obj": {
+        "count": 1,
+        "samples": [
+          "code/modules/surgery/surgery_tray.dm"
+        ],
+        "contexts": {
+          "/obj/item/surgery_tray": 1
+        }
+      },
+      "file2text": {
+        "count": 2,
+        "samples": [
+          "code/modules/tgs/core/byond_world_export.dm",
+          "code/modules/tgs/includes.dm"
+        ],
+        "contexts": {
+          "/datum/tgs_http_handler/byond_world_export": 2
+        }
+      },
+      "stack_trace": {
+        "count": 6,
+        "samples": [
+          "code/modules/tgs/core/core.dm",
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm"
+        ],
+        "contexts": {
+          "/world": 2,
+          "/datum/tgs_api/v5": 2,
+          "/datum/tgs_api/v3210": 1,
+          "/datum/tgs_api/v4": 1
+        }
+      },
+      "ProcessTopicJson": {
+        "count": 1,
+        "samples": [
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/v5/api.dm"
+        ],
+        "contexts": {
+          "/world": 1,
+          "/datum/tgs_api/v5": 1
+        }
+      },
+      "Bridge": {
+        "count": 2,
+        "samples": [
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm"
+        ],
+        "contexts": {
+          "/world": 2,
+          "/datum/tgs_api/v5": 10
+        }
+      },
+      "RequireInitialBridgeResponse": {
+        "count": 3,
+        "samples": [
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm"
+        ],
+        "contexts": {
+          "/world": 3,
+          "/datum/tgs_api/v5": 14
+        }
+      },
+      "ChatChannelInfo": {
+        "count": 2,
+        "samples": [
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/v4/api.dm"
+        ],
+        "contexts": {
+          "/world": 2,
+          "/datum/tgs_api/v4": 1,
+          "/datum/tgs_api/v5": 2
+        }
+      },
+      "SendChatMessageRaw": {
+        "count": 2,
+        "samples": [
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm",
+          "code/modules/tgs/includes.dm"
+        ],
+        "contexts": {
+          "/world": 2,
+          "/datum/tgs_api/v5": 4
+        }
+      },
+      "HandleServiceCustomCommand": {
+        "count": 1,
+        "samples": [
+          "code/modules/tgs/v3210/api.dm"
+        ],
+        "contexts": {
+          "/datum/tgs_api/v3210": 1
+        }
+      },
+      "HandleCustomCommand": {
+        "count": 2,
+        "samples": [
+          "code/modules/tgs/v4/api.dm",
+          "code/modules/tgs/v5/topic.dm"
+        ],
+        "contexts": {
+          "/datum/tgs_api/v4": 1,
+          "/datum/tgs_api/v5": 1
+        }
+      },
+      "validate_source_contents": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/anonymous_themes": 2
+        }
+      },
+      "equip_labrat_internals": {
+        "count": 3,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/bloody_footprints": 3
+        }
+      },
+      "connected": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/bloody_footprints": 2
+        }
+      },
+      "at": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/bloody_footprints": 1
+        }
+      },
+      "state": {
+        "count": 4,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/bloody_footprints": 4
+        }
+      },
+      "compile_icon_state_locations": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/icon_state.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/fish_evolution": 2,
+          "/datum/unit_test/missing_icons/icon_state": 1,
+          "/datum/unit_test/missing_icons/inhand_icon_state": 1,
+          "/datum/unit_test/missing_icons/worn_icons": 1
+        }
+      },
+      "generate_possible_icon_states_list": {
+        "count": 3,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/fish_evolution": 3,
+          "/datum/unit_test/missing_icons/icon_state": 1,
+          "/datum/unit_test/missing_icons": 3
+        }
+      },
+      "print_language_list": {
+        "count": 32,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/fish_evolution": 16,
+          "/datum/unit_test/language_species_swap_simple": 6,
+          "/datum/unit_test/language_species_swap_complex": 10
+        }
+      },
+      "test_setup": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/ling_decap.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/ling_decap": 2
+        }
+      },
+      "area": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/ling_decap": 1
+        }
+      },
+      "stock": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/ling_decap": 1
+        }
+      },
+      "availability_prob": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/ling_decap": 1
+        }
+      },
+      "check_integrity": {
+        "count": 6,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/ling_decap": 6
+        }
+      },
+      "test_apply_damage": {
+        "count": 17,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/on_mob_end_metabolize": 17,
+          "/datum/unit_test/mob_damage": 21,
+          "/datum/unit_test/mob_damage/animal": 5
+        }
+      },
+      "test_sanity_simple": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/mob_damage.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/on_mob_end_metabolize": 2,
+          "/datum/unit_test/mob_damage": 1,
+          "/datum/unit_test/mob_damage/animal": 2
+        }
+      },
+      "test_sanity_complex": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/mob_damage.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/on_mob_end_metabolize": 2,
+          "/datum/unit_test/mob_damage": 1,
+          "/datum/unit_test/mob_damage/animal": 2
+        }
+      },
+      "apply_faction_and_allies": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/human_tox_damage": 1
+        }
+      },
+      "set_faction_and_allies": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/human_tox_damage": 1
+        }
+      },
+      "currently": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/human_tox_damage": 1
+        }
+      },
+      "from": {
+        "count": 3,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/mod_storage": 3
+        }
+      },
+      "test_spell": {
+        "count": 4,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/organ_bodypart_shuffle": 4,
+          "/datum/unit_test/shapeshift_spell": 4
+        }
+      },
+      "time": {
+        "count": 6,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/shapeshift_holoparasites": 6
+        }
+      },
+      "try_stabilize": {
+        "count": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm",
+          "code/modules/unit_tests/_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/shapeshift_holoparasites": 2
+        }
+      },
+      "check_moodlets": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/antag_moodlets.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/antag_moodlets": 1
+        }
+      },
+      "TEST_ASSERT": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/fish_unit_tests.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/fish_size_weight": 1
+        }
+      },
+      "set_glasses_wearer": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/knockoff_component.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/knockoff_component": 1
+        }
+      },
+      "lungs_test_alert_min": {
+        "count": 3,
+        "samples": [
+          "code/modules/unit_tests/lungs.dm",
+          "code/modules/unit_tests/lungs.dm",
+          "code/modules/unit_tests/lungs.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/lungs": 3
+        }
+      },
+      "lungs_test_alert_max": {
+        "count": 3,
+        "samples": [
+          "code/modules/unit_tests/lungs.dm",
+          "code/modules/unit_tests/lungs.dm",
+          "code/modules/unit_tests/lungs.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/lungs": 3
+        }
+      },
+      "create_gas_mix": {
+        "count": 3,
+        "samples": [
+          "code/modules/unit_tests/lungs.dm",
+          "code/modules/unit_tests/lungs.dm",
+          "code/modules/unit_tests/lungs.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/lungs": 3
+        }
+      },
+      "get_first_target": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/move_pulled.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/move_pulled": 1
+        }
+      },
+      "test_organ": {
+        "count": 1,
+        "samples": [
+          "code/modules/unit_tests/organs.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/organ_sanity": 1
+        }
+      },
+      "create_officer": {
+        "count": 4,
+        "samples": [
+          "code/modules/unit_tests/security_officer_distribution.dm",
+          "code/modules/unit_tests/security_officer_distribution.dm",
+          "code/modules/unit_tests/security_officer_distribution.dm"
+        ],
+        "contexts": {
+          "/datum/unit_test/security_officer_roundstart_distribution": 4
+        }
+      },
+      "analyze_reagents": {
+        "count": 1,
+        "samples": [
+          "code/modules/vehicles/mecha/equipment/tools/medical_tools.dm"
+        ],
+        "contexts": {
+          "/obj/item/mecha_parts/mecha_equipment/medical/syringe_gun": 1
+        }
+      },
+      "holodiagnostic": {
+        "count": 1,
+        "samples": [
+          "code/modules/vehicles/mecha/mecha_ui.dm"
+        ],
+        "contexts": {
+          "/obj/vehicle/sealed/mecha": 1
+        }
+      },
+      "tan": {
+        "count": 1,
+        "samples": [
+          "code/modules/wiremod/components/math/trigonometry.dm"
+        ],
+        "contexts": {
+          "/obj/item/circuit_component/trigonometry": 1
+        }
+      }
+    },
+    "brokenProps": {
+      "loc": 3070,
+      "type": 2021,
+      "contents": 449,
+      "dir": 589,
+      "overlays": 122
+    },
+    "errorClasses": {
+      "#warn: TG0001 qdel REFERENCE_TRACKING enabled": {
+        "errors": 0,
+        "warnings": 1,
+        "samples": [
+          "code/__DEFINES/qdel.dm:22"
+        ],
+        "tokens": {}
+      },
+      "Unexpected token '<x>' in expression": {
+        "errors": 2842,
+        "warnings": 0,
+        "samples": [
+          "code/__HELPERS/icon_smoothing.dm:297",
+          "code/__HELPERS/icon_smoothing.dm:297",
+          "code/__HELPERS/icon_smoothing.dm:303"
+        ],
+        "tokens": {
+          "]": 1032,
+          "\n": 2,
+          "var": 214,
+          "if": 284,
+          ";": 189,
+          ")": 107,
+          "return": 135,
+          "else": 39,
+          "for": 57,
+          "[": 376,
+          "while": 48,
+          "<": 16,
+          ":": 2,
+          "do": 47,
+          "as": 4,
+          ",": 146,
+          "/": 3,
+          "}": 31,
+          "in": 16,
+          "continue": 17,
+          "break": 1,
+          "%": 2,
+          "$": 1
+        }
+      },
+      "Unterminated string interpolation": {
+        "errors": 56,
+        "warnings": 0,
+        "samples": [
+          "code/__HELPERS/roundend.dm:764",
+          "code/datums/dog_fashion.dm:265",
+          "code/datums/materials/meat.dm:153"
+        ],
+        "tokens": {}
+      },
+      "Unterminated string literal": {
+        "errors": 154,
+        "warnings": 0,
+        "samples": [
+          "code/__HELPERS/roundend.dm:546",
+          "code/datums/brain_damage/mild.dm:339",
+          "code/datums/components/anomalock_module.dm:120"
+        ],
+        "tokens": {}
+      },
+      "#error: Your version of BYOND is too out-of-date to compile this project. Go to https:": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/__byond_version_compat.dm:8"
+        ],
+        "tokens": {}
+      },
+      "#error: You need version 516.1659 or higher": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/__byond_version_compat.dm:9"
+        ],
+        "tokens": {}
+      },
+      "#warn: compiling in TESTING mode. testing() debug messages will be visible.": {
+        "errors": 0,
+        "warnings": 1,
+        "samples": [
+          "code/_compile_options.dm:156"
+        ],
+        "tokens": {}
+      },
+      "#warn: EXPERIMENT_MY_COOL_FEATURE is only available on 515+": {
+        "errors": 0,
+        "warnings": 1,
+        "samples": [
+          "code/_experiments.dm:13"
+        ],
+        "tokens": {}
+      },
+      "Expected '<x>' in ternary expression": {
+        "errors": 51,
+        "warnings": 0,
+        "samples": [
+          "code/_onclick/hud/screen_objects/alert.dm:590",
+          "code/datums/brain_damage/mild.dm:234",
+          "code/datums/brain_damage/split_personality.dm:253"
+        ],
+        "tokens": {
+          ":": 51
+        }
+      },
+      "Unexpected token '<x>' in type block": {
+        "errors": 49,
+        "warnings": 0,
+        "samples": [
+          "code/controllers/subsystem/mobs.dm:10",
+          "code/controllers/subsystem/mobs.dm:10",
+          "code/controllers/subsystem/mobs.dm:11"
+        ],
+        "tokens": {
+          "[": 2,
+          "]": 2,
+          "=": 9,
+          "(": 5,
+          ")": 6,
+          "step": 1,
+          "0.5": 1,
+          "$1kss": 1,
+          ",": 7,
+          "new": 3,
+          "(\\w)X": 1,
+          "g": 3,
+          "$1KSSS": 1,
+          "\\bx([\\-|r|R]|\\b)": 1,
+          "ecks$1": 1,
+          "\\bX([\\-|r|R]|\\b)": 1,
+          "ECKS$1": 1,
+          "mob": 1,
+          "turf": 1,
+          "area": 1
+        }
+      },
+      "Unexpected character '<x>'": {
+        "errors": 37,
+        "warnings": 0,
+        "samples": [
+          "code/controllers/subsystem/shuttle.dm:376",
+          "code/controllers/subsystem/shuttle.dm:376",
+          "code/controllers/subsystem/shuttle.dm:376"
+        ],
+        "tokens": {
+          "\\": 34,
+          "♩": 1,
+          "♪": 1,
+          "♫": 1
+        }
+      },
+      "Expected identifier after '<x>'": {
+        "errors": 259,
+        "warnings": 0,
+        "samples": [
+          "code/controllers/subsystem/shuttle.dm:306",
+          "code/controllers/subsystem/shuttle.dm:310",
+          "code/controllers/subsystem/shuttle.dm:312"
+        ],
+        "tokens": {
+          ".": 259
+        }
+      },
+      "Unexpected top-level token '<x>'": {
+        "errors": 226,
+        "warnings": 0,
+        "samples": [
+          "code/datums/elements/art.dm:87",
+          "code/datums/elements/art.dm:87",
+          "code/datums/elements/art.dm:87"
+        ],
+        "tokens": {
+          "0": 1,
+          "1": 3,
+          "2": 1,
+          "3": 1,
+          "4": 1,
+          "8": 1,
+          "9": 1,
+          "12": 1,
+          "100": 1,
+          ".": 19,
+          "(": 50,
+          "+": 22,
+          "[user] stops to inspect [source].": 1,
+          "</span>": 10,
+          ")": 44,
+          ",": 29,
+          "You appraise [source], inspecting the fine craftsmanship of the proletariat... [msg]": 1,
+          "if": 3,
+          "return": 3,
+          "||": 2,
+          "src": 4,
+          "has summoned forth the [initial(demon_type.name)] (played by [key_name(chosen_one)]) using a [name].": 1,
+          "<<": 2,
+          "sound/effects/glass/glassbr1.ogg": 1,
+          "TRUE": 2,
+          "qdel": 1,
+          "else": 1,
+          "The personality of <font color=\"[chosen_guardian.guardian_colour]\">[chosen_guardian.theme.name]</font> has been successfully reset.": 1,
+          "FALSE": 1,
+          "?.": 2,
+          "5.11.0": 1,
+          "check [] here": 1,
+          "[": 2,
+          "]": 2,
+          "check [stuff] here": 1
+        }
+      },
+      "Unexpected top-level token '<x>'notice'<x>'": {
+        "errors": 9,
+        "warnings": 0,
+        "samples": [
+          "code/datums/elements/art.dm:87",
+          "code/datums/elements/art.dm:87",
+          "code/modules/surgery/operations/operation_cavity_implant.dm:164"
+        ],
+        "tokens": {
+          "<span class=": 9,
+          ">": 9
+        }
+      },
+      "Unterminated regex literal": {
+        "errors": 7,
+        "warnings": 0,
+        "samples": [
+          "code/game/objects/items/devices/spyglasses.dm:85",
+          "code/game/objects/structures/cannons/cannon_instructions.dm:4",
+          "code/modules/antagonists/nukeop/equipment/overwatch_tools.dm:6"
+        ],
+        "tokens": {}
+      },
+      "Unexpected top-level token '<x>'warning'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/antagonists/_common/antag_spawner.dm:284"
+        ],
+        "tokens": {
+          "<span class=": 1,
+          ">": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s contents usually pop and boil constantly, but right now they'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/antagonists/_common/antag_spawner.dm:284"
+        ],
+        "tokens": {
+          "The bottle": 1,
+          "re eerily still and calm. Perhaps you should try again later.": 1
+        }
+      },
+      "Unknown preprocessor directive '<x>' ignored": {
+        "errors": 0,
+        "warnings": 3,
+        "samples": [
+          "code/modules/mob/dead/new_player/poll.dm:232",
+          "code/modules/mob/dead/new_player/poll.dm:233",
+          "code/modules/mob/dead/new_player/poll.dm:234"
+        ],
+        "tokens": {
+          "#sortable": 3
+        }
+      },
+      "Unexpected top-level token '<x>'holoparasite'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/mob/living/basic/guardian/guardian_verbs.dm:168"
+        ],
+        "tokens": {
+          "<span class=": 1,
+          ">": 1
+        }
+      },
+      "Unexpected top-level token '<x>'t happy with your performance.'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/mob/living/basic/guardian/guardian_verbs.dm:168"
+        ],
+        "tokens": {
+          "Your user reset you, and your body was taken over by a ghost. Looks like they weren": 1
+        }
+      },
+      "Unexpected top-level token '<x>'holoparasite bold'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/mob/living/basic/guardian/guardian_verbs.dm:169"
+        ],
+        "tokens": {
+          "<span class=": 1,
+          ">": 1
+        }
+      },
+      "Unexpected top-level token '<x>'byond://?_src_=holder;[HrefToken(forceGlobal = TRUE)];adminmoreinfo=[REF(chosen_guardian)]'<x>'byond://?_src_=holder;[HrefToken(forceGlobal = TRUE)];adminplayerobservefollow=[REF(chosen_guardian)]'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/mob/living/basic/guardian/guardian_verbs.dm:170"
+        ],
+        "tokens": {
+          "[key_name_admin(chosen_one)] has taken control of ([\"[key_name_admin(chosen_guardian)][\"(<a href=": 1,
+          ">?</a>)\"] [\"(<a href=": 1,
+          ">FLW</a>)\"]\"])": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s [limb.plaintext_zone]\" : limb)].\" + \"</span>\"), (\"<span class='<x>'>\" + \"[surgeon] pulls [implant] out of [(limb.owner ? \"[limb.owner]'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/surgery/operations/operation_cavity_implant.dm:164"
+        ],
+        "tokens": {
+          "You pull [implant] out of [(limb.owner ? \"[limb.owner]": 1,
+          "notice": 1,
+          "s [limb.plaintext_zone]\" : limb)]!": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s [limb.plaintext_zone]\" : limb)]!\" + \"</span>\"), )\n\tdisplay_pain(limb.owner, \"You can feel [implant.name] being pulled out of you!\")\n\tsurgeon.put_in_hands(implant)\n'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/surgery/operations/operation_cavity_implant.dm:164"
+        ],
+        "tokens": {
+          "[surgeon] pulls something out of [(limb.owner ? \"[limb.owner]": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s [limb.plaintext_zone]\" : limb)].\" + \"</span>\"), (\"<span class='<x>'>\" + \"[surgeon] successfully realigns some of the blood vessels in [(limb.owner ? \"[limb.owner]'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/surgery/operations/operation_puncture.dm:42"
+        ],
+        "tokens": {
+          "You successfully realign some of the blood vessels in [(limb.owner ? \"[limb.owner]": 1,
+          "notice": 1,
+          "s [limb.plaintext_zone]\" : limb)] with [tool]!": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s [limb.plaintext_zone]\" : limb)]!\" + \"</span>\"), )\n\n/datum/surgery_operation/limb/repair_puncture/on_failure(obj/item/bodypart/limb, mob/living/surgeon, tool, list/operation_args)\n\tdisplay_results( surgeon, limb.owner, (\"<span class='<x>'>\" + \"You jerk apart some of the blood vessels in [(limb.owner ? \"[limb.owner]'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/surgery/operations/operation_puncture.dm:42"
+        ],
+        "tokens": {
+          "[surgeon] successfully realigns some of the blood vessels in  [(limb.owner ? \"[limb.owner]": 1,
+          "notice": 1,
+          "s [limb.plaintext_zone]\" : limb)].": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s [limb.plaintext_zone]\" : limb)] with [tool]!\" + \"</span>\"), (\"<span class='<x>'>\" + \"[surgeon] jerks apart some of the blood vessels in [(limb.owner ? \"[limb.owner]'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/surgery/operations/operation_puncture.dm:45"
+        ],
+        "tokens": {
+          "[surgeon] jerks apart some of the blood vessels in [(limb.owner ? \"[limb.owner]": 1,
+          "notice": 1,
+          "s [limb.plaintext_zone]\" : limb)].": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s [limb.plaintext_zone]\" : limb)].\" + \"</span>\"), (\"<span class='<x>'>\" + \"[surgeon] successfully seals some of the blood vessels in [(limb.owner ? \"[limb.owner]'<x>'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/surgery/operations/operation_puncture.dm:99"
+        ],
+        "tokens": {
+          "You successfully seal some of the blood vessels in [(limb.owner ? \"[limb.owner]": 1,
+          "notice": 1,
+          "s [limb.plaintext_zone]\" : limb)] with [tool]!": 1
+        }
+      },
+      "Unexpected top-level token '<x>'s [limb.plaintext_zone]\" : limb)]!\" + \"</span>\"), )\n'": {
+        "errors": 1,
+        "warnings": 0,
+        "samples": [
+          "code/modules/surgery/operations/operation_puncture.dm:99"
+        ],
+        "tokens": {
+          "[surgeon] successfully seals some of the blood vessels in  [(limb.owner ? \"[limb.owner]": 1
+        }
+      },
+      "#error: The TGS DMAPI does not support BYOND versions < 510!": {
+        "errors": 2,
+        "warnings": 0,
+        "samples": [
+          "code/modules/tgs/core/_definitions.dm:2",
+          "code/modules/tgs/includes.dm:2"
+        ],
+        "tokens": {}
+      },
+      "Expected '<x>' after '<x>' block, found '<x>'": {
+        "errors": 34,
+        "warnings": 0,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm:1461",
+          "code/modules/unit_tests/_unit_tests.dm:1803",
+          "code/modules/unit_tests/_unit_tests.dm:12574"
+        ],
+        "tokens": {
+          "while (condition)": 34,
+          "do": 34,
+          "/datum/unit_test/blood_volume_procs": 1,
+          "/datum/unit_test/breath/breath_sanity_plasmamen": 1,
+          "/datum/unit_test/shapeshift_spell/proc/test_spell": 1
+        }
+      },
+      "Expected '<x>' to close list literal": {
+        "errors": 5,
+        "warnings": 0,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm:6563",
+          "code/modules/unit_tests/_unit_tests.dm:15140",
+          "code/modules/unit_tests/_unit_tests.dm:15140"
+        ],
+        "tokens": {
+          "}": 5
+        }
+      },
+      "Inconsistent indentation: 8 spaces does not match any enclosing block level": {
+        "errors": 0,
+        "warnings": 2,
+        "samples": [
+          "code/modules/unit_tests/_unit_tests.dm:12961",
+          "code/modules/unit_tests/_unit_tests.dm:12963"
+        ],
+        "tokens": {}
+      },
+      "Unsupported #pragma '<x>' ignored": {
+        "errors": 0,
+        "warnings": 30,
+        "samples": [
+          "tools/ci/od_lints.dm:2",
+          "tools/ci/od_lints.dm:3",
+          "tools/ci/od_lints.dm:4"
+        ],
+        "tokens": {
+          "FileAlreadyIncluded error": 1,
+          "MissingIncludedFile error": 1,
+          "MisplacedDirective error": 1,
+          "UndefineMissingDirective error": 1,
+          "DefinedMissingParen error": 1,
+          "ErrorDirective error": 1,
+          "WarningDirective warning": 1,
+          "MiscapitalizedDirective error": 1,
+          "SoftReservedKeyword error": 1,
+          "DuplicateVariable error": 1,
+          "DuplicateProcDefinition error": 1,
+          "PointlessParentCall error": 1,
+          "PointlessBuiltinCall error": 1,
+          "SuspiciousMatrixCall error": 1,
+          "FallbackBuiltinArgument error": 1,
+          "MalformedRange error": 1,
+          "InvalidRange error": 1,
+          "InvalidSetStatement error": 1,
+          "InvalidOverride error": 1,
+          "DanglingVarType error": 1,
+          "MissingInterpolatedExpression error": 1,
+          "AmbiguousResourcePath error": 1,
+          "ProcArgumentGlobal error": 1,
+          "UnsupportedAccess disabled": 1,
+          "EmptyBlock error": 1,
+          "EmptyProc disabled": 1,
+          "UnsafeClientAccess disabled": 1,
+          "SuspiciousSwitchCase error": 1,
+          "AssignmentInConditional error": 1,
+          "AmbiguousInOrder error": 1
+        }
+      }
+    },
+    "procCount": 64794,
+    "typeCount": 46995
+  }
+}
