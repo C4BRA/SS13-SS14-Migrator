@@ -58,7 +58,7 @@ export class DMIParser {
     }
 
     let offset = 8;
-    let dmiText = '';
+    const dmiTexts: string[] = [];
 
     while (offset < buffer.length) {
       if (offset + 8 > buffer.length) break;
@@ -75,7 +75,7 @@ export class DMIParser {
       if (chunkType === 'tEXt' || chunkType === 'iTXt' || chunkType === 'zTXt') {
         const text = this.parseTextChunk(chunkType, chunkData);
         if (text && text.includes('# BEGIN DMI')) {
-          dmiText += text;
+          dmiTexts.push(text);
         }
       }
       
@@ -85,7 +85,10 @@ export class DMIParser {
       offset += 12 + length;
     }
 
-    return dmiText || null;
+    // Multiple # BEGIN DMI chunks are INDEPENDENT metadata blocks (WS10-11):
+    // concatenating them merged states and let a later width/height win.
+    // Join them with a separator that parseDMIText treats as a boundary.
+    return dmiTexts.length > 0 ? dmiTexts.join('\n# BEGIN DMI\n') : null;
   }
 
   private parseTextChunk(chunkType: string, data: Buffer): string {
@@ -163,6 +166,15 @@ export class DMIParser {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
+      // A second # BEGIN DMI block ends any open state (WS10-11).
+      if (trimmed.startsWith('# BEGIN DMI')) {
+        if (currentState) {
+          states.push(currentState);
+          currentState = null;
+        }
+        continue;
+      }
+
       if (trimmed.startsWith('version =')) {
         version = trimmed.split('=')[1].trim();
       } else if (trimmed.startsWith('width =')) {
@@ -178,15 +190,39 @@ export class DMIParser {
         currentState = { name, dirs: 1, frames: 1 };
       } else if (currentState) {
         if (trimmed.startsWith('dirs =')) {
-          currentState.dirs = parseInt(trimmed.split('=')[1].trim(), 10) || 1;
-          if (currentState.dirs !== 1 && currentState.dirs !== 4 && currentState.dirs !== 8) {
-            warnings.push(`state '${currentState.name}': invalid dirs=${currentState.dirs} (expected 1, 4, or 8)`);
+          const rawDirs = parseInt(trimmed.split('=')[1].trim(), 10);
+          // dirs = 0 silently coerced to 1 before; an explicit 0 is invalid
+          // (WS10-9).
+          if (Number.isNaN(rawDirs) || rawDirs <= 0) {
+            warnings.push(`state '${currentState.name}': invalid dirs=${rawDirs} (expected 1, 4, or 8) — using 1`);
+            currentState.dirs = 1;
+          } else {
+            currentState.dirs = rawDirs;
+            if (currentState.dirs !== 1 && currentState.dirs !== 4 && currentState.dirs !== 8) {
+              warnings.push(`state '${currentState.name}': invalid dirs=${currentState.dirs} (expected 1, 4, or 8)`);
+            }
           }
         } else if (trimmed.startsWith('frames =')) {
-          currentState.frames = parseInt(trimmed.split('=')[1].trim(), 10) || 1;
+          const rawFrames = parseInt(trimmed.split('=')[1].trim(), 10);
+          if (Number.isNaN(rawFrames) || rawFrames <= 0) {
+            warnings.push(`state '${currentState.name}': invalid frames=${rawFrames} — using 1`);
+            currentState.frames = 1;
+          } else {
+            currentState.frames = rawFrames;
+          }
         } else if (trimmed.startsWith('delay =')) {
-          const delays = trimmed.split('=')[1].trim().split(',').map(s => parseFloat(s.trim()) || 1);
-          currentState.delay = delays;
+          const rawDelays = trimmed.split('=')[1].trim().split(',').map(s => s.trim());
+          const stateName = currentState.name;
+          currentState.delay = rawDelays.map((d, i) => {
+            const v = parseFloat(d);
+            if (Number.isNaN(v) || v <= 0) {
+              // Delay 0/non-numeric is invalid (WS10-10); negatives must not
+              // pass through to the RSI delays.
+              warnings.push(`state '${stateName}': invalid delay entry '${d}' (entry ${i + 1}) — using 1`);
+              return 1;
+            }
+            return v;
+          });
         }
       }
     }

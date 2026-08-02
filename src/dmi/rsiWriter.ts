@@ -33,8 +33,9 @@ export class RSIWriter {
     if (fs.existsSync(dmiPath)) {
       try {
         sheet = decodePNG(fs.readFileSync(dmiPath));
-      } catch {
+      } catch (e: any) {
         sheet = null;
+        meta.warnings.push(`failed to decode sheet '${dmiPath}': ${e?.message ?? e} — metadata-only RSI emitted`);
       }
     }
 
@@ -65,7 +66,25 @@ export class RSIWriter {
       for (const state of meta.states) {
         const stateDir = path.join(outputRSIPath, this.sanitizeStateName(state.name));
         fs.mkdirSync(stateDir, { recursive: true });
+        // A sheet smaller than the declared cells would crop out-of-bounds
+        // into silent black/garbage pixels — skip with a warning instead.
+        const needW = state.frames * meta.width;
+        const needH = state.dirs * meta.height;
+        if (sheet.width < needW || sheet.height < needH) {
+          meta.warnings.push(
+            `state '${state.name}': sheet ${sheet.width}x${sheet.height} is smaller than declared ${needW}x${needH} — sprites skipped`
+          );
+          continue;
+        }
         for (let d = 0; d < state.dirs; d++) {
+          // DMI 4-dir rows are S,N,E,W; SS14 RSI direction indices are
+          // S,E,N,W (0,1,2,3). Copying rows verbatim swapped North and East
+          // (WS10-1 — color-row probe proof). dirs=8 has no SS14 equivalent
+          // (SS14 supports 1/4); emit with a warning.
+          if (state.dirs === 8) {
+            meta.warnings.push(`state '${state.name}': dirs=8 is not supported by SS14 RSIs (1/4 only) — emitting rows verbatim`);
+          }
+          const ss14Dir = state.dirs === 4 ? [0, 2, 1, 3][d] : d;
           // Stack all frames of this direction vertically.
           const stacked = Buffer.alloc(meta.width * meta.height * state.frames * 4);
           for (let f = 0; f < state.frames; f++) {
@@ -83,7 +102,7 @@ export class RSIWriter {
             }
           }
           const png = encodePNG({ width: meta.width, height: meta.height * state.frames, rgba: stacked });
-          fs.writeFileSync(path.join(stateDir, `${d}.png`), png);
+          fs.writeFileSync(path.join(stateDir, `${ss14Dir}.png`), png);
         }
         fs.writeFileSync(path.join(stateDir, 'meta.json'), JSON.stringify({
           version: 1,

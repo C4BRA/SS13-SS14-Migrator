@@ -37,7 +37,7 @@ function chunk(type: string, data: Buffer): Buffer {
 }
 
 export function decodePNG(buffer: Buffer): PNGImage {
-  if (buffer.length < 8 || buffer.readUInt32BE(0) !== 0x89504e47) {
+  if (buffer.length < 8 || buffer.readUInt32BE(0) !== 0x89504e47 || buffer.readUInt32BE(4) !== 0x0d0a1a0a) {
     throw new Error('Not a PNG');
   }
   let offset = 8;
@@ -45,19 +45,32 @@ export function decodePNG(buffer: Buffer): PNGImage {
   let height = 0;
   let bitDepth = 8;
   let colorType = 6;
+  let interlace = 0;
   let palette: Buffer | null = null;
   let trns: Buffer | null = null;
   const idat: Buffer[] = [];
 
   while (offset + 8 <= buffer.length) {
     const length = buffer.readUInt32BE(offset);
+    if (offset + 12 + length > buffer.length) {
+      throw new Error('PNG chunk length exceeds file bounds');
+    }
     const type = buffer.toString('ascii', offset + 4, offset + 8);
     const data = buffer.subarray(offset + 8, offset + 8 + length);
+    // CRC validation (WS10-2): the stored CRC must match the type+data; a
+    // corrupted chunk previously decoded silently (even flipped text bytes).
+    const storedCrc = buffer.readUInt32BE(offset + 8 + length);
+    const actualCrc = crc32(buffer.subarray(offset + 4, offset + 8 + length));
+    if (storedCrc !== actualCrc) {
+      throw new Error(`PNG CRC mismatch in ${type} chunk`);
+    }
     if (type === 'IHDR') {
+      if (length < 13) throw new Error('Invalid IHDR chunk');
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
       bitDepth = data[8];
       colorType = data[9];
+      interlace = data[12];
     } else if (type === 'PLTE') {
       palette = Buffer.from(data);
     } else if (type === 'tRNS') {
@@ -69,7 +82,19 @@ export function decodePNG(buffer: Buffer): PNGImage {
     }
     offset += 12 + length;
   }
-  if (width === 0 || height === 0) throw new Error('Invalid PNG dimensions');
+
+  // IHDR sanity: sane dimensions, valid color type / bit depth combos,
+  // no interlace (Adam7 is not implemented), compression/filter methods 0.
+  const VALID_DEPTHS: Record<number, number[]> = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+  if (width <= 0 || height <= 0 || width > 65536 || height > 65536) {
+    throw new Error(`Invalid PNG dimensions ${width}x${height}`);
+  }
+  if (!VALID_DEPTHS[colorType] || !VALID_DEPTHS[colorType].includes(bitDepth)) {
+    throw new Error(`Unsupported PNG color type ${colorType} bit depth ${bitDepth}`);
+  }
+  if (interlace !== 0) {
+    throw new Error('Interlaced PNGs are not supported');
+  }
 
   const raw = zlib.inflateSync(Buffer.concat(idat));
 
@@ -77,6 +102,12 @@ export function decodePNG(buffer: Buffer): PNGImage {
   const channels = [1, 0, 3, 1, 2, 4, 4][colorType];
   const bpp = Math.max(1, Math.floor(channels * bitDepth / 8));
   const stride = Math.ceil(width * channels * bitDepth / 8);
+
+  // A complete scanline stream has exactly (stride + filterByte) per row;
+  // anything shorter would decode as silent black pixels.
+  if (raw.length !== (stride + 1) * height) {
+    throw new Error(`PNG scanline data length mismatch (${raw.length} != ${(stride + 1) * height})`);
+  }
 
   // Unfilter scanlines
   const out = Buffer.alloc(stride * height);
@@ -103,6 +134,13 @@ export function decodePNG(buffer: Buffer): PNGImage {
   // Convert to RGBA8
   const rgba = Buffer.alloc(width * height * 4);
   const px = (i: number): number => (bitDepth === 16 ? out[i * 2] : out[i]); // MSB
+  // Packed sample for bit depths < 8 (indexed / gray).
+  const sample = (byteOffset: number, bitOffset: number, bits: number): number =>
+    (out[byteOffset] >> (8 - bits - bitOffset)) & ((1 << bits) - 1);
+  const sampleAt = (si: number, x: number): number =>
+    bitDepth < 8
+      ? sample(si + Math.floor((x * bitDepth) / 8), (x * bitDepth) % 8, bitDepth)
+      : px(si + x);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const di = (y * width + x) * 4;
@@ -114,14 +152,19 @@ export function decodePNG(buffer: Buffer): PNGImage {
         const i = si + x * 3;
         rgba[di] = px(i); rgba[di + 1] = px(i + 1); rgba[di + 2] = px(i + 2); rgba[di + 3] = 255;
       } else if (colorType === 0) {
-        const i = si + x;
-        rgba[di] = px(i); rgba[di + 1] = px(i); rgba[di + 2] = px(i); rgba[di + 3] = 255;
+        let g: number;
+        if (bitDepth < 8) {
+          const v = sampleAt(si, x);
+          g = bitDepth === 1 ? (v ? 255 : 0) : bitDepth === 2 ? v * 85 : v * 17;
+        } else {
+          g = px(si + x);
+        }
+        rgba[di] = g; rgba[di + 1] = g; rgba[di + 2] = g; rgba[di + 3] = 255;
       } else if (colorType === 4) {
         const i = si + x * 2;
         rgba[di] = px(i); rgba[di + 1] = px(i); rgba[di + 2] = px(i); rgba[di + 3] = px(i + 1);
       } else if (colorType === 3) {
-        const i = si + x;
-        const idx = px(i);
+        const idx = sampleAt(si, x);
         const p = palette ? palette.subarray(idx * 3, idx * 3 + 3) : Buffer.from([255, 0, 255]);
         rgba[di] = p[0] ?? 255; rgba[di + 1] = p[1] ?? 0; rgba[di + 2] = p[2] ?? 255;
         rgba[di + 3] = trns && idx < trns.length ? trns[idx] : 255;
@@ -133,6 +176,9 @@ export function decodePNG(buffer: Buffer): PNGImage {
 
 export function encodePNG(image: PNGImage): Buffer {
   const { width, height, rgba } = image;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error(`Invalid PNG dimensions ${width}x${height}`);
+  }
   const stride = width * 4;
   const raw = Buffer.alloc((stride + 1) * height);
   for (let y = 0; y < height; y++) {

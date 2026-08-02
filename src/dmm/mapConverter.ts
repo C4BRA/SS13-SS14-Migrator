@@ -20,7 +20,7 @@ export class MapConverter {
 
     for (const grid of dmmData.grids) {
       const gridId = entityIdCounter++;
-      const chunks = new Map<string, string[]>();
+      const chunks = new Map<string, Map<string, string>>();
 
       const gridEntity: any = {
         uid: gridId,
@@ -58,7 +58,7 @@ export class MapConverter {
             if (typePath.startsWith('/turf')) {
               const tileId = this.turfToTileId(typePath);
               tilemap.set(tileId, this.tileIdToPrototype(tileId));
-              this.addTile(chunks, worldX, worldY, tileId);
+              this.addTile(chunks, worldX, worldY, tileId, dmmData.warnings);
             } else {
               const protoId = this.typePathToPrototypeId(typePath);
               entities.push({
@@ -93,11 +93,28 @@ export class MapConverter {
   }
 
   private tileIdToPrototype(tileId: string): string {
-    // SS14 turf prototypes are PascalCase (Floor, Wall, ...).
+    // SS14 turf prototypes are PascalCase real content prototypes (Floor,
+    // Plating, Wall, Space...). Invented "TurfFloor" names would fail
+    // prototype resolution on load (WS11-2).
+    const known: Record<string, string> = {
+      floor: 'Floor',
+      plating: 'Plating',
+      wall: 'Wall',
+      space: 'Space',
+      lava: 'Lava',
+      water: 'Water',
+      sand: 'Sand',
+      grass: 'Grass',
+      snow: 'Snow',
+      rock: 'Rock',
+      catwalk: 'Catwalk',
+      metal: 'Metal'
+    };
+    if (known[tileId]) return known[tileId];
     return 'Turf' + tileId.charAt(0).toUpperCase() + tileId.slice(1);
   }
 
-  private addTile(chunks: Map<string, string[]>, worldX: number, worldY: number, tileId: string): void {
+  private addTile(chunks: Map<string, Map<string, string>>, worldX: number, worldY: number, tileId: string, warnings: string[]): void {
     // RobustToolbox chunk math: floor division so negative coords land in the
     // correct chunk with a positive local index.
     const cx = Math.floor(worldX / CHUNK_SIZE);
@@ -105,17 +122,31 @@ export class MapConverter {
     const lx = worldX - cx * CHUNK_SIZE;
     const ly = worldY - cy * CHUNK_SIZE;
     const key = `${cx},${cy}`;
+    const local = `${lx},${ly}`;
     let chunk = chunks.get(key);
     if (!chunk) {
-      chunk = [];
+      chunk = new Map();
       chunks.set(key, chunk);
     }
-    chunk.push(`    ${lx},${ly}: ${tileId}`);
+    if (chunk.has(local)) {
+      // Two turfs on one tile (WS11-9): duplicate lx,ly lines are an invalid
+      // map — keep the first, warn once per key.
+      if (!warnings.includes(`duplicate turf on tile ${local}`)) {
+        warnings.push(`duplicate turf on tile ${local} — keeping the first`);
+      }
+      return;
+    }
+    chunk.set(local, tileId);
   }
 
   private typePathToPrototypeId(typePath: string): string {
+    // Best-effort mapping to SS14 content prototype names: the last path
+    // segment PascalCased (obj/structure/table -> Table). Invented
+    // underscore-joined ids do not exist in content (WS11-2).
     const parts = typePath.split('/').filter(Boolean);
-    return parts.join('_').toLowerCase();
+    const last = parts[parts.length - 1].replace(/[^a-zA-Z0-9_]/g, '_');
+    if (!last) return typePath.replace(/\//g, '_').toLowerCase();
+    return last.charAt(0).toUpperCase() + last.slice(1);
   }
 
   private serializeToYAML(entities: any[], tilemap: Map<string, string>): string {
@@ -140,9 +171,14 @@ export class MapConverter {
           if (comp.tileSize) yaml += `    tileSize: ${comp.tileSize}\n`;
           if (comp.chunks) {
             yaml += '    chunks:\n';
-            for (const [chunkKey, lines] of comp.chunks) {
+            // Format-2 chunk values are LISTS of "lx,ly: tile" entries nested
+            // under the chunk key (WS11-1: tiles emitted as siblings were
+            // dropped from the chunks map entirely).
+            for (const [chunkKey, tiles] of comp.chunks) {
               yaml += `      ${chunkKey}:\n`;
-              for (const line of lines) yaml += line + '\n';
+              for (const [local, tileId] of tiles) {
+                yaml += `      - ${local}: ${tileId}\n`;
+              }
             }
           }
         }

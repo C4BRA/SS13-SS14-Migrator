@@ -54,14 +54,22 @@ export class DMMParser {
 
       // TGM multi-line definitions: a def body ends only when its parentheses
       // balance, so "..." = (/turf/floor\n/obj/table) accumulates across lines.
+      // A line that looks like a grid header terminates an unterminated def —
+      // otherwise the def swallows the whole map (WS11-4).
       if (pendingDef) {
-        pendingDef += '\n' + line;
-        if (this.parenBalanced(pendingDef)) {
-          this.parseDefinition(pendingDefKey, pendingDef, mapData);
+        if (/^\(\s*-?\d+\s*,/.test(line)) {
+          mapData.warnings.push(`unterminated tile key definition "${pendingDefKey}" (stopped at a grid header line)`);
           pendingDef = '';
           pendingDefKey = '';
+        } else {
+          pendingDef += '\n' + line;
+          if (this.parenBalanced(pendingDef)) {
+            this.parseDefinition(pendingDefKey, pendingDef, mapData);
+            pendingDef = '';
+            pendingDefKey = '';
+          }
+          continue;
         }
-        continue;
       }
 
       // Match tile key definition line: "aaa" = (/turf/simulated/floor, /obj/item/sword)
@@ -76,8 +84,9 @@ export class DMMParser {
         continue;
       }
 
-      // Match Grid Coordinate header line: (1,1,1) = {"  (negative coords allowed)
-      const gridHeaderMatch = line.match(/^\((-?\d+),(-?\d+),(-?\d+)\)\s*=\s*\{"$/);
+      // Match Grid Coordinate header line: (1,1,1) = {"  (negative coords
+      // allowed; whitespace between tokens tolerated — WS11-5)
+      const gridHeaderMatch = line.replace(/\s*\/\/.*$/, '').match(/^\(\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\)\s*=\s*\{"$/);
       if (gridHeaderMatch) {
         sections.push({
           z: parseInt(gridHeaderMatch[3], 10),
@@ -185,15 +194,53 @@ export class DMMParser {
 
   private parseEntry(text: string): { path: string; attrs?: Record<string, string> } | null {
     const trimmed = text.trim().replace(/^['"]|['"]$/g, '');
-    // Per-tile attributes: /turf/floor{dir=4;icon_state="x"}
-    const attrMatch = trimmed.match(/^(.+)\{([^}]*)\}$/);
-    if (!attrMatch) return { path: trimmed, attrs: undefined };
+    // Per-tile attributes: /turf/floor{dir=4;icon_state="x"}. The brace scan
+    // must be quote-aware — a `}` or `;` or `=` inside a quoted value is
+    // content, not structure (WS11-3).
+    const openIdx = trimmed.indexOf('{');
+    if (openIdx < 0 || !trimmed.endsWith('}')) return { path: trimmed, attrs: undefined };
+    let depth = 0;
+    let inString = false;
+    let closeIdx = -1;
+    for (let i = openIdx; i < trimmed.length; i++) {
+      const c = trimmed[i];
+      if (inString) {
+        if (c === '"' && trimmed[i - 1] !== '\\') inString = false;
+        continue;
+      }
+      if (c === '"') { inString = true; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) { closeIdx = i; break; }
+      }
+    }
+    if (closeIdx < 0) return { path: trimmed, attrs: undefined };
+    const path = trimmed.slice(0, openIdx).trim();
+    const attrBody = trimmed.slice(openIdx + 1, closeIdx);
     const attrs: Record<string, string> = {};
-    for (const pair of attrMatch[2].split(';')) {
+    // Split attr pairs on `;` only OUTSIDE quotes.
+    const pairs: string[] = [];
+    let cur = '';
+    let q = false;
+    for (let i = 0; i < attrBody.length; i++) {
+      const c = attrBody[i];
+      if (q) {
+        cur += c;
+        if (c === '"' && attrBody[i - 1] !== '\\') q = false;
+        continue;
+      }
+      if (c === '"') { q = true; cur += c; continue; }
+      if (c === ';') { pairs.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    pairs.push(cur);
+    for (const pair of pairs) {
+      // Split on the FIRST `=` only (a value may contain `=` — WS11-3).
       const eq = pair.indexOf('=');
       if (eq > 0) attrs[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
     }
-    return { path: attrMatch[1].trim(), attrs };
+    return { path, attrs };
   }
 
   private splitTopLevel(text: string, sep: string): string[] {
@@ -222,12 +269,37 @@ export class DMMParser {
     return parts;
   }
 
-  private decodeLine(rawLine: string, keyLen: number): string[] {
+  // Decode one grid row into tile keys. Strategy:
+  //   1. whitespace-separated rows (TGM) split on whitespace — a space is a
+  //      separator, never a key;
+  //   2. otherwise greedy longest-match against the known definition keys
+  //      (handles mixed-length key maps, e.g. "A" + "aa" in one grid);
+  //   3. legacy fixed-width split as a fallback.
+  private decodeLine(rawLine: string, keyLen: number, sortedKeys: string[]): string[] {
     const trimmedLine = rawLine.trim();
     if (!trimmedLine) return [];
 
-    // Single key per line, concatenated fixed-width keys, or space-separated.
+    if (/\s/.test(trimmedLine)) {
+      return trimmedLine.split(/\s+/).filter(k => k.length > 0);
+    }
     if (trimmedLine.length === keyLen) return [trimmedLine];
+    if (sortedKeys.length > 0) {
+      const out: string[] = [];
+      let pos = 0;
+      while (pos < trimmedLine.length) {
+        let matched = false;
+        for (const k of sortedKeys) {
+          if (k.length > 0 && trimmedLine.startsWith(k, pos)) {
+            out.push(k);
+            pos += k.length;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) break;
+      }
+      if (pos === trimmedLine.length) return out;
+    }
     if (trimmedLine.length % keyLen === 0 && trimmedLine.length > keyLen) {
       const keys: string[] = [];
       for (let i = 0; i < trimmedLine.length; i += keyLen) {
@@ -236,13 +308,13 @@ export class DMMParser {
       }
       return keys;
     }
-    return trimmedLine.split(/\s+/).filter(k => k);
+    return [trimmedLine];
   }
 
-  private buildSectionGrid(section: Section, keyLen: number, warnings: string[]): string[][] {
+  private buildSectionGrid(section: Section, keyLen: number, sortedKeys: string[], warnings: string[]): string[][] {
     const cells: string[][] = [];
     for (const rawLine of section.lines) {
-      const keys = this.decodeLine(rawLine, keyLen);
+      const keys = this.decodeLine(rawLine, keyLen, sortedKeys);
       if (keys.length > 0) cells.push(keys);
     }
     return cells;
@@ -255,10 +327,11 @@ export class DMMParser {
       return { z, originX: 0, originY: 0, width: 0, height: 0, cells: [] };
     }
     const keyLen = sampleKey.length;
+    const sortedKeys = [...mapData.definitions.keys()].sort((a, b) => b.length - a.length);
 
     const decoded: { x: number; y: number; width: number; height: number; cells: string[][] }[] = [];
     for (const s of sections) {
-      const cells = this.buildSectionGrid(s, keyLen, mapData.warnings);
+      const cells = this.buildSectionGrid(s, keyLen, sortedKeys, mapData.warnings);
       if (cells.length === 0) continue;
       // Rectangularity: all rows within a section must have the same width.
       const rowLen = cells[0].length;
