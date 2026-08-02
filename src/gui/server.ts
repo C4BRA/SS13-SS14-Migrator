@@ -1,5 +1,6 @@
 import * as http from 'http';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import AdmZip from 'adm-zip';
@@ -57,6 +58,12 @@ export class GUIServer {
     });
 
     this.server = server;
+    // A port conflict (or any listen error) must fail gracefully instead of
+    // crashing the process with an unhandled 'error' event (WS12-7).
+    server.on('error', (err: Error) => {
+      console.error(`Failed to start GUI server on port ${this.port}: ${err.message}`);
+      process.exit(1);
+    });
     server.listen(this.port, '127.0.0.1', () => {
       console.log(`\n==================================================`);
       console.log(`\u{1F680} dm2ss14 macOS Desktop App launched!`);
@@ -91,12 +98,38 @@ export class GUIServer {
 
   // Restrict output paths to the user's home directory so a crafted
   // outputPath field cannot make the server write outside the sandbox.
+  // `~/x` is expanded; symlinks inside $HOME that point outside are rejected
+  // via realpath of the deepest existing ancestor (WS12-1, WS12-9).
   public static validateOutputPath(outputDirPath: string): string | null {
     if (!outputDirPath) return null;
     if (outputDirPath.includes('\0')) return null;
-    const resolved = path.resolve(outputDirPath);
     const homeRoot = path.resolve(process.env.HOME || '/tmp');
-    if (resolved !== homeRoot && !resolved.startsWith(homeRoot + path.sep)) return null;
+    let expanded = outputDirPath;
+    if (expanded === '~') expanded = homeRoot;
+    else if (expanded.startsWith('~/')) expanded = path.join(homeRoot, expanded.slice(2));
+    const resolved = path.resolve(expanded);
+    const realHome = (() => {
+      try {
+        return fs.realpathSync(homeRoot);
+      } catch {
+        return homeRoot;
+      }
+    })();
+    // Deepest existing ancestor's REAL path (symlinks resolved).
+    let probe = resolved;
+    let realAncestor: string | null = null;
+    for (;;) {
+      try {
+        realAncestor = fs.realpathSync(probe);
+        break;
+      } catch {
+        const parent = path.dirname(probe);
+        if (parent === probe) break;
+        probe = parent;
+      }
+    }
+    if (realAncestor === null) return null;
+    if (realAncestor !== realHome && !realAncestor.startsWith(realHome + path.sep)) return null;
     return resolved;
   }
 
@@ -108,93 +141,137 @@ export class GUIServer {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
     let oversized = false;
-    req.on('data', chunk => {
-      totalBytes += chunk.length;
-      if (totalBytes > GUIServer.MAX_UPLOAD_BYTES) oversized = true;
-      if (!oversized) chunks.push(chunk);
-    });
-    req.on('end', async () => {
-      let tempInputDir: string | null = null;
-      try {
-        if (oversized) {
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Upload exceeds the 2 GiB size limit.' }));
-          return;
+    // The in-flight 429 guard must stay held until the conversion finishes:
+    // resolve only when the 'end' handler completes (WS12-2 — previously the
+    // promise resolved before the request body was even consumed, so two
+    // concurrent conversions raced on the same output directory).
+    await new Promise<void>(resolve => {
+      req.on('data', chunk => {
+        totalBytes += chunk.length;
+        if (totalBytes > GUIServer.MAX_UPLOAD_BYTES) oversized = true;
+        if (!oversized) chunks.push(chunk);
+      });
+      req.on('error', () => resolve());
+      req.on('end', async () => {
+        try {
+          await this.processConvertBody(req, res, chunks, totalBytes, oversized);
+        } finally {
+          resolve();
         }
-        const body = Buffer.concat(chunks);
-        const contentType = req.headers['content-type'] || '';
+      });
+    });
+  }
 
-        let zipBuffer: Buffer | null = null;
-        let outputDirPath = path.join(process.env.HOME || '/tmp', 'Downloads', 'SS14-Converted-Server');
+  private async processConvertBody(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    chunks: Buffer[],
+    totalBytes: number,
+    oversized: boolean
+  ): Promise<void> {
+    let tempInputDir: string | null = null;
+    try {
+      if (oversized) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Upload exceeds the 2 GiB size limit.' }));
+        return;
+      }
+      const body = Buffer.concat(chunks);
+      const contentType = req.headers['content-type'] || '';
 
-        if (contentType.includes('multipart/form-data')) {
-          const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
-          if (boundaryMatch) {
-            const boundary = boundaryMatch[1] || boundaryMatch[2];
-            const parts = this.parseMultipart(body, boundary);
+      let zipBuffer: Buffer | null = null;
+      let outputDirPath = path.join(process.env.HOME || '/tmp', 'Downloads', 'SS14-Converted-Server');
 
-            const filePart = parts.find(p => p.filename);
-            const outputPart = parts.find(p => p.name === 'outputPath');
+      if (contentType.includes('multipart/form-data')) {
+        const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+        if (boundaryMatch) {
+          const boundary = boundaryMatch[1] || boundaryMatch[2];
+          const parts = this.parseMultipart(body, boundary);
 
-            if (filePart) zipBuffer = filePart.data;
-            if (outputPart) {
-              const candidate = GUIServer.validateOutputPath(outputPart.data.toString('utf-8').trim() || outputDirPath);
-              if (!candidate) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Invalid outputPath: must resolve inside your home directory.' }));
-                return;
-              }
-              outputDirPath = candidate;
+          const filePart = parts.find(p => p.filename);
+          const outputPart = parts.find(p => p.name === 'outputPath');
+
+          if (filePart) zipBuffer = filePart.data;
+          if (outputPart) {
+            const candidate = GUIServer.validateOutputPath(outputPart.data.toString('utf-8').trim() || outputDirPath);
+            if (!candidate) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid outputPath: must resolve inside your home directory.' }));
+              return;
             }
+            outputDirPath = candidate;
           }
         }
+      }
 
-        if (!zipBuffer) {
+      if (!zipBuffer) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No zip file provided.' }));
+        return;
+      }
+
+      // Validate the archive before extracting: guard against zip bombs and
+      // pathological archives (excessive entry counts / uncompressed sizes).
+      // Note: entry.header.size is attacker-controlled metadata (WS12-4) —
+      // the post-extraction size check below is the authoritative bound.
+      const zip = new AdmZip(zipBuffer);
+      const entries = zip.getEntries();
+      let totalUncompressed = 0;
+      for (const entry of entries) {
+        totalUncompressed += entry.header.size;
+        if (entries.length > GUIServer.MAX_ZIP_ENTRIES || totalUncompressed > GUIServer.MAX_ZIP_UNCOMPRESSED) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No zip file provided.' }));
+          res.end(JSON.stringify({ error: 'Archive rejected: too many entries or total size exceeds limits.' }));
           return;
         }
+      }
 
-        // Validate the archive before extracting: guard against zip bombs and
-        // pathological archives (excessive entry counts / uncompressed sizes).
-        const zip = new AdmZip(zipBuffer);
-        const entries = zip.getEntries();
-        let totalUncompressed = 0;
-        for (const entry of entries) {
-          totalUncompressed += entry.header.size;
-          if (entries.length > GUIServer.MAX_ZIP_ENTRIES || totalUncompressed > GUIServer.MAX_ZIP_UNCOMPRESSED) {
+      // Unpredictable temp dir under os.tmpdir(): a predictable cwd-relative
+      // name could be pre-planted as a symlink (WS12-5).
+      tempInputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm2ss14-'));
+
+      zip.extractAllTo(tempInputDir, true);
+
+      // Authoritative zip-bomb bound: re-measure actual extracted bytes
+      // (the declared header sizes may lie — WS12-4).
+      let extractedBytes = 0;
+      const stack = [tempInputDir];
+      while (stack.length > 0) {
+        const dir = stack.pop()!;
+        for (const f of fs.readdirSync(dir)) {
+          const p = path.join(dir, f);
+          const st = fs.statSync(p);
+          if (st.isDirectory()) stack.push(p);
+          else extractedBytes += st.size;
+          if (extractedBytes > GUIServer.MAX_ZIP_UNCOMPRESSED) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Archive rejected: too many entries or total size exceeds limits.' }));
+            res.end(JSON.stringify({ error: 'Archive rejected: extracted size exceeds limits.' }));
             return;
           }
         }
-
-        tempInputDir = path.join(process.cwd(), 'temp_gui_input_' + Date.now());
-        fs.mkdirSync(tempInputDir, { recursive: true });
-
-        zip.extractAllTo(tempInputDir, true);
-
-        const transpiler = new DM2SS14Transpiler();
-        await transpiler.transpile({
-          inputDir: tempInputDir,
-          outputDir: outputDirPath
-        });
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          success: true,
-          outputDir: outputDirPath,
-          message: 'Transpilation completed successfully!'
-        }));
-      } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message || 'Transpilation failed.' }));
-      } finally {
-        if (tempInputDir && fs.existsSync(tempInputDir)) {
-          fs.rmSync(tempInputDir, { recursive: true, force: true });
-        }
       }
-    });
+
+      const transpiler = new DM2SS14Transpiler();
+      await transpiler.transpile({
+        inputDir: tempInputDir,
+        outputDir: outputDirPath
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        outputDir: outputDirPath,
+        message: 'Transpilation completed successfully!'
+      }));
+    } catch {
+      // Do not leak server-side paths/error internals to the client (WS12-3).
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Transpilation failed.' }));
+    } finally {
+      if (tempInputDir && fs.existsSync(tempInputDir)) {
+        fs.rmSync(tempInputDir, { recursive: true, force: true });
+      }
+    }
   }
 
   private parseMultipart(body: Buffer, boundary: string): { name?: string; filename?: string; data: Buffer }[] {

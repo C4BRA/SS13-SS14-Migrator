@@ -15,7 +15,7 @@ import { DMIRGenerator } from '../ir/dmIRGenerator.js';
 import { CSharpEmitter } from '../transpiler/csharpEmitter.js';
 import { SS14Template } from '../project/ss14Template.js';
 import { DMRuntimeCS } from '../runtimeTemplate/dmRuntimeCS.js';
-import { MAPPED_BUILTINS } from '../transpiler/builtinMappings.js';
+import { MAPPED_BUILTINS, STUBBED_BUILTINS } from '../transpiler/builtinMappings.js';
 import { SymbolTable } from '../ir/symbolTable.js';
 import { DMTypeDeclNode } from '../parser/dmParser.js';
 import { execSync, spawn } from 'child_process';
@@ -37,10 +37,12 @@ interface LossCounters {
   numVerbDecls: number;
   numClientDecls: number;
   numWorldDecls: number;
+  numParentTypeDecls: number; // parent_type = /x (IR ignores it -> WS4-3)
   // Parse-level
   numGlobalVars: number;
   numClassicGlobalVars: number; // var/global/x = ... (misparsed onto /datum, dropped)
   numGlobAccess: number; // GLOB.foo reads (accessor var never initialized at runtime)
+  filesWithParseErrors: Map<string, number>; // relFile -> error count (silent content drop visibility)
   // AST-level: dropped statements
   numTry: number;
   numLabeledBlock: number;
@@ -52,9 +54,11 @@ interface LossCounters {
   numAsCast: number;
   numUnaryTilde: number;
   numSpawnExpr: number;
+  numStubbedBuiltin: number; // recognized stub builtins -> Null at runtime (WS7-16)
   numWorldRef: number;
   numPathConstPropRead: number; // /path.foo (e.g. GLOB.x) -> absorbed into a dead string literal
   numBrokenPropRead: number;
+  numRuntimeResolvedProps: number; // .len/.x/.y/.z — handled by the runtime (WS13-1)
   numUnknownBuiltin: number;
   numBareGlobalProcCalls: number; // target-less calls resolved via /proc globals (verified)
   numTypeResolvedBareCalls: number; // target-less calls resolved via the calling type's hierarchy
@@ -65,14 +69,17 @@ interface LossCounters {
   totalLossSites: number;
   unknownBuiltins: Map<string, { count: number; samples: string[]; contexts: Map<string, number> }>;
   brokenProps: Map<string, number>;
-  topFiles: Map<string, number>;
   // Parse diagnostics aggregated by message template (token texts stripped).
   errorClasses: Map<string, { errors: number; warnings: number; samples: string[]; tokens: Map<string, number> }>;
   procCount: number;
   typeCount: number;
 }
 
-const BROKEN_PROP_NAMES = ['len', 'type', 'loc', 'dir', 'x', 'y', 'z', 'overlays', 'contents'];
+// Truly broken builtin property reads (the runtime returns Null): loc, type,
+// dir, overlays, contents. len/x/y/z are runtime-handled (DMGetProperty
+// special-cases them) and counted separately — WS13-1.
+const BROKEN_PROP_NAMES = ['loc', 'type', 'dir', 'overlays', 'contents'];
+const RUNTIME_RESOLVED_PROP_NAMES = ['len', 'x', 'y', 'z'];
 
 function emptyCounters(): LossCounters {
   return {
@@ -80,15 +87,16 @@ function emptyCounters(): LossCounters {
     numDefineStringTruncation: 0, numGoto: 0, numSetModifiers: 0,
     numSwitchBraceForm: 0, numWeightedPick: 0, numMultiVarFor: 0,
     numForStepClause: 0, numForAsFilter: 0, numVerbDecls: 0,
-    numClientDecls: 0,     numWorldDecls: 0,
+    numClientDecls: 0,     numWorldDecls: 0, numParentTypeDecls: 0,
     numGlobalVars: 0, numClassicGlobalVars: 0, numGlobAccess: 0,
+    filesWithParseErrors: new Map(),
     numTry: 0, numLabeledBlock: 0,
     numNew: 0, numParentCall: 0, numBinaryNull: 0, numBinaryOutput: 0,
-    numAsCast: 0, numUnaryTilde: 0, numSpawnExpr: 0,
-    numWorldRef: 0, numPathConstPropRead: 0, numBrokenPropRead: 0, numUnknownBuiltin: 0,
+    numAsCast: 0, numUnaryTilde: 0, numSpawnExpr: 0, numStubbedBuiltin: 0,
+    numWorldRef: 0, numPathConstPropRead: 0, numBrokenPropRead: 0, numRuntimeResolvedProps: 0, numUnknownBuiltin: 0,
     numBareGlobalProcCalls: 0, numTypeResolvedBareCalls: 0, numUnresolvedCalls: 0,
     parseErrors: 0, parseWarnings: 0, totalLossSites: 0,
-    unknownBuiltins: new Map(), brokenProps: new Map(), topFiles: new Map(),
+    unknownBuiltins: new Map(), brokenProps: new Map(),
     errorClasses: new Map(),
     procCount: 0, typeCount: 0
   };
@@ -141,13 +149,19 @@ function countSourceLevel(counters: LossCounters, code: string): void {
     if (/\bswitch\s*\([^)]*\)\s*\{/.test(t)) counters.numSwitchBraceForm++;
     if (/\bpick\s*\([^)]*;/.test(t)) counters.numWeightedPick++;
     if (/^\s*for\s*\(\s*var\/[^)]*,\s*\w+\s+in/i.test(t)) counters.numMultiVarFor++;
+    // (for ... step n and for ... as type in ... are emitted correctly since
+    // Plan 10 B2 — no longer loss sites, counted for visibility only.)
     if (/\bfor\s*\([^)]*\bto\b[^)]*\bstep\b/i.test(t)) counters.numForStepClause++;
     if (/\bfor\s*\([^)]*\bas\s+\w+\s+in\b/i.test(t)) counters.numForAsFilter++;
     if (/^\s*\/.*\/verb\//.test(t)) counters.numVerbDecls++;
     if (/^\s*\/client\b/.test(t)) counters.numClientDecls++;
     if (/^\s*\/world\b/.test(t)) counters.numWorldDecls++;
+    if (/\bparent_type\s*=/.test(t)) counters.numParentTypeDecls++;
     if (/^\s*var\/global\/|^\s*\w+\/var\/global\//.test(t)) counters.numClassicGlobalVars++;
-    if (/\bGLOB\.[A-Za-z_]/.test(t)) counters.numGlobAccess++;
+    // Code-only counters: strip comments and string literals first so
+    // `// goto x` or `"GLOB.fake"` do not register as real sites (WS13-4).
+    const codeOnly = DMPreprocessor.stripInlineComment(line).replace(/"[^"]*"/g, '""');
+    if (/\bGLOB\.[A-Za-z_]/.test(codeOnly)) counters.numGlobAccess++;
   }
 }
 
@@ -239,6 +253,10 @@ function countASTLevel(
             counters.numParentCall++;
           } else if (node.name === 'spawn') {
             counters.numSpawnExpr++;
+          } else if (STUBBED_BUILTINS.includes(node.name)) {
+            // Recognized stub -> Null at runtime; a loss, not "resolved"
+            // (WS7-16).
+            counters.numStubbedBuiltin++;
           } else if (!MAPPED_BUILTINS.includes(node.name)) {
             const ctx = currentTypePath ?? '/';
             const entry = counters.unknownBuiltins.get(node.name) ?? { count: 0, samples: [], contexts: new Map<string, number>() };
@@ -292,6 +310,8 @@ function countASTLevel(
         if (BROKEN_PROP_NAMES.includes(node.property)) {
           counters.numBrokenPropRead++;
           counters.brokenProps.set(node.property, (counters.brokenProps.get(node.property) ?? 0) + 1);
+        } else if (RUNTIME_RESOLVED_PROP_NAMES.includes(node.property)) {
+          counters.numRuntimeResolvedProps++;
         }
         visit(node.target);
         return;
@@ -352,11 +372,10 @@ export function runAudit(dir: string, name: string): CodebaseResult {
 
     counters.parseErrors += collector.errors.length;
     counters.parseWarnings += collector.warnings.length;
+    if (collector.errors.length > 0) {
+      counters.filesWithParseErrors.set(relFile, collector.errors.length);
+    }
     collectErrorClasses(counters, collector.errors, collector.warnings, relFile);
-
-    const fileLoss =
-      counters.numGlobalVars + 0; // placeholder: real per-file loss tracked separately
-    void fileLoss;
 
     done++;
     if (done % 500 === 0 || done === files.length) {
@@ -392,17 +411,17 @@ export function runAudit(dir: string, name: string): CodebaseResult {
   counters.numUnresolvedCalls = [...counters.unknownBuiltins.values()].reduce((a, v) => a + v.count, 0);
   counters.numUnknownBuiltin = counters.numUnresolvedCalls;
   counters.totalLossSites =
-    counters.numElif + counters.numIfNumeric + counters.numIfError +
-    counters.numPragmaOnce + counters.numDefineStringTruncation +
     counters.numGoto + counters.numSetModifiers + counters.numSwitchBraceForm +
-    counters.numWeightedPick + counters.numMultiVarFor + counters.numForStepClause +
-    counters.numForAsFilter + counters.numVerbDecls + counters.numClientDecls +
-    counters.numWorldDecls + counters.numClassicGlobalVars +
+    counters.numWeightedPick + counters.numMultiVarFor +
+    counters.numVerbDecls + counters.numClientDecls +
+    counters.numWorldDecls + counters.numParentTypeDecls +
+    counters.numClassicGlobalVars +
     counters.numTry + counters.numLabeledBlock +
-    counters.numNew + counters.numParentCall + counters.numBinaryNull +
-    counters.numBinaryOutput + counters.numAsCast +
+    counters.numNew + counters.numParentCall +
+    counters.numAsCast +
     counters.numUnaryTilde + counters.numSpawnExpr + counters.numWorldRef +
     counters.numPathConstPropRead + counters.numBrokenPropRead +
+    counters.numStubbedBuiltin +
     counters.numUnknownBuiltin;
 
   return { name, dir, files: files.length, counters };
@@ -416,41 +435,44 @@ function printResult(r: CodebaseResult): void {
   console.log(`\n=== FIDELITY AUDIT: ${r.name} (${r.files} files) ===`);
   console.log(`Parse diagnostics: ${c.parseErrors} errors, ${c.parseWarnings} warnings`);
   console.log(`  Types / procs parsed: ${c.typeCount} types, ${c.procCount} procs`);  line('/global/var/ decls', c.numGlobalVars, 'emitted into GlobalVars registry');
-  line('var/global/ (classic)', c.numClassicGlobalVars, 'emitted into GlobalVars registry');
+  line('var/global/ (classic)', c.numClassicGlobalVars, 'misparsed onto /datum, dropped (WS13-2)');
   line('GLOB.x accessor reads', c.numGlobAccess, 'resolved via GlobalVars.Get');
   console.log('-- Preprocessor loss --');
-  line('#elif (mis-handled)', c.numElif);
-  line('#if numeric/relational', c.numIfNumeric, 'comparisons ignored');
-  line('#error (ignored)', c.numIfError);
-  line('#pragma once (no-op)', c.numPragmaOnce);
-  line('#define with // in string', c.numDefineStringTruncation, 'truncated');
+  line('#elif', c.numElif, 'handled since P10 B6');
+  line('#if numeric/relational', c.numIfNumeric, 'handled since P10 B6');
+  line('#error', c.numIfError, 'handled since P10 B6');
+  line('#pragma once', c.numPragmaOnce, 'include-once default since P10 B6');
+  line('#define with // in string', c.numDefineStringTruncation, 'handled since P10 B6');
   console.log('-- Parser-level loss --');
   line('goto', c.numGoto, 'silently misparsed');
   line('set modifiers (verbs)', c.numSetModifiers, 'dropped');
   line('switch { } brace form', c.numSwitchBraceForm, 'misparsed');
   line('weighted pick(a;"x")', c.numWeightedPick, 'weights dropped');
   line('multi-var for(a, b in ...)', c.numMultiVarFor);
-  line('for ... step n', c.numForStepClause);
-  line('for ... as type in ...', c.numForAsFilter);
+  line('for ... step n', c.numForStepClause, 'handled since P10 B2');
+  line('for ... as type in ...', c.numForAsFilter, 'handled since P10 B2');
   line('verb declarations', c.numVerbDecls, 'folded into procs');
   line('client declarations', c.numClientDecls);
   line('world declarations', c.numWorldDecls);
+  line('parent_type decls', c.numParentTypeDecls, 'IR ignores (WS4-3)');
   console.log('-- Emitter loss (statement drops) --');
   line('try/catch', c.numTry, '-> // Unknown statement');
   line('labeled blocks', c.numLabeledBlock, '-> // Unknown statement');
   console.log('-- Emitter loss (expression) --');
   line('new /type(...)', c.numNew, 'returns caller as placeholder');
   line('..() parent calls', c.numParentCall, '-> CallProc("..") -> Null');
-  line('bitwise & | ^ ~ >>', c.numBinaryNull, '-> DMValue.Null');
-  line('<< (shift/output)', c.numBinaryOutput, '-> console Output');
+  line('bitwise & | ^ ~ >>', c.numBinaryNull, 'handled since P11 B6');
+  line('<< (shift/output)', c.numBinaryOutput, 'handled since P11 B6');
   line('as casts', c.numAsCast, '-> DMValue.Null');
   line('unary ~', c.numUnaryTilde, '-> DMValue.Null');
   line('spawn() as expression', c.numSpawnExpr, 'empty body');
   line('world references', c.numWorldRef, '-> Null');
   line('path-const reads /path.x', c.numPathConstPropRead, 'GLOB.x style, dead literal');
-  line('builtin prop reads', c.numBrokenPropRead, 'len/type/loc/x/y/z/dir...');
+  line('builtin prop reads', c.numBrokenPropRead, 'loc/type/dir/overlays/contents -> Null');
+  line('runtime-resolved prop reads', c.numRuntimeResolvedProps, 'len/x/y/z handled by the runtime (WS13-1)');
+  line('stubbed builtin calls', c.numStubbedBuiltin, '-> Null at runtime (WS7-16)');
   line('unknown builtin calls', c.numUnknownBuiltin, '-> CallProc -> Null');
-  line('unresolved bare calls', c.numUnresolvedCalls, '-> Null at runtime (actionable backlog)');
+  line('unresolved bare calls', c.numUnresolvedCalls, 'same number as above — not double-counted');
   line('bare calls -> /proc globals', c.numBareGlobalProcCalls, 'resolved via /proc registry (verified)');
   line('bare calls -> type procs', c.numTypeResolvedBareCalls, 'resolved via calling type hierarchy');
   console.log(`TOTAL LOSS SITES (approx): ${c.totalLossSites}`);
@@ -573,8 +595,9 @@ async function runBuildProof(r: CodebaseResult, outDir: string, maxProcs: number
   // build look identical to a hang. Spawn with piped output that echoes as it
   // arrives, and SIGKILL (single-process MSBuild via -m:1) if it exceeds the
   // 30-minute budget so a genuinely stuck build cannot block forever.
-  const cmd = `dotnet build Content.sln --nologo -v q -m:1 -nodeReuse:false --disable-build-servers -p:EngineDir="${engineDir}"`;
-  const child = spawn(cmd, { cwd: outDir, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Array-form spawn (no shell) so a hostile SS14_ENGINE_DIR cannot inject
+  // shell commands (WS12-6).
+  const child = spawn('dotnet', ['build', 'Content.sln', '--nologo', '-v', 'q', '-m:1', '-nodeReuse:false', '--disable-build-servers', `-p:EngineDir=${engineDir}`], { cwd: outDir, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', (d) => { process.stdout.write(d); output += d.toString(); });
   child.stderr.on('data', (d) => { process.stderr.write(d); output += d.toString(); });
@@ -635,16 +658,17 @@ async function main(): Promise<void> {
   if (showErrorClasses) printErrorClasses(result);
 
   if (jsonOut) {
-    const serializable = {
-      ...result,
-      counters: {
-        ...result.counters,
-        unknownBuiltins: Object.fromEntries(result.counters.unknownBuiltins),
-        brokenProps: Object.fromEntries(result.counters.brokenProps),
-        topFiles: Object.fromEntries(result.counters.topFiles),
-        errorClasses: Object.fromEntries(result.counters.errorClasses)
+    const mapify = (v: unknown): unknown => {
+      if (v instanceof Map) return Object.fromEntries([...v.entries()].map(([k, val]) => [k, mapify(val)]));
+      if (Array.isArray(v)) return v.map(mapify);
+      if (v && typeof v === 'object') {
+        const o: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = mapify(val);
+        return o;
       }
+      return v;
     };
+    const serializable = mapify({ ...result, counters: { ...result.counters } });
     fs.writeFileSync(jsonOut, JSON.stringify(serializable, null, 2));
     console.log(`\nJSON written to ${jsonOut}`);
   }
