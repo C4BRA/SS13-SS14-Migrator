@@ -6,7 +6,9 @@ import { YAMLGenerator } from '../transpiler/yamlGenerator.js';
 import { DMIParser } from '../dmi/dmiParser.js';
 import { DMMParser } from '../dmm/dmmParser.js';
 import { DM2SS14Transpiler } from '../index.js';
+import { runAudit } from '../audit/fidelityAudit.js';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 function assert(condition: boolean, message: string) {
@@ -138,6 +140,17 @@ async function runTests() {
   assert(ensureInit.includes('DMValue.FromNumber(42)'), "Global numeric initializer preserved");
   assert(ensureInit.includes('GlobalVars.Get("motd")'), "Global initializer referencing another global resolves via GlobalVars.Get");
   assert(!ensureInit.includes('comp.GetVar'), "Global initializers must not reference comp (CS0103 in static context)");
+
+  // Test 5e (Plan 09 B5): harness counters — no double-count of unresolved
+  // calls in totalLossSites, no stale break/continue/compile-break counters.
+  const fixtureDir = path.join(os.tmpdir(), 'dm2ss14-harness-fixture');
+  fs.rmSync(fixtureDir, { recursive: true, force: true });
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'fixture.dm'), `/obj/fixture/proc/run(x)\n    var/i = 0\n    for (i = 1, i <= 5, i++)\n        if (i == 2)\n            continue\n        if (i == 5)\n            break\n    if (x != 3)\n        return some_unknown_proc()\n    return 1\n`, 'utf-8');
+  const harnessCounters: any = runAudit(fixtureDir, 'fixture').counters;
+  assert(harnessCounters.numBreak === undefined && harnessCounters.numContinue === undefined && harnessCounters.numCompileBreak === undefined, "Stale break/continue/compile-break counters removed");
+  assert(harnessCounters.numUnresolvedCalls === 1, "Unresolved call counted exactly once");
+  assert(harnessCounters.totalLossSites === 1, "totalLossSites counts unresolved calls once (no double-add, no stale break/continue/!= losses)");
 
   // Test 5: End-to-End Transpilation to temporary directory
   const tmpInputDir = path.join(process.cwd(), 'temp_test_ss13');

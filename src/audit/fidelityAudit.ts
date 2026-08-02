@@ -43,15 +43,12 @@ interface LossCounters {
   numGlobAccess: number; // GLOB.foo reads (accessor var never initialized at runtime)
   // AST-level: dropped statements
   numTry: number;
-  numBreak: number;
-  numContinue: number;
   numLabeledBlock: number;
   // AST-level: expression losses
   numNew: number;
   numParentCall: number;
   numBinaryNull: number;   // & | ^ ~ >> (emit DMValue.Null)
   numBinaryOutput: number; // << (semantic mismatch -> console output)
-  numCompileBreak: number; // != ~! ** (generated C# fails to compile)
   numAsCast: number;
   numUnaryTilde: number;
   numSpawnExpr: number;
@@ -85,9 +82,9 @@ function emptyCounters(): LossCounters {
     numForStepClause: 0, numForAsFilter: 0, numVerbDecls: 0,
     numClientDecls: 0,     numWorldDecls: 0,
     numGlobalVars: 0, numClassicGlobalVars: 0, numGlobAccess: 0,
-    numTry: 0, numBreak: 0, numContinue: 0, numLabeledBlock: 0,
+    numTry: 0, numLabeledBlock: 0,
     numNew: 0, numParentCall: 0, numBinaryNull: 0, numBinaryOutput: 0,
-    numCompileBreak: 0, numAsCast: 0, numUnaryTilde: 0, numSpawnExpr: 0,
+    numAsCast: 0, numUnaryTilde: 0, numSpawnExpr: 0,
     numWorldRef: 0, numPathConstPropRead: 0, numBrokenPropRead: 0, numUnknownBuiltin: 0,
     numBareGlobalProcCalls: 0, numTypeResolvedBareCalls: 0, numUnresolvedCalls: 0,
     parseErrors: 0, parseWarnings: 0, totalLossSites: 0,
@@ -228,8 +225,6 @@ function countASTLevel(
 
       // --- Dropped statements (emitter default -> "// Unknown statement:") ---
       case 'TryStatement': counters.numTry++; break;
-      case 'BreakStatement': counters.numBreak++; break;
-      case 'ContinueStatement': counters.numContinue++; break;
       case 'LabeledBlockStatement': counters.numLabeledBlock++; break;
 
       // --- Expression losses ---
@@ -265,9 +260,6 @@ function countASTLevel(
             break;
           case '<<':
             counters.numBinaryOutput++;
-            break;
-          case '!=': case '~!': case '**':
-            counters.numCompileBreak++;
             break;
           case 'as':
             counters.numAsCast++;
@@ -323,7 +315,7 @@ interface CodebaseResult {
   counters: LossCounters;
 }
 
-function runAudit(dir: string, name: string): CodebaseResult {
+export function runAudit(dir: string, name: string): CodebaseResult {
   const files = walk(dir, '.dm');
   const counters = emptyCounters();
   console.log(`[${name}] Scanning ${files.length} .dm files ...`);
@@ -406,12 +398,12 @@ function runAudit(dir: string, name: string): CodebaseResult {
     counters.numWeightedPick + counters.numMultiVarFor + counters.numForStepClause +
     counters.numForAsFilter + counters.numVerbDecls + counters.numClientDecls +
     counters.numWorldDecls + counters.numClassicGlobalVars +
-    counters.numTry + counters.numBreak + counters.numContinue + counters.numLabeledBlock +
+    counters.numTry + counters.numLabeledBlock +
     counters.numNew + counters.numParentCall + counters.numBinaryNull +
-    counters.numBinaryOutput + counters.numCompileBreak + counters.numAsCast +
+    counters.numBinaryOutput + counters.numAsCast +
     counters.numUnaryTilde + counters.numSpawnExpr + counters.numWorldRef +
     counters.numPathConstPropRead + counters.numBrokenPropRead +
-    counters.numUnknownBuiltin + counters.numUnresolvedCalls;
+    counters.numUnknownBuiltin;
 
   return { name, dir, files: files.length, counters };
 }
@@ -445,15 +437,12 @@ function printResult(r: CodebaseResult): void {
   line('world declarations', c.numWorldDecls);
   console.log('-- Emitter loss (statement drops) --');
   line('try/catch', c.numTry, '-> // Unknown statement');
-  line('break', c.numBreak, '-> // Unknown statement');
-  line('continue', c.numContinue, '-> // Unknown statement');
   line('labeled blocks', c.numLabeledBlock, '-> // Unknown statement');
   console.log('-- Emitter loss (expression) --');
   line('new /type(...)', c.numNew, 'returns caller as placeholder');
   line('..() parent calls', c.numParentCall, '-> CallProc("..") -> Null');
   line('bitwise & | ^ ~ >>', c.numBinaryNull, '-> DMValue.Null');
   line('<< (shift/output)', c.numBinaryOutput, '-> console Output');
-  line('COMPILE-BREAK != ~! **', c.numCompileBreak, '-> generated C# does not build');
   line('as casts', c.numAsCast, '-> DMValue.Null');
   line('unary ~', c.numUnaryTilde, '-> DMValue.Null');
   line('spawn() as expression', c.numSpawnExpr, 'empty body');
@@ -665,7 +654,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(err => {
-  console.error('Audit error:', err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('fidelityAudit.js');
+if (isDirectRun) {
+  main().catch(err => {
+    console.error('Audit error:', err);
+    process.exit(1);
+  });
+}

@@ -38,10 +38,10 @@ until the wave closes and the audit is re-run for a corrected baseline.
 - [ ] `ReplaceText` empty-needle infinite loop — guard like `ReplaceTextEx` (`dmRuntimeCS.ts:675-694`)
 
 ### B4 — IR
-- [ ] Special-parent synthesis order: process by path length, not name length (`dmIRGenerator.ts:34,41-43`)
-- [ ] Cross-file type split: merge nodes instead of last-wins (`dmIRGenerator.ts:28-31`)
-- [ ] `/global/var/` initializer round-trip: preserve string-ness; no `comp` refs in `GlobalVars` (`dmParser.ts:494-531` + `csharpEmitter.ts:147-151`)
-- [ ] Trailing-slash base-type check: normalize path before comparing (`dmIRGenerator.ts:137-151`)
+- [x] Special-parent synthesis order: DFS parent-first, fixes /obj,/mob -> /atom/movable (`dmIRGenerator.ts:42-55`)
+- [x] Cross-file type split: merge nodes instead of last-wins (`dmIRGenerator.ts:30-40`)
+- [x] `/global/var/` initializer round-trip: string literals re-quoted for re-lex, string-ness preserved; no `comp` refs in `GlobalVars` (`dmParser.ts:522-537` + `csharpEmitter.ts:153-163`)
+- [x] Trailing-slash base-type check: normalize path before comparing (`dmIRGenerator.ts:133-145`)
 
 ### B5 — Harness
 - [ ] Remove `numUnresolvedCalls` double-add from `totalLossSites` (`fidelityAudit.ts:400-414`)
