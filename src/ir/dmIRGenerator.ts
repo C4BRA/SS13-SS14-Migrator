@@ -1,4 +1,5 @@
 import { DMTypeDeclNode, DMVarDeclNode, DMProcDeclNode } from '../parser/dmParser.js';
+import { computeParentPath as computePathParent } from './symbolTable.js';
 
 export interface DMIRType {
   path: string;
@@ -150,11 +151,7 @@ export class DMIRGenerator {
   }
 
   private computeParentPath(path: string): string | null {
-    if (path === '/datum') return null;
-    const parts = path.split('/').filter(Boolean);
-    if (parts.length <= 1) return '/datum';
-    parts.pop();
-    return '/' + parts.join('/');
+    return computePathParent(path);
   }
 
   private extractBasename(path: string): string {

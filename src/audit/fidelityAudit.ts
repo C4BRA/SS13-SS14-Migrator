@@ -3,7 +3,7 @@
 // (preprocessor -> lexer -> parser -> IR -> emitter) but counts every
 // construct that is dropped, stubbed, or mis-compiled instead of silently
 // proceeding. Usage:
-//   node dist/audit/fidelityAudit.js <repo-dir> [--json out.json] [--build out-dir] [--build-max-procs N]
+//   node dist/audit/fidelityAudit.js <repo-dir> [--json out.json] [--error-classes] [--build out-dir] [--build-max-procs N]
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -16,6 +16,8 @@ import { CSharpEmitter } from '../transpiler/csharpEmitter.js';
 import { SS14Template } from '../project/ss14Template.js';
 import { DMRuntimeCS } from '../runtimeTemplate/dmRuntimeCS.js';
 import { MAPPED_BUILTINS } from '../transpiler/builtinMappings.js';
+import { SymbolTable } from '../ir/symbolTable.js';
+import { DMTypeDeclNode } from '../parser/dmParser.js';
 import { execSync, spawn } from 'child_process';
 
 interface LossCounters {
@@ -57,14 +59,18 @@ interface LossCounters {
   numPathConstPropRead: number; // /path.foo (e.g. GLOB.x) -> absorbed into a dead string literal
   numBrokenPropRead: number;
   numUnknownBuiltin: number;
-  numBareGlobalProcCalls: number; // target-less calls to user procs defined in the codebase (CallProc on wrong path)
+  numBareGlobalProcCalls: number; // target-less calls resolved via /proc globals (verified)
+  numTypeResolvedBareCalls: number; // target-less calls resolved via the calling type's hierarchy
+  numUnresolvedCalls: number; // target-less calls with no known target (silent Null at runtime)
   // Aggregates
   parseErrors: number;
   parseWarnings: number;
   totalLossSites: number;
-  unknownBuiltins: Map<string, { count: number; samples: string[] }>;
+  unknownBuiltins: Map<string, { count: number; samples: string[]; contexts: Map<string, number> }>;
   brokenProps: Map<string, number>;
   topFiles: Map<string, number>;
+  // Parse diagnostics aggregated by message template (token texts stripped).
+  errorClasses: Map<string, { errors: number; warnings: number; samples: string[]; tokens: Map<string, number> }>;
   procCount: number;
   typeCount: number;
 }
@@ -83,9 +89,10 @@ function emptyCounters(): LossCounters {
     numNew: 0, numParentCall: 0, numBinaryNull: 0, numBinaryOutput: 0,
     numCompileBreak: 0, numAsCast: 0, numUnaryTilde: 0, numSpawnExpr: 0,
     numWorldRef: 0, numPathConstPropRead: 0, numBrokenPropRead: 0, numUnknownBuiltin: 0,
-    numBareGlobalProcCalls: 0,
+    numBareGlobalProcCalls: 0, numTypeResolvedBareCalls: 0, numUnresolvedCalls: 0,
     parseErrors: 0, parseWarnings: 0, totalLossSites: 0,
     unknownBuiltins: new Map(), brokenProps: new Map(), topFiles: new Map(),
+    errorClasses: new Map(),
     procCount: 0, typeCount: 0
   };
 }
@@ -147,13 +154,50 @@ function countSourceLevel(counters: LossCounters, code: string): void {
   }
 }
 
+// Aggregate parse diagnostics by message template so the error backlog is a
+// prioritized list of *classes*, not 2,473 unrelated messages. Quoted token
+// texts (e.g. `Unexpected token 'foo' in expression`) are stripped to the
+// shared template `'<x>'`; file:line samples are kept for the first few hits.
+function collectErrorClasses(
+  counters: LossCounters,
+  errors: readonly { message: string; line: number }[],
+  warnings: readonly { message: string; line: number }[],
+  relFile: string
+): void {
+  const add = (d: { message: string; line: number }, isWarning: boolean): void => {
+    const key = d.message.replace(/'[^']*'/g, "'<x>'");
+    let entry = counters.errorClasses.get(key);
+    if (!entry) {
+      entry = { errors: 0, warnings: 0, samples: [], tokens: new Map() };
+      counters.errorClasses.set(key, entry);
+    }
+    if (isWarning) entry.warnings++;
+    else entry.errors++;
+    if (entry.samples.length < 3) entry.samples.push(`${relFile}:${d.line}`);
+    // Histogram of the actual token values, so the class's dominant construct
+    // is identifiable (e.g. "in 1 to width" -> token "to").
+    for (const m of d.message.matchAll(/'([^']*)'/g)) {
+      const tok = m[1];
+      if (!tok) continue;
+      entry.tokens.set(tok, (entry.tokens.get(tok) ?? 0) + 1);
+    }
+  };
+  for (const e of errors) add(e, false);
+  for (const w of warnings) add(w, true);
+}
+
 // AST-level counting: walk statement/expression trees and tally every
-// construct the emitter drops or mis-compiles. `allProcNames` is shared
-// across files so target-less calls to user procs defined elsewhere in the
-// codebase are not misclassified as unknown builtins.
-function countASTLevel(counters: LossCounters, parser: DMParser, relFile: string, allProcNames: Set<string>): void {
-  const procNames = allProcNames;
+// construct the emitter drops or mis-compiles. Bare calls are bucketed with
+// their enclosing type path; a post-pass (runAudit) resolves them against the
+// corpus-wide SymbolTable, so procs declared in other files resolve too.
+function countASTLevel(
+  counters: LossCounters,
+  typeDecls: DMTypeDeclNode[],
+  relFile: string,
+  symbols: SymbolTable
+): void {
   const seen = new WeakSet<object>();
+  let currentTypePath: string | null = null;
 
   const visit = (node: any): void => {
     if (node === null || typeof node !== 'object') return;
@@ -168,12 +212,13 @@ function countASTLevel(counters: LossCounters, parser: DMParser, relFile: string
     switch (node.type) {
       case 'DMTypeDecl':
         counters.typeCount++;
+        currentTypePath = node.path;
         for (const proc of node.procs || []) {
           counters.procCount++;
-          procNames.add(proc.name);
           visit(proc);
         }
         for (const v of node.vars || []) visit(v);
+        currentTypePath = null;
         return;
 
       case 'DMProcDecl':
@@ -199,10 +244,11 @@ function countASTLevel(counters: LossCounters, parser: DMParser, relFile: string
             counters.numParentCall++;
           } else if (node.name === 'spawn') {
             counters.numSpawnExpr++;
-          } else if (!MAPPED_BUILTINS.includes(node.name) && !procNames.has(node.name)) {
-            counters.numUnknownBuiltin++;
-            const entry = counters.unknownBuiltins.get(node.name) ?? { count: 0, samples: [] };
+          } else if (!MAPPED_BUILTINS.includes(node.name)) {
+            const ctx = currentTypePath ?? '/';
+            const entry = counters.unknownBuiltins.get(node.name) ?? { count: 0, samples: [], contexts: new Map<string, number>() };
             entry.count++;
+            entry.contexts.set(ctx, (entry.contexts.get(ctx) ?? 0) + 1);
             if (entry.samples.length < 3) entry.samples.push(relFile);
             counters.unknownBuiltins.set(node.name, entry);
           }
@@ -265,10 +311,9 @@ function countASTLevel(counters: LossCounters, parser: DMParser, relFile: string
     }
   };
 
-  for (const decl of parser.parse()) {
+  for (const decl of typeDecls) {
     visit(decl);
   }
-  void 0;
 }
 
 interface CodebaseResult {
@@ -286,7 +331,7 @@ function runAudit(dir: string, name: string): CodebaseResult {
   const collected = DMPreprocessor.collectDefinesFromFiles(files);
   console.log(`[${name}] Collected ${collected.object.size} object-like, ${collected.function.size} function-like defines.`);
 
-  const allProcNames = new Set<string>();
+  const symbols = new SymbolTable();
 
   let done = 0;
   for (const file of files) {
@@ -307,13 +352,15 @@ function runAudit(dir: string, name: string): CodebaseResult {
     const tokens = lexer.tokenize();
     collector.merge(lexer.diagnostics);
     const parser = new DMParser(tokens, collector);
-    countASTLevel(counters, parser, relFile, allProcNames);
-    // countASTLevel triggers parser.parse(); read globalVars afterwards so
-    // /global/var/ declarations are included.
+    const typeDecls = parser.parse();
+    symbols.addTypeDecls(typeDecls);
+    countASTLevel(counters, typeDecls, relFile, symbols);
+    // read globalVars afterwards so /global/var/ declarations are included.
     counters.numGlobalVars += parser.globalVars.length;
 
     counters.parseErrors += collector.errors.length;
     counters.parseWarnings += collector.warnings.length;
+    collectErrorClasses(counters, collector.errors, collector.warnings, relFile);
 
     const fileLoss =
       counters.numGlobalVars + 0; // placeholder: real per-file loss tracked separately
@@ -325,21 +372,33 @@ function runAudit(dir: string, name: string): CodebaseResult {
     }
   }
 
-  // Reclassify target-less calls to procs defined in the codebase: these are
-  // not "unknown builtins", but they still route through comp.CallProc which
-  // looks up the component's own type path (global /proc/... definitions are
-  // registered under "/proc" and are never found -> Null at runtime).
-  const reclassified = new Map<string, number>();
+  // Plan 02 — resolve bare calls against the corpus-wide symbol table. A name
+  // declared as a global proc (/proc/foo) resolves from every context via the
+  // runtime registry's /proc fallback; a type-local proc only resolves when the
+  // call site's enclosing type is within its hierarchy. Everything left in
+  // `unknownBuiltins` after this pass is genuinely unresolved (silent Null at
+  // runtime) — the actionable backlog.
   for (const [name, info] of counters.unknownBuiltins) {
-    if (allProcNames.has(name)) {
+    if (symbols.hasGlobalProc(name)) {
       counters.numBareGlobalProcCalls += info.count;
-      reclassified.set(name, info.count);
+      counters.unknownBuiltins.delete(name);
+      continue;
+    }
+    let resolved = 0;
+    let unresolved = 0;
+    for (const [ctx, cnt] of info.contexts) {
+      if (symbols.resolveBareProc(ctx === '/' ? null : ctx, name)) resolved += cnt;
+      else unresolved += cnt;
+    }
+    counters.numTypeResolvedBareCalls += resolved;
+    if (unresolved === 0) {
+      counters.unknownBuiltins.delete(name);
+    } else {
+      info.count = unresolved;
     }
   }
-  for (const name of reclassified.keys()) {
-    counters.unknownBuiltins.delete(name);
-  }
-  counters.numUnknownBuiltin = [...counters.unknownBuiltins.values()].reduce((a, v) => a + v.count, 0);
+  counters.numUnresolvedCalls = [...counters.unknownBuiltins.values()].reduce((a, v) => a + v.count, 0);
+  counters.numUnknownBuiltin = counters.numUnresolvedCalls;
   counters.totalLossSites =
     counters.numElif + counters.numIfNumeric + counters.numIfError +
     counters.numPragmaOnce + counters.numDefineStringTruncation +
@@ -352,7 +411,7 @@ function runAudit(dir: string, name: string): CodebaseResult {
     counters.numBinaryOutput + counters.numCompileBreak + counters.numAsCast +
     counters.numUnaryTilde + counters.numSpawnExpr + counters.numWorldRef +
     counters.numPathConstPropRead + counters.numBrokenPropRead +
-    counters.numUnknownBuiltin;
+    counters.numUnknownBuiltin + counters.numUnresolvedCalls;
 
   return { name, dir, files: files.length, counters };
 }
@@ -402,12 +461,14 @@ function printResult(r: CodebaseResult): void {
   line('path-const reads /path.x', c.numPathConstPropRead, 'GLOB.x style, dead literal');
   line('builtin prop reads', c.numBrokenPropRead, 'len/type/loc/x/y/z/dir...');
   line('unknown builtin calls', c.numUnknownBuiltin, '-> CallProc -> Null');
-  line('bare calls to global procs', c.numBareGlobalProcCalls, 'resolved at runtime via /proc fallback');
+  line('unresolved bare calls', c.numUnresolvedCalls, '-> Null at runtime (actionable backlog)');
+  line('bare calls -> /proc globals', c.numBareGlobalProcCalls, 'resolved via /proc registry (verified)');
+  line('bare calls -> type procs', c.numTypeResolvedBareCalls, 'resolved via calling type hierarchy');
   console.log(`TOTAL LOSS SITES (approx): ${c.totalLossSites}`);
 
   if (c.unknownBuiltins.size > 0) {
     const top = [...c.unknownBuiltins.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 25);
-    console.log('\nTop unknown builtin calls (-> Null at runtime):');
+    console.log('\nTop unresolved bare calls (-> Null at runtime):');
     for (const [name, info] of top) {
       console.log(`  ${String(info.count).padStart(7)}  ${name}   (e.g. ${info.samples[0]})`);
     }
@@ -417,6 +478,37 @@ function printResult(r: CodebaseResult): void {
     console.log('\nBroken builtin property reads:');
     for (const [name, count] of top) {
       console.log(`  ${String(count).padStart(7)}  .${name}`);
+    }
+  }
+}
+
+// Prioritized parse-error backlog: top classes by total diagnostics, each with
+// sample locations for the first few hits. `onlyErrors` keeps warnings out of
+// the ranking (they are low-priority noise like ignored #pragma).
+function printErrorClasses(r: CodebaseResult, topN = 25): void {
+  const classes = [...r.counters.errorClasses.entries()].sort((a, b) => {
+    const ta = a[1].errors + a[1].warnings;
+    const tb = b[1].errors + b[1].warnings;
+    return tb - ta;
+  });
+  const total = classes.reduce((a, [, v]) => a + v.errors + v.warnings, 0);
+  console.log(`\nTop ${Math.min(topN, classes.length)} parse diagnostic classes (${total} total):`);
+  if (classes.length === 0) {
+    console.log('  (no parse diagnostics)');
+    return;
+  }
+  let rank = 0;
+  for (const [cls, v] of classes) {
+    if (rank++ >= topN) break;
+    const count = v.errors + v.warnings;
+    const pct = (100 * count / Math.max(1, total)).toFixed(1);
+    const warn = v.warnings > 0 ? ` (${v.warnings} warnings)` : '';
+    console.log(`  ${String(count).padStart(6)} ${String(pct).padStart(5)}%  ${cls}${warn}`);
+    for (const s of v.samples) console.log(`           e.g. ${s}`);
+    if (v.tokens.size > 0) {
+      const topTokens = [...v.tokens.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+      const tokensStr = topTokens.map(([t, n]) => `'${t}' x${n}`).join(', ');
+      console.log(`           tokens: ${tokensStr}`);
     }
   }
 }
@@ -535,9 +627,11 @@ async function main(): Promise<void> {
   }
   let jsonOut: string | undefined;
   let buildDir: string | undefined;
+  let showErrorClasses = false;
   let maxProcs = 1500;
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--json') jsonOut = args[++i];
+    else if (args[i] === '--error-classes') showErrorClasses = true;
     else if (args[i] === '--build') buildDir = args[++i];
     else if (args[i] === '--build-max-procs') maxProcs = parseInt(args[++i], 10) || 1500;
   }
@@ -549,6 +643,7 @@ async function main(): Promise<void> {
   const name = path.basename(dir);
   const result = runAudit(dir, name);
   printResult(result);
+  if (showErrorClasses) printErrorClasses(result);
 
   if (jsonOut) {
     const serializable = {
@@ -557,7 +652,8 @@ async function main(): Promise<void> {
         ...result.counters,
         unknownBuiltins: Object.fromEntries(result.counters.unknownBuiltins),
         brokenProps: Object.fromEntries(result.counters.brokenProps),
-        topFiles: Object.fromEntries(result.counters.topFiles)
+        topFiles: Object.fromEntries(result.counters.topFiles),
+        errorClasses: Object.fromEntries(result.counters.errorClasses)
       }
     };
     fs.writeFileSync(jsonOut, JSON.stringify(serializable, null, 2));
