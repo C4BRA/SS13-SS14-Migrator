@@ -23,17 +23,24 @@ export class DMIRGenerator {
     // 1. Initialize base types if not present (does not mutate caller array)
     const allNodes = this.ensureBaseTypes(nodes);
 
-    // 2. Index nodes by path (normalized: the lexer can leave a trailing
-    // slash on TypePath tokens, e.g. "/obj/item/"). A type split across
+    // 2. Index nodes by path (normalized: trailing slashes stripped and the
+    // path LOWERCASED — DM type paths are case-insensitive, so /OBJ/Item/Foo
+    // and /obj/item/foo are the SAME type (WS4-1)). A type split across
     // files declares the same path twice — MERGE the declarations instead
-    // of last-wins, or the earlier file's vars/procs silently vanish.
+    // of last-wins, or the earlier file's vars/procs silently vanish. The
+    // merge copies into a fresh node: caller AST nodes are never mutated
+    // (WS4-7).
     const nodeMap = new Map<string, DMTypeDeclNode>();
     for (const node of allNodes) {
       const p = this.normalizePath(node.path);
       const existing = nodeMap.get(p);
       if (existing) {
-        existing.vars.push(...node.vars);
-        existing.procs.push(...node.procs);
+        nodeMap.set(p, {
+          type: 'DMTypeDecl',
+          path: p,
+          vars: [...existing.vars, ...node.vars],
+          procs: [...existing.procs, ...node.procs]
+        });
       } else {
         nodeMap.set(p, node);
       }
@@ -49,11 +56,22 @@ export class DMIRGenerator {
     const processType = (path: string) => {
       if (processed.has(path)) return;
       processed.add(path);
-      const parentPath = this.computeParentPath(path);
+      const node = nodeMap.get(path);
+      // An explicit `parent_type = /x` declaration overrides the
+      // prefix-derived parent (WS4-3).
+      let parentPath = this.computeParentPath(path);
+      if (node) {
+        const pt = node.vars.find(v => v.name === 'parent_type');
+        if (pt && typeof pt.initialValue === 'string') {
+          const overridden = this.normalizeValue(pt.initialValue);
+          if (typeof overridden === 'string' && overridden.startsWith('/')) {
+            parentPath = this.normalizePath(overridden);
+          }
+        }
+      }
       if (parentPath && !irMap.has(parentPath)) {
         processType(parentPath);
       }
-      const node = nodeMap.get(path);
       const parentIR = parentPath ? irMap.get(parentPath) : null;
 
       const irType: DMIRType = {
@@ -89,13 +107,13 @@ export class DMIRGenerator {
               irType.iconState = String(val);
               break;
             case 'density':
-              irType.density = Boolean(Number(val));
+              irType.density = Boolean(Number(this.coerceTruthy(val)));
               break;
             case 'anchored':
-              irType.anchored = Boolean(Number(val));
+              irType.anchored = Boolean(Number(this.coerceTruthy(val)));
               break;
             case 'opacity':
-              irType.opacity = Boolean(Number(val));
+              irType.opacity = Boolean(Number(this.coerceTruthy(val)));
               break;
             default:
               irType.customVars.set(varDecl.name, val);
@@ -127,7 +145,11 @@ export class DMIRGenerator {
   }
 
   private normalizePath(path: string): string {
-    return path.replace(/\/+$/, '');
+    // Trailing slashes stripped AND lowercased: DM type paths are
+    // case-insensitive — /OBJ/Item/Foo IS /obj/item/foo (WS4-1). All IR
+    // keys, emitted registrations, YAML ids and runtime datum paths share
+    // this canonical form.
+    return path.replace(/\/+$/, '').toLowerCase();
   }
 
   private ensureBaseTypes(nodes: DMTypeDeclNode[]): DMTypeDeclNode[] {
@@ -163,5 +185,15 @@ export class DMIRGenerator {
       return val.replace(/^["']|["']$/g, '');
     }
     return val;
+  }
+
+  // DM's builtin truth literals (TRUE/FALSE/yes/no) coerce to 1/0 for the
+  // structural bool vars — Number("TRUE") is NaN, which silently produced
+  // `false` walls (WS4-2).
+  private coerceTruthy(val: any): string {
+    const s = String(val).trim().toLowerCase();
+    if (s === 'true' || s === 'yes' || s === 'on') return '1';
+    if (s === 'false' || s === 'no' || s === 'off' || s === '') return '0';
+    return String(val);
   }
 }

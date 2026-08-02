@@ -1,9 +1,8 @@
 // Shared mapping of DM builtin proc calls to generated C#.
 // Returns the C# expression string, or null for user-defined procs.
 
-export const MAPPED_BUILTINS = [
-  'sleep', 'spawn', 'qdel', 'locate', 'istype', 'ispath', 'prob', 'pick', 'rand',
-  'list', 'length', 'text', 'text2num', 'num2text', 'copytext', 'findtext',
+export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 'ispath', 'prob', 'pick', 'rand',
+  'list', 'length', 'text', 'text2num', 'num2text', 'copytext', 'findtext', 'findtextEx',
   'clamp', 'max', 'min', 'round', 'abs', 'uppertext', 'lowertext', 'hascall',
   'alert', 'input', 'icon', 'islist', 'replacetext',
   'isnull', 'isnum', 'istext', 'isturf', 'isobj', 'ismob', 'isarea', 'ismovable',
@@ -21,12 +20,24 @@ export const MAPPED_BUILTINS = [
   'orange', 'viewers', 'hearers'
 ];
 
+// Builtins whose runtime helpers are recognized stubs returning Null/0
+// (engine/UI integration points). The audit counts their call sites as loss —
+// they are NOT "resolved" just because the name is mapped (WS7-16).
+export const STUBBED_BUILTINS = [
+  'animate', 'image', 'flick', 'sound', 'matrix', 'browse', 'call_ext',
+  '__detect_rust_g', 'alert', 'input', 'icon', 'locate', 'refcount'
+];
+
 export function transpileBuiltinCall(name: string, args: string): string | null {
   switch (name) {
     case 'sleep':
       return `await DMTickScheduler.Sleep(${args || 'DMValue.FromNumber(1)'})`;
     case 'spawn':
-      return `DMTickScheduler.Spawn(${args || 'DMValue.FromNumber(0)'}, async () => { /* spawn body */ })`;
+      // spawn() as an *expression* (`x = spawn(2) body`) is a statement in DM;
+      // the emitter pre-empts statement-form spawn. This fallback keeps value
+      // position compile-valid: the body runs async, the expression evaluates
+      // to Null (DM's spawn token is not representable — WS5-7).
+      return `(await DMTickScheduler.SpawnExpr(${args || 'DMValue.FromNumber(0)'}, async () => { return DMValue.Null; }))`;
     case 'qdel':
       return `DMDelete(${args})`;
     case 'locate':
@@ -59,6 +70,8 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.CopyText(${args})`;
     case 'findtext':
       return `DMRuntimeHelpers.FindText(${args})`;
+    case 'findtextEx':
+      return `DMRuntimeHelpers.FindTextEx(${args})`;
     case 'clamp':
       return `DMRuntimeHelpers.Clamp(${args})`;
     case 'max':
@@ -96,9 +109,12 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
     case 'isarea':
       return `DMIsType(${args}, DMValue.FromString("/area"))`;
     case 'ismovable':
-      return `DMIsType(${args}, DMValue.FromString("/atom/movable"))`;
+      // BYOND ismovable = isobj || ismob (movable atoms); a single
+      // "/atom/movable" base never matches real datum paths (WS7-7).
+      return `(DMIsType(${args}, DMValue.FromString("/obj")).IsTrue() || DMIsType(${args}, DMValue.FromString("/mob")).IsTrue() ? DMValue.FromNumber(1) : DMValue.FromNumber(0))`;
     case 'isloc':
-      return `DMIsType(${args}, DMValue.FromString("/atom"))`;
+      // BYOND isloc = isturf || isarea || isobj || ismob (WS7-7).
+      return `(DMIsType(${args}, DMValue.FromString("/turf")).IsTrue() || DMIsType(${args}, DMValue.FromString("/area")).IsTrue() || DMIsType(${args}, DMValue.FromString("/obj")).IsTrue() || DMIsType(${args}, DMValue.FromString("/mob")).IsTrue() ? DMValue.FromNumber(1) : DMValue.FromNumber(0))`;
     case 'isitem':
       return `DMIsType(${args}, DMValue.FromString("/obj/item"))`;
     case 'iscarbon':

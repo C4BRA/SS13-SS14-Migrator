@@ -69,13 +69,28 @@ namespace Content.Server.DM
     const procMembers: string[] = [];
 
     for (const [pathKey, irType] of irMap.entries()) {
-      if (irType.procs.size === 0) continue;
+      if (irType.procs.size === 0) {
+        // Var-only types still register their path so typesof() enumerates
+        // them (WS9-4).
+        registrations.push(`            ProcRegistry.RegisterPath("${pathKey}");`);
+        continue;
+      }
 
       const className = this.pathToClassName(pathKey);
       procMembers.push(`\n        // Procs for ${pathKey}\n`);
+      const usedProcMembers = new Set<string>();
 
       for (const [procName, procNode] of irType.procs.entries()) {
-        const csharpProcName = this.capitalize(procName);
+        // C# member names must be unique and identifier-safe: sanitize the
+        // proc name and case-fold it (DM procs are case-insensitive, so
+        // `foo` and `Foo` on one type would otherwise collide — CS0111).
+        let csharpProcName = this.sanitizeIdentifier(this.capitalize(procName));
+        if (usedProcMembers.has(csharpProcName)) {
+          let suffix = 2;
+          while (usedProcMembers.has(`${csharpProcName}_${suffix}`)) suffix++;
+          csharpProcName = `${csharpProcName}_${suffix}`;
+        }
+        usedProcMembers.add(csharpProcName);
         let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntime comp, DMValue[] args)\n        {\n`;
 
         procNode.args.forEach((arg, idx) => {
@@ -95,11 +110,25 @@ namespace Content.Server.DM
           member += this.transpileStatement(stmt, 12); // 12 spaces indent
         }
 
-        member += `            return comp.GetVar(".");\n        }\n`;
+        // Implicit `.` return. Skipped when the proc already ends in a
+        // top-level return — the emitted `return` would be unreachable
+        // (CS0162 warnings at corpus scale — WS5-18).
+        const lastStmt = procNode.statements[procNode.statements.length - 1];
+        if (!(lastStmt && lastStmt.type === 'ReturnStatement')) {
+          member += `            return comp.GetVar(".");\n        }\n`;
+        } else {
+          member += `        }\n`;
+        }
         procMembers.push(member);
 
+        // Registration carries the parameter names so runtime arglist() can
+        // bind associative named arguments (WS8-14). Names are escaped:
+        // `operator""`-style proc names must not break the string literal.
+        const paramNames = procNode.args && procNode.args.length > 0
+          ? `, new[] { ${procNode.args.map((a: any) => `"${this.escapeString(a.name)}"`).join(', ')} }`
+          : '';
         registrations.push(
-          `            ProcRegistry.Register("${pathKey}", "${procName}", Proc_${className}_${csharpProcName});`
+          `            ProcRegistry.Register("${this.escapeString(pathKey)}", "${this.escapeString(procName)}", Proc_${className}_${csharpProcName}${paramNames});`
         );
       }
     }
@@ -222,6 +251,12 @@ namespace Content.Server.DM
     
     switch (stmt.type) {
       case 'ReturnStatement':
+        // Inside a spawn() lambda (async () => {...}) a DM `return` exits the
+        // block and the value is discarded; emitting `return <DMValue>;` would
+        // be invalid C# in a non-generic Func<Task> lambda.
+        if (this.lambdaDepth > 0) {
+          return `${pad}return;\n`;
+        }
         if (stmt.returnValue) {
           return `${pad}return ${this.transpileExpression(stmt.returnValue)};\n`;
         }
@@ -256,7 +291,10 @@ namespace Content.Server.DM
           switchCode += `${pad}    }\n`;
         }
         if (stmt.defaultBody && stmt.defaultBody.length > 0) {
-          switchCode += `${pad}    else\n${pad}    {\n`;
+          // A default-only switch has no preceding if — emit `if (true)`
+          // instead of a bare `else` (which is invalid C#, CS8641 — WS5-6).
+          const defaultKeyword = cases.length === 0 ? 'if (true)' : 'else';
+          switchCode += `${pad}    ${defaultKeyword}\n${pad}    {\n`;
           for (const s of stmt.defaultBody) {
             switchCode += this.transpileStatement(s, indent + 8);
           }
@@ -320,9 +358,10 @@ namespace Content.Server.DM
       case 'BreakStatement':
         // DM break exits the innermost loop, or the switch when not in a loop;
         // the switch's while(true) wrapper makes plain `break` correct in both.
-        // Never emitted inside a spawn lambda (DM forbids crossing spawn).
-        if (this.loopDepth === 0 && this.switchDepth === 0 && this.lambdaDepth > 0) {
-          return `${pad}// break cannot cross a spawn boundary\n`;
+        // Outside both, a raw `break` would be a C# compile error (CS0139) —
+        // emit a comment instead (DM errors on this too — WS5-19).
+        if (this.loopDepth === 0 && this.switchDepth === 0) {
+          return `${pad}// break outside a loop\n`;
         }
         return `${pad}break;\n`;
 
@@ -442,24 +481,57 @@ namespace Content.Server.DM
         // local gets a unique name: nested loops would otherwise collide
         // (CS0136) when the outer iterator is used inside the inner loop.
         {
-          const contLabel = `__dmForInCont${this.tempCounter++}`;
           const iter = `__dmIter${this.tempCounter++}`;
           let forCode = `${pad}{\n`;
           if (stmt.loopVariable && stmt.loopRange) {
-            forCode += `${pad}    foreach (var ${iter} in DMListItems(${this.transpileExpression(stmt.loopRange)}))\n`;
-            forCode += `${pad}    {\n`;
-            forCode += `${pad}        {\n`;
-            forCode += `${pad}            comp.SetVar("${stmt.loopVariable}", ${iter});\n`;
-            this.loopDepth++;
-            this.continueLabels.push(contLabel);
-            for (const s of stmt.loopBody || []) {
-              forCode += this.transpileStatement(s, indent + 12);
+            // DM for(x = start to end step n): index arithmetic with the
+            // loop test depending on the step's sign. continue must run the
+            // increment, so the label sits before it — and the label must use
+            // the __dmForCont prefix the ContinueStatement recognizes (WS5-8:
+            // a plain `continue` here would skip the increment forever).
+            if (stmt.step && stmt.loopRange.type === 'range') {
+              const contLabel = `__dmForCont${this.tempCounter++}`;
+              const stepTmp = `__dmStep${this.tempCounter++}`;
+              const startCode = this.transpileExpression(stmt.loopRange.start);
+              const endCode = this.transpileExpression(stmt.loopRange.end);
+              const stepCode = this.transpileExpression(stmt.step);
+              forCode += `${pad}    var ${stepTmp} = ${stepCode};\n`;
+              forCode += `${pad}    comp.SetVar("${stmt.loopVariable}", ${startCode});\n`;
+              forCode += `${pad}    while (${stepTmp}.ToNumber() >= 0 ? DMValue.LessOrEqual(comp.GetVar("${stmt.loopVariable}"), ${endCode}).IsTrue() : DMValue.GreaterOrEqual(comp.GetVar("${stmt.loopVariable}"), ${endCode}).IsTrue())\n`;
+              forCode += `${pad}    {\n`;
+              forCode += `${pad}        {\n`;
+              this.loopDepth++;
+              this.continueLabels.push(contLabel);
+              for (const s of stmt.loopBody || []) {
+                forCode += this.transpileStatement(s, indent + 12);
+              }
+              this.continueLabels.pop();
+              this.loopDepth--;
+              forCode += `${pad}        }\n`;
+              forCode += `${pad}        ${contLabel}: comp.SetVar("${stmt.loopVariable}", DMValue.Add(comp.GetVar("${stmt.loopVariable}"), ${stepTmp}));\n`;
+              forCode += `${pad}    }\n`;
+            } else {
+              const contLabel = `__dmForInCont${this.tempCounter++}`;
+              forCode += `${pad}    foreach (var ${iter} in DMListItems(${this.transpileExpression(stmt.loopRange)}))\n`;
+              forCode += `${pad}    {\n`;
+              forCode += `${pad}        {\n`;
+              forCode += `${pad}            comp.SetVar("${stmt.loopVariable}", ${iter});\n`;
+              // DM for(var/mob/M in list): elements that are not instances of
+              // the declared type are skipped (continue hits the label below).
+              if (stmt.loopVariableType) {
+                forCode += `${pad}            if (!DMIsType(${iter}, DMValue.FromPath("${stmt.loopVariableType}")).IsTrue()) continue;\n`;
+              }
+              this.loopDepth++;
+              this.continueLabels.push(contLabel);
+              for (const s of stmt.loopBody || []) {
+                forCode += this.transpileStatement(s, indent + 12);
+              }
+              this.continueLabels.pop();
+              this.loopDepth--;
+              forCode += `${pad}        }\n`;
+              forCode += `${pad}        ${contLabel}: ;\n`;
+              forCode += `${pad}    }\n`;
             }
-            this.continueLabels.pop();
-            this.loopDepth--;
-            forCode += `${pad}        }\n`;
-            forCode += `${pad}        ${contLabel}: ;\n`;
-            forCode += `${pad}    }\n`;
           }
           forCode += `${pad}}\n`;
           return forCode;
@@ -477,7 +549,18 @@ namespace Content.Server.DM
             return `${pad}${bare};\n`;
           }
           if (stmt.expression.type === 'assignment' || stmt.expression.type === 'index_assignment') {
-            return `${pad}${expr};\n`;
+            const ia = stmt.expression as any;
+            // Datum-property index writes emit a parenthesized ternary
+            // (`(x).AsDatum() is var t ? ... : Null`) which is not a valid
+            // statement — discard the value explicitly.
+            if (ia.type === 'index_assignment' && ia.target?.type === 'property' && ia.target?.target?.type !== 'variable') {
+              return `${pad}_ = ${expr};\n`;
+            }
+            // Variable/GLOB writes may be parenthesized awaits
+            // (`(await GlobalVars.Set(...))` — CS0201 in statement position,
+            // WS13 root cause); strip the outer parens.
+            const bare = expr.startsWith('(') && expr.endsWith(')') ? expr.slice(1, -1) : expr;
+            return `${pad}${bare};\n`;
           }
           // property_assignment emits `(...).AsDatum()?.SetVar(...) ?? DMValue.Null`
           // — not a valid bare statement, so discard the value explicitly.
@@ -490,6 +573,38 @@ namespace Content.Server.DM
           return `${pad}_ = ${expr};\n`;
         }
         return '';
+
+      case 'TryStatement': {
+        // DM try/catch: the catch var binds to the exception message (the
+        // runtime has no DM exception datums — documented approximation).
+        // Previously the whole statement silently dropped (WS5-9).
+        let tryCode = `${pad}try\n${pad}{\n`;
+        for (const s of stmt.tryBody || []) {
+          tryCode += this.transpileStatement(s, indent + 4);
+        }
+        tryCode += `${pad}}\n`;
+        if (stmt.catchBody && stmt.catchBody.length > 0) {
+          tryCode += `${pad}catch (System.Exception __dmEx)\n${pad}{\n`;
+          if (stmt.catchVar) {
+            tryCode += `${pad}    comp.SetVar("${stmt.catchVar}", DMValue.FromString(__dmEx.Message));\n`;
+          }
+          for (const s of stmt.catchBody) {
+            tryCode += this.transpileStatement(s, indent + 4);
+          }
+          tryCode += `${pad}}\n`;
+        }
+        return tryCode;
+      }
+
+      case 'LabeledBlockStatement': {
+        // DM label: { ... } — the label is a no-op marker (no goto support);
+        // the BODY must survive (previously dropped — WS5-9).
+        let labelCode = `${pad}// label: ${stmt.label}\n`;
+        for (const s of stmt.body || []) {
+          labelCode += this.transpileStatement(s, indent);
+        }
+        return labelCode;
+      }
 
       default:
         return `${pad}// Unknown statement: ${stmt.type}\n`;
@@ -520,7 +635,12 @@ namespace Content.Server.DM
       case 'index':
         return this.transpileIndex(node);
       case 'assignment':
-        // Variable assignment within expression
+        // Variable assignment within expression. Global initializers have no
+        // comp — write through the GlobalVars registry instead (CS0103 in
+        // generated GlobalVars.EnsureInit otherwise).
+        if (this.globalsMode) {
+          return `(await GlobalVars.Set("${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
+        }
         return `comp.SetVar("${(node as any).target}", ${this.transpileExpression((node as any).value)})`;
       case 'property_assignment': {
         // GLOB.x = v writes through the generated GlobalVars registry.
@@ -530,8 +650,30 @@ namespace Content.Server.DM
         }
         return `(${this.transpileExpression(paTarget)}).AsDatum()?.SetVar("${(node as any).property}", ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
       }
-      case 'index_assignment':
-        return `DMListSet(${this.transpileExpression((node as any).target)}, ${this.transpileExpression((node as any).index)}, ${this.transpileExpression((node as any).value)})`;
+      case 'index_assignment': {
+        // DM list writes are copy-on-write when the list is shared; the
+        // runtime returns the (possibly cloned) list, and the write-back
+        // stores it in the variable so other references stay unchanged.
+        const ia = node as any;
+        const indexCode = this.transpileExpression(ia.index);
+        const valueCode = this.transpileExpression(ia.value);
+        if (ia.target?.type === 'variable') {
+          if (this.globalsMode) {
+            return `(await GlobalVars.Set("${ia.target.name}", DMListSet(await GlobalVars.Get("${ia.target.name}"), ${indexCode}, ${valueCode})))`;
+          }
+          return `comp.SetVar("${ia.target.name}", DMListSet(comp.GetVar("${ia.target.name}"), ${indexCode}, ${valueCode}))`;
+        }
+        // GLOB.registry["k"] = v writes through the generated GlobalVars registry.
+        if (ia.target?.type === 'property' && ia.target.target?.type === 'variable' && ia.target.target.name === 'GLOB') {
+          return `(await GlobalVars.Set("${ia.target.property}", DMListSet(await GlobalVars.Get("${ia.target.property}"), ${indexCode}, ${valueCode})))`;
+        }
+        if (ia.target?.type === 'property') {
+          const t = this.nextTemp();
+          const datumExpr = this.transpileExpression(ia.target.target);
+          return `((${datumExpr}).AsDatum() is var ${t} ? ${t}.SetVar("${ia.target.property}", DMListSet(${t}.GetVar("${ia.target.property}"), ${indexCode}, ${valueCode})) : DMValue.Null)`;
+        }
+        return `DMListSet(${this.transpileExpression(ia.target)}, ${indexCode}, ${valueCode})`;
+      }
       case 'list':
         return `DMRuntimeHelpers.MakeList(${node.elements.map((e: any) => this.transpileExpression(e)).join(', ')})`;
       case 'range':
@@ -546,9 +688,19 @@ namespace Content.Server.DM
       case 'string':
         return `DMValue.FromString("${this.escapeString(node.value)}")`;
       case 'number':
-        return `DMValue.FromNumber(${node.value})`;
+        if (node.value === 'Infinity') return 'DMValue.FromNumber(double.PositiveInfinity)';
+        if (node.value === '-Infinity') return 'DMValue.FromNumber(double.NegativeInfinity)';
+        if (node.value === 'NaN') return 'DMValue.FromNumber(double.NaN)';
+        // Float literals (7.0, 1e3) carry their float identity so the runtime
+        // keeps DM's int-vs-float division rule (7/2=3, 7.0/2=3.5 — WS8-1).
+        // The `d` suffix keeps huge literals (1e20) valid C# (WS8-16).
+        return node.floatLiteral
+          ? `DMValue.FromNumber(${node.value}d, true)`
+          : `DMValue.FromNumber(${node.value})`;
       case 'bool':
         return node.value ? 'DMValue.FromNumber(1)' : 'DMValue.FromNumber(0)';
+      case 'path':
+        return `DMValue.FromPath("${this.escapeString(node.value)}")`;
       case 'null':
       default:
         return 'DMValue.Null';
@@ -615,13 +767,26 @@ namespace Content.Server.DM
         const t = this.nextTemp();
         return `((${left}) is var ${t} && !${t}.IsTrue() ? (${right}) : (${t}))`;
       }
-      case '<<': return `DMValue.Output(${left}, ${right})`;
+      case '<<': {
+        // DM `world << x` / `usr << x` is OUTPUT; a shift on anything else
+        // is a bitwise shift. The distinction: output targets are world/usr
+        // (or their properties); everything else shifts.
+        const t = node.left as any;
+        if ((t.type === 'variable' && (t.name === 'world' || t.name === 'usr')) ||
+            (t.type === 'property' && (t.target as any)?.name === 'world')) {
+          return `DMValue.Output(${left}, ${right})`;
+        }
+        return `DMValue.ShiftLeft(${left}, ${right})`;
+      }
+      case '>>': return `DMValue.ShiftRight(${left}, ${right})`;
+      case '&': return `DMValue.BitwiseAnd(${left}, ${right})`;
+      case '|': return `DMValue.BitwiseOr(${left}, ${right})`;
+      case '^': return `DMValue.BitwiseXor(${left}, ${right})`;
       case 'in': return `DMValue.In(${left}, ${right})`;
       case 'as': return left; // DM cast on a dynamic value is a runtime no-op
       case 'to': return `DMRuntimeHelpers.MakeRange(${left}, ${right})`;
       case '**': return `DMValue.Power(${left}, ${right})`;
-      case '%%': return `DMValue.Modulo(${left}, ${right})`;
-      case '&': case '|': case '^': case '~': return 'DMValue.Null'; // bitwise ops unsupported by the runtime; parsed without data loss
+      case '%%': return `DMValue.IntModulo(${left}, ${right})`;
       default: return 'DMValue.Null';
     }
   }
@@ -632,7 +797,7 @@ namespace Content.Server.DM
       case '!': return `DMValue.Not(${operand})`;
       case '-': return `DMValue.Negate(${operand})`;
       case '+': return operand;
-      case '~': return 'DMValue.Null'; // bitwise NOT unsupported by the runtime
+      case '~': return `DMValue.BitwiseNot(${operand})`;
       default: return operand;
     }
   }
@@ -695,7 +860,7 @@ namespace Content.Server.DM
     if (node.name === 'initial' && node.arguments.length === 2) {
       const nameArg = node.arguments[1];
       if (nameArg.type === 'literal' && nameArg.literalType === 'string') {
-        return `DMRuntimeHelpers.DMInitial(${this.transpileExpression(node.arguments[0])}, "${nameArg.value}")`;
+        return `DMRuntimeHelpers.DMInitial(${this.transpileExpression(node.arguments[0])}, "${this.escapeString(nameArg.value)}")`;
       }
     }
 
@@ -766,7 +931,7 @@ namespace Content.Server.DM
     const existing = this.pathClassNameMap.get(dmPath);
     if (existing) return existing;
     const parts = dmPath.split('/').filter(Boolean);
-    let name = parts.map(p => this.capitalize(p)).join('');
+    let name = parts.map(p => this.capitalize(this.sanitizeIdentifier(p))).join('');
     if (this.usedClassNames.has(name)) {
       let suffix = 2;
       while (this.usedClassNames.has(`${name}_${suffix}`)) suffix++;
@@ -775,6 +940,15 @@ namespace Content.Server.DM
     this.usedClassNames.add(name);
     this.pathClassNameMap.set(dmPath, name);
     return name;
+  }
+
+  /** DM identifiers (operator"", foo.bar) are not valid C# identifier
+   *  characters; strip everything outside [A-Za-z0-9_]. Applied to class
+   *  names and proc member names so hostile-but-legal DM never emits a
+   *  syntax error (WS5-1..3). */
+  private sanitizeIdentifier(name: string): string {
+    const cleaned = name.replace(/[^A-Za-z0-9_]/g, '');
+    return cleaned.length > 0 ? cleaned : 'X';
   }
 
   private capitalize(str: string): string {

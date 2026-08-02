@@ -53,6 +53,8 @@ export class DM2SS14Transpiler {
       console.log(`      Seeded ${collected.object.size} object-like and ${collected.function.size} function-like global #defines from ${dmFiles.length} source files.`);
     }
 
+    const globals: any[] = [];
+
     for (const dmFile of dmFiles) {
       const code = fs.readFileSync(dmFile, 'utf-8');
       const collector = new DiagnosticCollector();
@@ -64,6 +66,7 @@ export class DM2SS14Transpiler {
       collector.merge(lexer.diagnostics);
       const parser = new DMParser(tokens, collector);
       const nodes = parser.parse();
+      globals.push(...parser.globalVars);
       diagnostics.merge(collector);
       allASTNodes.push(...nodes);
     }
@@ -72,6 +75,9 @@ export class DM2SS14Transpiler {
     const irGen = new DMIRGenerator();
     const irMap = irGen.generateIR(allASTNodes);
     console.log(`      Resolved ${irMap.size} DM types.`);
+    if (globals.length > 0) {
+      console.log(`      Collected ${globals.length} /global/var/ declarations.`);
+    }
 
     // 3. Emit SS14 Entity YAML Prototypes and C# Systems
     console.log(`[3/5] Emitting SS14 YAML Prototypes and C# ECS Systems...`);
@@ -79,7 +85,7 @@ export class DM2SS14Transpiler {
     this.yamlGenerator.generateYAMLPrototypes(irMap, protoDir);
 
     const serverDMDir = path.join(options.outputDir, 'Content.Server', 'DM');
-    this.csharpEmitter.emitCSharpSystems(irMap, serverDMDir);
+    this.csharpEmitter.emitCSharpSystems(irMap, serverDMDir, globals);
 
     // 4. Convert DMI icons to RSI
     console.log(`[4/5] Converting DMI icon assets to RSI...`);

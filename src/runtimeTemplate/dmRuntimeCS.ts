@@ -4,6 +4,8 @@ export class DMRuntimeCS {
       {
         filename: 'DMValue.cs',
         content: `using System;
+using System.Globalization;
+using System.Text;
 
 namespace SS13.DM.Runtime
 {
@@ -14,7 +16,8 @@ namespace SS13.DM.Runtime
         String,
         List,
         File,
-        DatumRef
+        DatumRef,
+        Path
     }
 
     public struct DMValue
@@ -25,15 +28,43 @@ namespace SS13.DM.Runtime
         public string FileValue { get; private set; }
         public DMList ListValue { get; private set; }
         public object DatumRef { get; private set; }
+        // Provenance flag: is the number an integer literal/computation?
+        // DM floor-divides only when BOTH operands are integers (7 / 2 is 3
+        // but 7.0 / 2 is 3.5) — literals keep their int/float identity
+        // through arithmetic (WS8-1).
+        public bool IsInt { get; private set; }
 
         public static DMValue Null => new DMValue { Type = DMValueType.Null };
 
-        public static DMValue FromNumber(double val) => new DMValue { Type = DMValueType.Number, NumberValue = val };
+        public static DMValue FromNumber(double val, bool isFloat = false) => new DMValue { Type = DMValueType.Number, NumberValue = val, IsInt = !isFloat };
         public static DMValue FromString(string val) => new DMValue { Type = DMValueType.String, StringValue = val ?? "" };
         public static DMValue FromList(DMList list) => new DMValue { Type = DMValueType.List, ListValue = list };
         public static DMValue FromFile(string path) => new DMValue { Type = DMValueType.File, FileValue = path ?? "" };
+        public static DMValue FromPath(string path) => new DMValue { Type = DMValueType.Path, StringValue = path ?? "" };
         public static DMValue FromRef(object obj) => new DMValue { Type = DMValueType.DatumRef, DatumRef = obj };
         public static DMValue FromDatum(DMRuntime datum) => new DMValue { Type = DMValueType.DatumRef, DatumRef = datum };
+
+        // DM text is a sequence of Unicode code points (BYOND 514+); length()
+        // and friends count code points, not UTF-16 code units.
+        public static int CpLength(string s)
+        {
+            var n = 0;
+            for (var i = 0; i < s.Length; i += char.IsSurrogatePair(s, i) ? 2 : 1) n++;
+            return n;
+        }
+
+        // Converts a 1-based DM index (code point position) to a char offset.
+        public static int CpIndexToChar(string s, int cpIndex)
+        {
+            var cps = 0;
+            var i = 0;
+            while (i < s.Length && cps < cpIndex - 1)
+            {
+                i += char.IsSurrogatePair(s, i) ? 2 : 1;
+                cps++;
+            }
+            return i;
+        }
 
         public DMRuntime? AsDatum() =>
             Type == DMValueType.DatumRef ? DatumRef as DMRuntime : null;
@@ -51,6 +82,7 @@ namespace SS13.DM.Runtime
                 DMValueType.List => ListValue != null && ListValue.Count > 0,
                 DMValueType.File => !string.IsNullOrEmpty(FileValue),
                 DMValueType.DatumRef => DatumRef != null,
+                DMValueType.Path => true,
                 _ => false
             };
         }
@@ -60,14 +92,46 @@ namespace SS13.DM.Runtime
             return Type switch
             {
                 DMValueType.Null => "null",
-                DMValueType.Number => NumberValue.ToString(),
+                DMValueType.Number => NumberValue.ToString(CultureInfo.InvariantCulture),
                 DMValueType.String => StringValue,
-                DMValueType.List => "[list]",
+                DMValueType.List => ListText(ListValue),
                 DMValueType.File => FileValue,
                 DMValueType.DatumRef => DatumRef?.ToString() ?? "null",
+                DMValueType.Path => StringValue,
                 _ => "null"
             };
         }
+
+        // DM renders lists in text context as list(...) (WS8-19): positional
+        // entries comma-separated, assoc entries as "key" = value.
+        private static string ListText(DMList list)
+        {
+            var sb = new StringBuilder("list(");
+            var first = true;
+            for (var i = 1; i <= list.PositionalCount; i++)
+            {
+                if (!first) sb.Append(", ");
+                first = false;
+                sb.Append(ListItemText(list.Get(i)));
+            }
+            foreach (var kv in list.AssocEntries)
+            {
+                if (!first) sb.Append(", ");
+                first = false;
+                // (char)34 is a quote, (char)92 a backslash — written as char
+                // codes so the template escaping cannot corrupt them.
+                sb.Append((char)34)
+                  .Append(kv.Key.Replace(((char)34).ToString(), ((char)92).ToString() + (char)34))
+                  .Append((char)34).Append(" = ").Append(ListItemText(kv.Value));
+            }
+            sb.Append(')');
+            return sb.ToString();
+        }
+
+        private static string ListItemText(DMValue v) =>
+            v.Type == DMValueType.String
+                ? (char)34 + v.StringValue.Replace(((char)34).ToString(), ((char)92).ToString() + (char)34) + (char)34
+                : v.ToString();
 
         // ===== Operator Overloads & Static Methods for Expression Transpilation =====
 
@@ -75,12 +139,16 @@ namespace SS13.DM.Runtime
         // DM rule: if either operand is text, + concatenates
         public static DMValue Add(DMValue a, DMValue b)
         {
-            // DM: list + x appends to a copy; list + list concatenates.
-            if (a.Type == DMValueType.List || b.Type == DMValueType.List)
+            // DM dispatch is on the LEFT operand: list + x appends ("L += z"
+            // keeps the list); text + x concatenates and renders the right
+            // side as text ("a" + list(1) == "alist(1)" — WS8-13).
+            if (a.Type == DMValueType.List)
                 return FromList(ConcatLists(a, b));
             if (a.Type == DMValueType.String || b.Type == DMValueType.String)
-                return FromString(a.ToString() + b.ToString());
-            return FromNumber(a.ToNumber() + b.ToNumber());
+                return FromString(TextRepr(a) + TextRepr(b));
+            if (b.Type == DMValueType.List)
+                return FromList(ConcatLists(a, b));
+            return FromNumber(a.ToNumber() + b.ToNumber(), !(a.IsInt && b.IsInt));
         }
 
         private static DMList ConcatLists(DMValue a, DMValue b)
@@ -88,7 +156,7 @@ namespace SS13.DM.Runtime
             var result = new DMList();
             if (a.Type == DMValueType.List)
             {
-                for (var i = 1; i <= a.ListValue.Count; i++) result.Add(a.ListValue.Get(i));
+                for (var i = 1; i <= a.ListValue.PositionalCount; i++) result.Add(a.ListValue.Get(i));
             }
             else
             {
@@ -96,20 +164,65 @@ namespace SS13.DM.Runtime
             }
             if (b.Type == DMValueType.List)
             {
-                for (var i = 1; i <= b.ListValue.Count; i++) result.Add(b.ListValue.Get(i));
+                for (var i = 1; i <= b.ListValue.PositionalCount; i++) result.Add(b.ListValue.Get(i));
             }
             else
             {
                 result.Add(b);
             }
+            // DM: associative entries survive list concatenation (L += x keeps L's keys).
+            if (a.Type == DMValueType.List)
+                foreach (var kv in a.ListValue.AssocEntries) result.SetAssoc(kv.Key, kv.Value);
+            if (b.Type == DMValueType.List)
+                foreach (var kv in b.ListValue.AssocEntries) result.SetAssoc(kv.Key, kv.Value);
             return result;
         }
-        public static DMValue Subtract(DMValue a, DMValue b) => FromNumber(a.ToNumber() - b.ToNumber());
-        public static DMValue Multiply(DMValue a, DMValue b) => FromNumber(a.ToNumber() * b.ToNumber());
-        public static DMValue Divide(DMValue a, DMValue b) => FromNumber(b.ToNumber() != 0 ? a.ToNumber() / b.ToNumber() : 0);
-        public static DMValue Modulo(DMValue a, DMValue b) => FromNumber(b.ToNumber() != 0 ? a.ToNumber() % b.ToNumber() : 0);
+        public static DMValue Subtract(DMValue a, DMValue b) => FromNumber(a.ToNumber() - b.ToNumber(), !(a.IsInt && b.IsInt));
+        public static DMValue Multiply(DMValue a, DMValue b) => FromNumber(a.ToNumber() * b.ToNumber(), !(a.IsInt && b.IsInt));
+        public static DMValue Divide(DMValue a, DMValue b)
+        {
+            var divisor = b.ToNumber();
+            // DM raises a runtime error on division by zero.
+            if (divisor == 0) throw new InvalidOperationException("Division by zero");
+            // DM: division of two integer operands is floor division (7/2 = 3,
+            // -7/2 = -4); a float operand yields a float (7.0/2 = 3.5). The
+            // IsInt provenance distinguishes the literals 7 and 7.0 (WS8-1).
+            var dividend = a.ToNumber();
+            if (a.IsInt && b.IsInt)
+                return FromNumber(Math.Floor(dividend / divisor));
+            return FromNumber(dividend / divisor, true);
+        }
+        public static DMValue Modulo(DMValue a, DMValue b)
+        {
+            // DM: % works on integers — operands are truncated first
+            // (7.5 % 2 == 1) and division by zero is a runtime error.
+            var divisor = Math.Truncate(b.ToNumber());
+            if (divisor == 0) throw new InvalidOperationException("Division by zero");
+            return FromNumber(Math.Truncate(a.ToNumber()) % divisor);
+        }
         public static DMValue Negate(DMValue a) => FromNumber(-a.ToNumber());
         public static DMValue Power(DMValue a, DMValue b) => FromNumber(Math.Pow(a.ToNumber(), b.ToNumber()));
+
+        // Bitwise operations on 64-bit integer values (DM flag logic — the
+        // corpus has ~19k bitwise-op sites, previously emitted as Null).
+        public static DMValue BitwiseAnd(DMValue a, DMValue b) => FromNumber((long)a.ToNumber() & (long)b.ToNumber());
+        public static DMValue BitwiseOr(DMValue a, DMValue b) => FromNumber((long)a.ToNumber() | (long)b.ToNumber());
+        public static DMValue BitwiseXor(DMValue a, DMValue b) => FromNumber((long)a.ToNumber() ^ (long)b.ToNumber());
+        public static DMValue BitwiseNot(DMValue a) => FromNumber(~(long)a.ToNumber());
+        public static DMValue ShiftLeft(DMValue a, DMValue b) => FromNumber((long)a.ToNumber() << (int)b.ToNumber());
+        public static DMValue ShiftRight(DMValue a, DMValue b) => FromNumber((long)a.ToNumber() >> (int)b.ToNumber());
+
+        // DM %%: integer remainder with the sign of the DIVISOR
+        // (-7 %% 3 == 2, 7 %% -3 == -2), unlike % which follows the dividend.
+        public static DMValue IntModulo(DMValue a, DMValue b)
+        {
+            var divisor = (long)Math.Truncate(b.ToNumber());
+            if (divisor == 0) throw new InvalidOperationException("Division by zero");
+            var dividend = (long)Math.Truncate(a.ToNumber());
+            var r = dividend % divisor;
+            if (r != 0 && (r < 0) != (divisor < 0)) r += divisor;
+            return FromNumber(r);
+        }
 
         // Comparison
         public static DMValue Equals(DMValue a, DMValue b) => FromNumber(a.EqualsValue(b) ? 1 : 0);
@@ -121,10 +234,11 @@ namespace SS13.DM.Runtime
 
         // DM rule: with a text operand, relational comparison is lexicographic
         // (numbers are stringified, null is ""); otherwise it is numeric.
+        // Text ordering is CASE-SENSITIVE in DM (WS8-4: "a" < "B" is false).
         private static int Compare(DMValue a, DMValue b)
         {
             if (a.Type == DMValueType.String || b.Type == DMValueType.String)
-                return string.Compare(TextRepr(a), TextRepr(b), StringComparison.OrdinalIgnoreCase);
+                return string.Compare(TextRepr(a), TextRepr(b), StringComparison.Ordinal);
             return a.ToNumber().CompareTo(b.ToNumber());
         }
 
@@ -133,8 +247,9 @@ namespace SS13.DM.Runtime
             return v.Type switch
             {
                 DMValueType.Null => "",
-                DMValueType.Number => v.NumberValue.ToString(),
+                DMValueType.Number => v.NumberValue.ToString(CultureInfo.InvariantCulture),
                 DMValueType.String => v.StringValue,
+                DMValueType.Path => v.StringValue,
                 _ => v.ToString()
             };
         }
@@ -152,8 +267,15 @@ namespace SS13.DM.Runtime
             if (candidates.Length == 1 && candidates[0].Type == DMValueType.List)
             {
                 var list = candidates[0].ListValue;
-                for (var i = 1; i <= list.Count; i++)
+                // Positional elements only; assoc entries are not indexable.
+                for (var i = 1; i <= list.PositionalCount; i++)
                     if (value.EqualsValue(list.Get(i))) return DMValue.FromNumber(1);
+                // DM: text values also match associative keys (case-insensitive).
+                if (value.Type == DMValueType.String)
+                {
+                    foreach (var kv in list.AssocEntries)
+                        if (value.EqualsValue(DMValue.FromString(kv.Key))) return DMValue.FromNumber(1);
+                }
                 return DMValue.FromNumber(0);
             }
             foreach (var c in candidates)
@@ -181,10 +303,11 @@ namespace SS13.DM.Runtime
             return Type switch
             {
                 DMValueType.Number => NumberValue,
-                DMValueType.String => double.TryParse(StringValue, out var n) ? n : 0,
+                DMValueType.String => double.TryParse(StringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var n) ? n : 0,
                 DMValueType.Null => 0,
                 DMValueType.List => ListValue?.Count ?? 0,
                 DMValueType.DatumRef => DatumRef != null ? 1 : 0,
+                DMValueType.Path => 0,
                 _ => 0
             };
         }
@@ -193,17 +316,17 @@ namespace SS13.DM.Runtime
         {
             // Cross-type: numeric strings compare equal to numbers (DM rule)
             if (Type == DMValueType.String && other.Type == DMValueType.Number)
-                return double.TryParse(StringValue, out var n) && Math.Abs(n - other.NumberValue) < 1e-9;
+                return double.TryParse(StringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var n) && n == other.NumberValue;
             if (Type == DMValueType.Number && other.Type == DMValueType.String)
                 return other.EqualsValue(this);
-            // null compares equal to 0
+            // null compares equal to 0 (exactly; DM has no float tolerance)
             if (Type == DMValueType.Null && other.Type == DMValueType.Number)
-                return Math.Abs(other.NumberValue) < 1e-9;
+                return other.NumberValue == 0;
             if (Type == DMValueType.Number && other.Type == DMValueType.Null)
-                return Math.Abs(NumberValue) < 1e-9;
+                return NumberValue == 0;
             // DM: null == "" and null == "0" are true
             if (Type == DMValueType.Null && other.Type == DMValueType.String)
-                return other.StringValue.Length == 0 || (double.TryParse(other.StringValue, out var sn) && Math.Abs(sn) < 1e-9);
+                return other.StringValue.Length == 0 || (double.TryParse(other.StringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var sn) && sn == 0);
             if (Type == DMValueType.String && other.Type == DMValueType.Null)
                 return other.EqualsValue(this);
             // DM: an empty list equals null
@@ -215,21 +338,29 @@ namespace SS13.DM.Runtime
             return Type switch
             {
                 DMValueType.Null => true,
-                DMValueType.Number => Math.Abs(NumberValue - other.NumberValue) < 1e-9,
+                DMValueType.Number => NumberValue == other.NumberValue,
                 DMValueType.String => string.Equals(StringValue, other.StringValue, StringComparison.OrdinalIgnoreCase),
                 DMValueType.List => ReferenceEquals(ListValue, other.ListValue) || ListsEqual(ListValue, other.ListValue),
                 DMValueType.DatumRef => ReferenceEquals(DatumRef, other.DatumRef),
+                DMValueType.Path => string.Equals(StringValue, other.StringValue, StringComparison.Ordinal),
                 _ => false
             };
         }
 
         // DM: list equality is element-wise (recursive); order matters.
+        // Associative entries must match too: same keys (case-insensitive,
+        // DM text keys) with equal values.
         private static bool ListsEqual(DMList a, DMList b)
         {
             if (a.Count != b.Count) return false;
-            for (var i = 1; i <= a.Count; i++)
+            for (var i = 1; i <= a.PositionalCount; i++)
             {
                 if (!a.Get(i).EqualsValue(b.Get(i))) return false;
+            }
+            foreach (var kv in a.AssocEntries)
+            {
+                if (!b.TryGetAssoc(kv.Key, out var bv)) return false;
+                if (!kv.Value.EqualsValue(bv)) return false;
             }
             return true;
         }
@@ -246,9 +377,19 @@ namespace SS13.DM.Runtime
     public class DMList
     {
         private readonly List<DMValue> _elements = new();
-        private readonly Dictionary<string, DMValue> _assocMap = new();
+        // DM text keys are case-insensitive: L["A"] and L["a"] are the same key.
+        private readonly Dictionary<string, DMValue> _assocMap = new(StringComparer.OrdinalIgnoreCase);
 
-        public int Count => _elements.Count;
+        // Copy-on-write guard: DM shares one list between variables until a
+        // write, which clones the list. RefCount over-approximates (variables
+        // never decrement), which only costs extra copies, never wrong behavior.
+        public int RefCount = 1;
+
+        // DM len(): total entries, positional + associative.
+        public int Count => _elements.Count + _assocMap.Count;
+
+        // Positional elements only; DM assoc entries are not index-addressable.
+        public int PositionalCount => _elements.Count;
 
         public static DMList FromArray(DMValue[] values)
         {
@@ -258,6 +399,14 @@ namespace SS13.DM.Runtime
                 foreach (var v in values) list.Add(v);
             }
             return list;
+        }
+
+        public DMList Clone()
+        {
+            var clone = new DMList();
+            foreach (var v in _elements) clone.Add(v);
+            foreach (var kv in _assocMap) clone.SetAssoc(kv.Key, kv.Value);
+            return clone;
         }
 
         public void Add(DMValue val) => _elements.Add(val);
@@ -283,6 +432,7 @@ namespace SS13.DM.Runtime
 
         public void SetAssoc(string key, DMValue val) => _assocMap[key] = val;
         public DMValue GetAssoc(string key) => _assocMap.TryGetValue(key, out var val) ? val : DMValue.Null;
+        public bool TryGetAssoc(string key, out DMValue val) => _assocMap.TryGetValue(key, out val);
         public IReadOnlyDictionary<string, DMValue> AssocEntries => _assocMap;
     }
 }
@@ -330,12 +480,16 @@ namespace SS13.DM.Runtime
         {
             if (!InitialValues.ContainsKey(name)) InitialValues[name] = val;
             Variables[name] = val;
+            // The variable now also references the list: bump the COW counter.
+            if (val.Type == DMValueType.List && val.ListValue != null) val.ListValue.RefCount++;
             return val;
         }
 
         public bool IsType(string typePath)
         {
-            return typePath == DMTypePath || DMTypePath.StartsWith(typePath + "/", StringComparison.Ordinal);
+            // DM type paths are case-insensitive (WS4-1).
+            return string.Equals(typePath, DMTypePath, StringComparison.OrdinalIgnoreCase)
+                || DMTypePath.StartsWith(typePath + "/", StringComparison.OrdinalIgnoreCase);
         }
 
         public void MarkForDeletion()
@@ -347,6 +501,7 @@ namespace SS13.DM.Runtime
 
         public async Task<DMValue> CallProc(string procName, params DMValue[] args)
         {
+            args = ReorderNamedArgs(procName, args);
             if (ProcRegistry.TryGet(DMTypePath, procName, out var handler)
                 || ProcRegistry.TryGetInherited(DMTypePath, procName, out handler)
                 || ProcRegistry.TryGet("/proc", procName, out handler))
@@ -354,6 +509,36 @@ namespace SS13.DM.Runtime
                 return await InvokeWithUsr(handler, args);
             }
             return DMValue.Null;
+        }
+
+        /// <summary>
+        /// DM arglist(assoc-list) passes associative entries as named arguments
+        /// bound to the callee's parameter names (WS8-14). Positional entries
+        /// fill slots in order; unknown names stay Null.
+        /// </summary>
+        private DMValue[] ReorderNamedArgs(string procName, DMValue[] args)
+        {
+            if (args.Length != 1 || args[0].Type != DMValueType.List) return args;
+            var list = args[0].ListValue;
+            if (list.AssocEntries.Count == 0) return args;
+            var names = ProcRegistry.GetParamNames(DMTypePath, procName)
+                        ?? ProcRegistry.GetParamNames("/proc", procName);
+            if (names == null || names.Length == 0) return args;
+            var reordered = new DMValue[names.Length];
+            for (var i = 0; i < reordered.Length; i++) reordered[i] = DMValue.Null;
+            for (var i = 1; i <= list.PositionalCount && i <= names.Length; i++) reordered[i - 1] = list.Get(i);
+            foreach (var kv in list.AssocEntries)
+            {
+                for (var i = 0; i < names.Length; i++)
+                {
+                    if (string.Equals(names[i], kv.Key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        reordered[i] = kv.Value;
+                        break;
+                    }
+                }
+            }
+            return reordered;
         }
 
         /// <summary>
@@ -402,6 +587,7 @@ namespace SS13.DM.Runtime
     public static class ProcRegistry
     {
         private static readonly Dictionary<(string TypePath, string Name), Func<DMRuntime, DMValue[], Task<DMValue>>> Procs = new();
+        private static readonly Dictionary<(string TypePath, string Name), string[]> ParamNames = new();
 
         /// <summary>
         /// Every type path that has at least one registered proc — used by
@@ -409,15 +595,41 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static readonly HashSet<string> RegisteredPaths = new();
 
-        public static void Register(string typePath, string procName, Func<DMRuntime, DMValue[], Task<DMValue>> handler)
+        public static void Register(string typePath, string procName, Func<DMRuntime, DMValue[], Task<DMValue>> handler, string[] paramNames = null)
         {
-            Procs[(typePath, procName)] = handler;
-            RegisteredPaths.Add(typePath);
+            // DM identifiers are case-insensitive: normalize keys so a call
+            // spelled differently from the declaration still resolves (WS5-16).
+            Procs[(typePath.ToLowerInvariant(), procName.ToLowerInvariant())] = handler;
+            RegisteredPaths.Add(typePath.ToLowerInvariant());
+            if (paramNames != null)
+                ParamNames[(typePath.ToLowerInvariant(), procName.ToLowerInvariant())] = paramNames;
+        }
+
+        // Registers a type path WITHOUT procs so typesof() sees var-only types
+        // (WS9-4: previously only proc-bearing types were registered).
+        public static void RegisterPath(string typePath)
+        {
+            RegisteredPaths.Add(typePath.ToLowerInvariant());
+        }
+
+        // Parameter names of the nearest matching registration (null if none
+        // were recorded) — used to bind assoc arglist entries to parameters.
+        public static string[] GetParamNames(string typePath, string procName)
+        {
+            if (ParamNames.TryGetValue((typePath.ToLowerInvariant(), procName.ToLowerInvariant()), out var names)) return names;
+            var parts = typePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            while (parts.Length > 0)
+            {
+                parts = parts[..^1];
+                var candidate = "/" + string.Join("/", parts);
+                if (ParamNames.TryGetValue((candidate.ToLowerInvariant(), procName.ToLowerInvariant()), out names)) return names;
+            }
+            return null;
         }
 
         public static bool TryGet(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
         {
-            return Procs.TryGetValue((typePath, procName), out handler!);
+            return Procs.TryGetValue((typePath.ToLowerInvariant(), procName.ToLowerInvariant()), out handler!);
         }
 
         public static bool TryGetInherited(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
@@ -427,7 +639,7 @@ namespace SS13.DM.Runtime
             {
                 parts = parts[..^1];
                 var candidate = "/" + string.Join("/", parts);
-                if (Procs.TryGetValue((candidate, procName), out handler!)) return true;
+                if (Procs.TryGetValue((candidate.ToLowerInvariant(), procName.ToLowerInvariant()), out handler!)) return true;
             }
             handler = null!;
             return false;
@@ -472,6 +684,19 @@ namespace SS13.DM.Runtime
                 await Sleep(deciseconds);
                 if (action != null) await action();
             });
+        }
+
+        // spawn() used as an expression: the body runs asynchronously and the
+        // expression itself evaluates to the lambda's return value (Null for
+        // the transpiled fallback — DM's spawn token is not representable).
+        public static async Task<DMValue> SpawnExpr(DMValue deciseconds, Func<Task<DMValue>> action)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Sleep(deciseconds);
+                if (action != null) await action();
+            });
+            return DMValue.Null;
         }
     }
 }
@@ -533,6 +758,10 @@ namespace SS13.DM.Runtime
         {
             var world = new DMRuntime { DMTypePath = "/world" };
             world.SetVar("time", DMValue.FromNumber(0));
+            // DM's default map is 100x100; the movement builtins clamp against
+            // these (WS9-5 — previously never set, so step() walked off-map).
+            world.SetVar("xmax", DMValue.FromNumber(100));
+            world.SetVar("ymax", DMValue.FromNumber(100));
             return DMValue.FromDatum(world);
         }
 
@@ -546,7 +775,10 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static async Task<DMValue> DMNew(DMRuntime comp, string typePath, params DMValue[] args)
         {
-            var datum = new DMRuntime { DMTypePath = typePath };
+            // Datum type paths are canonicalized to lowercase (DM type paths
+            // are case-insensitive) so IsType/registry lookups match the
+            // emitted registrations (WS4-1).
+            var datum = new DMRuntime { DMTypePath = typePath.ToLowerInvariant() };
             LiveDatums.Add(datum);
             await datum.CallProc("New", args);
             return DMValue.FromDatum(datum);
@@ -632,12 +864,21 @@ namespace SS13.DM.Runtime
 
         public static DMValue DMListSet(DMValue target, DMValue index, DMValue value)
         {
-            var list = target.Type == DMValueType.List ? target.ListValue : null;
-            if (list == null) return DMValue.Null;
+            if (target.Type != DMValueType.List || target.ListValue == null) return DMValue.Null;
+            var list = target.ListValue;
+            // Copy-on-write: when another variable shares this list, clone
+            // before mutating so the other references stay unchanged. The
+            // caller (emitter) stores the returned value back into the var.
+            if (list.RefCount > 1)
+            {
+                list = list.Clone();
+                list.RefCount = 1;
+            }
             if (index.Type == DMValueType.Number)
-                return list.Set((int)index.NumberValue, value);
-            list.SetAssoc(index.ToString(), value);
-            return value;
+                list.Set((int)index.NumberValue, value);
+            else
+                list.SetAssoc(index.ToString(), value);
+            return ReferenceEquals(list, target.ListValue) ? target : DMValue.FromList(list);
         }
 
         // ==== Type predicates ====
@@ -649,7 +890,7 @@ namespace SS13.DM.Runtime
             if (name == "len")
             {
                 if (target.Type == DMValueType.List) return DMValue.FromNumber(target.ListValue.Count);
-                if (target.Type == DMValueType.String) return DMValue.FromNumber(target.StringValue.Length);
+                if (target.Type == DMValueType.String) return DMValue.FromNumber(DMValue.CpLength(target.StringValue));
             }
             if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
                 return datum.GetVar(name);
@@ -707,7 +948,21 @@ namespace SS13.DM.Runtime
                     result.Append(s, idx, s.Length - idx);
                     break;
                 }
-                result.Append(s, idx, found - idx).Append(replacement.ToString());
+                // BYOND preserves the case of the FOUND text in the
+                // replacement: all-caps match -> all-caps replacement,
+                // capitalized match -> capitalized replacement (WS7-13:
+                // replacetext("One on one","one","two") == "Two on two").
+                var matched = s.Substring(found, n.Length);
+                string repl = replacement.ToString();
+                if (matched != matched.ToLowerInvariant() && matched == matched.ToUpperInvariant())
+                {
+                    repl = repl.ToUpperInvariant();
+                }
+                else if (matched.Length > 0 && char.IsUpper(matched[0]) && repl.Length > 0)
+                {
+                    repl = char.ToUpperInvariant(repl[0]) + repl.Substring(1);
+                }
+                result.Append(s, idx, found - idx).Append(repl);
                 idx = found + n.Length;
             }
             return DMValue.FromString(result.ToString());
@@ -715,11 +970,15 @@ namespace SS13.DM.Runtime
 
         public static DMValue DMIsPath(DMValue value, DMValue typePath = default)
         {
-            // DM: ispath(x) with no type is true when x is itself a path.
+            // DM: ispath(x) with no type is true only when x is itself a path
+            // value (text strings are never paths: ispath("x") = 0).
             if (typePath.Type == DMValueType.Null)
-                return DMValue.FromNumber(value.Type == DMValueType.String ? 1 : 0);
+                return DMValue.FromNumber(value.Type == DMValueType.Path ? 1 : 0);
+            // With a type: a path is within the type when it is the type or
+            // a subtype (ispath(/obj/item, /obj) = 1; ispath(/obj, /obj/item) = 0).
             var type = value.ToString();
-            return DMValue.FromNumber(type == typePath.ToString() || type == typePath.ToString().TrimStart('/') ? 1 : 0);
+            var baseType = typePath.ToString().TrimEnd('/');
+            return DMValue.FromNumber(type == baseType || type.StartsWith(baseType + "/", StringComparison.Ordinal) ? 1 : 0);
         }
 
         // ==== Misc builtins ====
@@ -821,11 +1080,15 @@ namespace SS13.DM.Runtime
         /// (positive = clockwise, 45-degree steps; approximates BYOND's
         /// binary-direction rotation).
         /// </summary>
-        public static DMValue Turn(DMValue dir, DMValue angle)
+        public static DMValue Turn(DMValue dir, DMValue angle = default)
         {
+            if (dir.Type == DMValueType.Null) return dir;
             var d = (int)dir.ToNumber();
             var idx = Array.IndexOf(ClockwiseDirs, d);
             if (idx < 0) return dir;
+            if (angle.Type == DMValueType.Null) return dir;
+            // BYOND turn(dir, positive) rotates clockwise (probe-locked:
+            // turn(NORTH, 90) == EAST; negative angles rotate counterclockwise).
             var steps = (int)Math.Round(angle.ToNumber() / 45.0);
             var rotated = (idx + steps) % ClockwiseDirs.Length;
             if (rotated < 0) rotated += ClockwiseDirs.Length;
@@ -1100,7 +1363,8 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static DMValue StepAway(DMValue atom, DMValue trg)
         {
-            return StepAway(atom, trg, DMValue.FromNumber(0), DMValue.FromNumber(1));
+            // BYOND default Max = 5 tiles; speed 0 = step size (one step).
+            return StepAway(atom, trg, DMValue.FromNumber(5), DMValue.FromNumber(1));
         }
 
         public static DMValue StepAway(DMValue atom, DMValue trg, DMValue max, DMValue speed)
@@ -1141,11 +1405,23 @@ namespace SS13.DM.Runtime
         /// DM get_step_away(atom, trg): the turf one step away from trg
         /// (no movement; first live datum at that position, or Null).
         /// </summary>
-        public static DMValue GetStepAway(DMValue atom, DMValue trg)
+        public static DMValue GetStepAway(DMValue atom, DMValue trg, DMValue max = default)
         {
-            var away = GetDir(trg, atom);
-            if (away.ToNumber() == 0) return DMValue.Null;
-            return GetStep(atom, away);
+            // BYOND get_step_away(Ref, Trg, Max): the turf up to Max tiles
+            // away from trg (default 1); 0/absent = one step (WS7-8).
+            var steps = max.Type == DMValueType.Null ? 1 : Math.Max(1, (int)max.ToNumber());
+            DMRuntime result = null;
+            var current = atom;
+            for (var s = 0; s < steps; s++)
+            {
+                var away = GetDir(trg, current);
+                if (away.ToNumber() == 0) break;
+                var next = GetStep(current, away);
+                if (next.Type != DMValueType.DatumRef || next.DatumRef is not DMRuntime d) break;
+                result = d;
+                current = next;
+            }
+            return result != null ? DMValue.FromDatum(result) : DMValue.Null;
         }
 
         /// <summary>
@@ -1233,21 +1509,36 @@ namespace SS13.DM.Runtime
         /// DM splittext(text, sep, start): split from the 1-indexed start
         /// character on; text before start is dropped.
         /// </summary>
-        public static DMValue SplitText(DMValue text, DMValue separator, DMValue start)
+        public static DMValue SplitText(DMValue text, DMValue separator, DMValue start = default, DMValue end = default, DMValue includeDelimiters = default)
         {
             var s = text.ToString();
-            var startIdx = Math.Max(1, (int)start.ToNumber());
+            var startIdx = Math.Max(1, (int)(start.Type == DMValueType.Null ? 1 : start.ToNumber()));
             if (startIdx > s.Length) return DMValue.FromList(new DMList());
-            var window = s.Substring(startIdx - 1);
+            var endIdx = end.Type == DMValueType.Null ? s.Length : (int)end.ToNumber();
+            if (endIdx <= 0) endIdx = s.Length + endIdx;
+            if (endIdx < startIdx) return DMValue.FromList(new DMList());
+            var window = s.Substring(startIdx - 1, Math.Min(s.Length, endIdx) - (startIdx - 1));
+            var include = includeDelimiters.IsTrue();
             var list = new DMList();
             var sep = separator.ToString();
             if (sep.Length == 0)
             {
-                foreach (var c in window) list.Add(DMValue.FromString(c.ToString()));
+                // Code-point iteration (astral chars are single elements).
+                for (var i = 0; i < window.Length; i += char.IsSurrogatePair(window, i) ? 2 : 1)
+                    list.Add(DMValue.FromString(window.Substring(i, char.IsSurrogatePair(window, i) ? 2 : 1)));
             }
             else
             {
-                foreach (var p in window.Split(new[] { sep }, StringSplitOptions.None)) list.Add(DMValue.FromString(p));
+                var pieces = window.Split(new[] { sep }, StringSplitOptions.None);
+                if (include && window.EndsWith(sep, StringComparison.Ordinal))
+                {
+                    for (var i = 0; i < pieces.Length; i++)
+                        list.Add(DMValue.FromString(i < pieces.Length - 1 ? pieces[i] + sep : pieces[i]));
+                }
+                else
+                {
+                    foreach (var p in pieces) list.Add(DMValue.FromString(p));
+                }
             }
             return DMValue.FromList(list);
         }
@@ -1275,7 +1566,8 @@ namespace SS13.DM.Runtime
             if (value.Type == DMValueType.List)
             {
                 var startIdx = Math.Max(1, (int)start.ToNumber());
-                var endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? value.ListValue.Count : (int)end.ToNumber();
+                var endToEnd = (end.Type == DMValueType.Null) || (end.Type == DMValueType.Number && end.NumberValue == 0);
+                var endIdx = endToEnd ? value.ListValue.Count : (int)end.ToNumber();
                 if (endIdx > value.ListValue.Count) endIdx = value.ListValue.Count;
                 for (var i = startIdx; i <= endIdx; i++) Append(value.ListValue.Get(i).ToString());
             }
@@ -1288,6 +1580,8 @@ namespace SS13.DM.Runtime
 
         /// <summary>
         /// DM params2list("a=1&b=2"): URL-style params into an associative list.
+        /// Names and values are URL-decoded (%XX sequences; '+' decodes as a
+        /// space, per DM's URL-encoding convention).
         /// </summary>
         public static DMValue Params2List(DMValue value)
         {
@@ -1296,26 +1590,61 @@ namespace SS13.DM.Runtime
             {
                 if (pair.Length == 0) continue;
                 var eq = pair.IndexOf('=');
-                if (eq < 0) list.Add(DMValue.FromString(pair));
-                else list.SetAssoc(pair.Substring(0, eq), DMValue.FromString(pair.Substring(eq + 1)));
+                if (eq < 0) list.Add(DMValue.FromString(UrlDecode(pair)));
+                else list.SetAssoc(UrlDecode(pair.Substring(0, eq)), DMValue.FromString(UrlDecode(pair.Substring(eq + 1))));
             }
             return DMValue.FromList(list);
         }
 
+        private static string UrlDecode(string s)
+        {
+            var sb = new StringBuilder();
+            for (var i = 0; i < s.Length; i++)
+            {
+                var c = s[i];
+                if (c == '+')
+                {
+                    sb.Append(' ');
+                }
+                else if (c == '%' && i + 2 < s.Length
+                    && TryHex(s[i + 1], out var h1) && TryHex(s[i + 2], out var h2))
+                {
+                    sb.Append((char)(h1 * 16 + h2));
+                    i += 2;
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static bool TryHex(char c, out int v)
+        {
+            if (c >= '0' && c <= '9') { v = c - '0'; return true; }
+            if (c >= 'a' && c <= 'f') { v = c - 'a' + 10; return true; }
+            if (c >= 'A' && c <= 'F') { v = c - 'A' + 10; return true; }
+            v = 0;
+            return false;
+        }
+
         /// <summary>
-        /// DM text2path: a text path converts to the same path string.
+        /// DM text2path: text becomes a path value (ispath() then reports 1).
         /// </summary>
-        public static DMValue Text2Path(DMValue value) => value;
+        public static DMValue Text2Path(DMValue value) => DMValue.FromPath(value.ToString());
 
         /// <summary>
         /// DM rgb(r, g, b[, a]): "#RRGGBB" (or "#RRGGBBAA" with alpha) text.
         /// </summary>
         public static DMValue RGB(params DMValue[] args)
         {
-            var r = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-            var g = args.Length > 1 ? (int)args[1].ToNumber() : 0;
-            var b = args.Length > 2 ? (int)args[2].ToNumber() : 0;
-            var a = args.Length > 3 ? (int)args[3].ToNumber() : 0;
+            // DM rgb() components are clamped to 0-255 (WS8-7: rgb(300,0,0)
+            // is #FF0000; out-of-range values previously emitted garbage hex).
+            var r = args.Length > 0 ? Math.Clamp((int)args[0].ToNumber(), 0, 255) : 0;
+            var g = args.Length > 1 ? Math.Clamp((int)args[1].ToNumber(), 0, 255) : 0;
+            var b = args.Length > 2 ? Math.Clamp((int)args[2].ToNumber(), 0, 255) : 0;
+            var a = args.Length > 3 ? Math.Clamp((int)args[3].ToNumber(), 0, 255) : 0;
             var hex = "#" + r.ToString("X2") + g.ToString("X2") + b.ToString("X2");
             if (a > 0) hex += a.ToString("X2");
             return DMValue.FromString(hex);
@@ -1532,10 +1861,11 @@ namespace SS13.DM.Runtime
         public static DMValue DetectRustG(params DMValue[] args) => DMValue.FromNumber(0);
 
 
-        public static DMValue DMProb(DMValue chance)
+        public static DMValue DMProb(DMValue chance = default)
         {
             var rng = new Random();
-            return DMValue.FromNumber(rng.NextDouble() * 100 < chance.ToNumber() ? 1 : 0);
+            var p = chance.Type == DMValueType.Null ? 50 : chance.ToNumber();
+            return DMValue.FromNumber(rng.NextDouble() * 100 < p ? 1 : 0);
         }
 
         // ==== Iteration helper: for(x in range) ====
@@ -1545,8 +1875,12 @@ namespace SS13.DM.Runtime
             switch (value.Type)
             {
                 case DMValueType.List:
-                    for (var i = 1; i <= value.ListValue.Count; i++)
+                    // Positional elements first, then assoc VALUES (DM iterates
+                    // the values of an associative list).
+                    for (var i = 1; i <= value.ListValue.PositionalCount; i++)
                         yield return value.ListValue.Get(i);
+                    foreach (var kv in value.ListValue.AssocEntries)
+                        yield return kv.Value;
                     break;
                 case DMValueType.Number:
                     // DM: for (x in N) iterates 1..N
@@ -1554,9 +1888,10 @@ namespace SS13.DM.Runtime
                         yield return DMValue.FromNumber(i);
                     break;
                 case DMValueType.String:
-                    // DM: for (x in "text") iterates characters
-                    foreach (var c in value.StringValue)
-                        yield return DMValue.FromString(c.ToString());
+                    // DM: for (x in "text") iterates characters — code points,
+                    // not UTF-16 units (astral chars iterate once, WS8-12).
+                    for (var i = 0; i < value.StringValue.Length; i += char.IsSurrogatePair(value.StringValue, i) ? 2 : 1)
+                        yield return DMValue.FromString(value.StringValue.Substring(i, char.IsSurrogatePair(value.StringValue, i) ? 2 : 1));
                     break;
                 default:
                     yield return value;
@@ -1587,14 +1922,15 @@ namespace SS13.DM.Runtime
 
         public static DMValue Rand(DMValue a = default, DMValue b = default)
         {
-            // DM semantics: rand() -> float in [0, 1); rand(a) -> integer in 1..a;
-            // rand(a, b) -> integer in [min(a,b), max(a,b)].
+            // DM semantics: rand() -> float in [0, 1); rand(a) -> integer in
+            // 0..a (BYOND: L defaults to 0 — WS7-9); rand(a, b) -> integer in
+            // [min(a,b), max(a,b)].
             if (a.Type == DMValueType.Null)
                 return DMValue.FromNumber(new Random().NextDouble());
             if (b.Type == DMValueType.Null)
             {
                 var hi = (int)a.ToNumber();
-                return DMValue.FromNumber(hi <= 0 ? 0 : new Random().Next(hi) + 1);
+                return DMValue.FromNumber(hi <= 0 ? 0 : new Random().Next(hi + 1));
             }
             var lo = (int)Math.Min(a.ToNumber(), b.ToNumber());
             var high = (int)Math.Max(a.ToNumber(), b.ToNumber());
@@ -1647,7 +1983,8 @@ namespace SS13.DM.Runtime
                 try { return DMValue.FromNumber(new System.IO.FileInfo(value.FileValue).Length); }
                 catch { return DMValue.FromNumber(0); }
             }
-            return DMValue.FromNumber(value.ToString().Length);
+            // DM 514+: length() counts Unicode code points.
+            return DMValue.FromNumber(DMValue.CpLength(value.ToString()));
         }
 
         public static DMValue Length(DMList value) => DMValue.FromNumber(value?.Count ?? 0);
@@ -1688,60 +2025,82 @@ namespace SS13.DM.Runtime
 
         /// <summary>
         /// DM text2num(text, radix): parse text in the given base (2-36).
-        /// radix 0 auto-detects 0x / 0b prefixes, else decimal.
+        /// radix 0 auto-detects 0x / 0b / 0o prefixes, else decimal.
+        /// DM parses the longest valid digit prefix (text2num("1G", 16) = 1)
+        /// and accepts a leading +/- sign.
         /// </summary>
         public static DMValue Text2Num(DMValue value, DMValue radix)
         {
             var s = value.ToString().Trim();
             var r = (int)radix.ToNumber();
+            var idx = 0;
+            var neg = false;
+            if (idx < s.Length && (s[idx] == '+' || s[idx] == '-'))
+            {
+                neg = s[idx] == '-';
+                idx++;
+            }
             if (r == 0)
             {
-                if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-                    && int.TryParse(s.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out var hex))
-                    return DMValue.FromNumber(hex);
-                if (s.StartsWith("0b", StringComparison.OrdinalIgnoreCase))
-                {
-                    var bin = 0L;
-                    var ok = s.Length > 2;
-                    for (var i = 2; ok && i < s.Length; i++)
-                    {
-                        if (s[i] == '0') bin <<= 1;
-                        else if (s[i] == '1') bin = (bin << 1) | 1;
-                        else ok = false;
-                    }
-                    if (ok) return DMValue.FromNumber(bin);
-                }
-                return DMValue.FromNumber(double.TryParse(s, out var n) ? n : 0);
+                if (idx + 1 < s.Length && s[idx] == '0' && (s[idx + 1] == 'x' || s[idx + 1] == 'X'))
+                    return ParseNumDigits(s, idx + 2, 16, neg);
+                if (idx + 1 < s.Length && s[idx] == '0' && (s[idx + 1] == 'b' || s[idx + 1] == 'B'))
+                    return ParseNumDigits(s, idx + 2, 2, neg);
+                if (idx + 1 < s.Length && s[idx] == '0' && (s[idx + 1] == 'o' || s[idx + 1] == 'O'))
+                    return ParseNumDigits(s, idx + 2, 8, neg);
+                r = 10;
             }
             if (r < 2 || r > 36) return DMValue.FromNumber(0);
-            var neg = s.StartsWith("-");
-            var digits = neg ? s.Substring(1) : s;
-            long v;
-            try
+            if (r == 10)
             {
-                v = System.Convert.ToInt64(digits, r);
+                // Decimal: floats and exponents parse in full (3.14, 1.5e2).
+                if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
+                    return DMValue.FromNumber(f);
             }
-            catch
+            return ParseNumDigits(s, idx, r, neg);
+        }
+
+        private static DMValue ParseNumDigits(string s, int idx, int radix, bool neg)
+        {
+            double acc = 0;
+            var any = false;
+            for (; idx < s.Length; idx++)
             {
-                return DMValue.FromNumber(0);
+                var c = s[idx];
+                int d = c >= '0' && c <= '9' ? c - '0'
+                    : c >= 'a' && c <= 'z' ? c - 'a' + 10
+                    : c >= 'A' && c <= 'Z' ? c - 'A' + 10 : -1;
+                if (d < 0 || d >= radix) break;
+                acc = acc * radix + d;
+                any = true;
             }
-            return DMValue.FromNumber(neg ? -v : v);
+            if (!any) return DMValue.FromNumber(0);
+            return DMValue.FromNumber(neg ? -acc : acc);
         }
 
         public static DMValue Num2Text(DMValue value)
         {
-            return Num2Text(value, DMValue.FromNumber(0));
+            return Num2Text(value, DMValue.FromNumber(0), DMValue.FromString(""));
         }
 
         public static DMValue Num2Text(DMValue value, DMValue len)
         {
-            return Num2Text(value, len, DMValue.FromString("0"));
+            // BYOND 2-arg num2text(N, SigFig): significant digits, with
+            // scientific notation when the value does not fit (WS7-15/WS8-9:
+            // num2text(123.456, 2) == "1.2e2").
+            var n = value.ToNumber();
+            var sig = (int)len.ToNumber();
+            if (sig <= 0) return DMValue.FromString(n.ToString(CultureInfo.InvariantCulture));
+            var s = n.ToString("G" + sig, CultureInfo.InvariantCulture);
+            s = s.Replace("E+", "e").Replace("E-", "e-").Replace("E", "e");
+            s = System.Text.RegularExpressions.Regex.Replace(s, "e0([0-9])", "e$1");
+            return DMValue.FromString(s);
         }
 
         public static DMValue Num2Text(DMValue value, DMValue len, DMValue pad)
         {
             var n = value.ToNumber();
-            var s = n == (int)n ? ((int)n).ToString() : n.ToString();
+            var s = n == (int)n ? ((int)n).ToString(CultureInfo.InvariantCulture) : n.ToString(CultureInfo.InvariantCulture);
             var width = (int)len.ToNumber();
             var padStr = pad.ToString();
             if (width > s.Length && padStr.Length > 0) s = s.PadLeft(width, padStr[0]);
@@ -1751,28 +2110,53 @@ namespace SS13.DM.Runtime
         public static DMValue CopyText(DMValue text, DMValue start, DMValue end = default)
         {
             var s = text.ToString();
-            var len = s.Length;
+            var cpLen = DMValue.CpLength(s);
+            // DM 1-based code-point indices; 0 start -> 1; 0 end -> end of
+            // string; negative indices count from the end (the negative
+            // branch must run first — WS13 probe 4).
             int startIdx = (int)start.ToNumber();
-            if (startIdx < 0) startIdx = len + startIdx + 1;
-            int endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? len + 1 : (int)end.ToNumber();
-            if (endIdx < 0) endIdx = len + endIdx + 1;
-            startIdx = Math.Max(1, Math.Min(len + 1, startIdx));
-            endIdx = Math.Max(startIdx, Math.Min(len + 1, endIdx));
-            return DMValue.FromString(s.Substring(startIdx - 1, endIdx - startIdx));
+            if (startIdx < 0) startIdx = cpLen + startIdx + 1;
+            else if (startIdx == 0) startIdx = 1;
+            int endIdx;
+            if (end.Type == DMValueType.Null) endIdx = cpLen + 1;
+            else
+            {
+                endIdx = (int)end.ToNumber();
+                if (endIdx < 0) endIdx = cpLen + endIdx + 1;
+                else if (endIdx == 0) endIdx = cpLen + 1;
+            }
+            startIdx = Math.Max(1, Math.Min(cpLen + 1, startIdx));
+            endIdx = Math.Max(startIdx, Math.Min(cpLen + 1, endIdx));
+            if (endIdx <= startIdx) return DMValue.FromString("");
+            var charStart = DMValue.CpIndexToChar(s, startIdx);
+            var charEnd = DMValue.CpIndexToChar(s, endIdx);
+            return DMValue.FromString(s.Substring(charStart, charEnd - charStart));
         }
 
-        public static DMValue FindText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)
+        public static DMValue FindText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default, DMValue caseSensitive = default)
         {
             var s = text.ToString();
-            int startIdx = start.Type == DMValueType.Null && start.NumberValue == 0 ? 1 : Math.Max(1, (int)start.ToNumber());
-            if (startIdx > s.Length) return DMValue.FromNumber(0);
+            // DM indices are 1-based code points; negative counts from the end.
+            int startIdx = start.Type == DMValueType.Null && start.NumberValue == 0 ? 1 : (int)start.ToNumber();
+            if (startIdx < 0) startIdx = DMValue.CpLength(s) + startIdx + 1;
+            startIdx = Math.Max(1, startIdx);
+            if (startIdx > DMValue.CpLength(s)) return DMValue.FromNumber(0);
             var needleStr = needle.ToString();
-            int endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? s.Length + 1 : (int)end.ToNumber();
-            if (endIdx <= 0) return DMValue.FromNumber(0);
-            if (endIdx > s.Length) endIdx = s.Length;
+            // BYOND End is the position immediately AFTER the last char to
+            // search (exclusive — WS7-12); 0 means "to the end".
+            int endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? DMValue.CpLength(s) + 1 : (int)end.ToNumber();
+            if (endIdx < 0) endIdx = DMValue.CpLength(s) + endIdx + 1;
+            if (endIdx <= 0) endIdx = DMValue.CpLength(s) + 1;
+            if (endIdx > DMValue.CpLength(s)) endIdx = DMValue.CpLength(s) + 1;
             if (endIdx < startIdx) return DMValue.FromNumber(0);
-            var idx = s.IndexOf(needleStr, startIdx - 1, endIdx - startIdx + 1, StringComparison.Ordinal);
-            return DMValue.FromNumber(idx < 0 ? 0 : idx + 1);
+            // DM: findtext is case-insensitive unless case_sensitive is set.
+            var comparison = caseSensitive.IsTrue() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            // DM: an empty needle is found at the start position.
+            if (needleStr.Length == 0) return DMValue.FromNumber(startIdx);
+            var hayStart = DMValue.CpIndexToChar(s, startIdx);
+            var hayEnd = DMValue.CpIndexToChar(s, endIdx);
+            var idx = s.IndexOf(needleStr, hayStart, hayEnd - hayStart, comparison);
+            return DMValue.FromNumber(idx < 0 ? 0 : DMValue.CpLength(s.Substring(0, idx)) + 1);
         }
 
         public static DMValue Clamp(DMValue value, DMValue lo, DMValue hi)
@@ -1800,11 +2184,14 @@ namespace SS13.DM.Runtime
         public static DMValue Round(DMValue value, DMValue digits = default)
         {
             var n = value.ToNumber();
-            var d = digits.Type == DMValueType.Null && digits.NumberValue == 0 ? 0 : (int)digits.ToNumber();
+            // BYOND round(A) rounds to the nearest whole number with halves
+            // rounded DOWN (round(2.5) == 2, round(49.9999) == 50);
+            // round(A, B) rounds to the nearest MULTIPLE of B, halves down
+            // (round(11, 5) == 10, round(1.45, 1.5) == 1.5 — WS7-4/WS8-8).
+            var d = digits.Type == DMValueType.Null && digits.NumberValue == 0 ? 0 : digits.ToNumber();
             if (d == 0)
-                return DMValue.FromNumber(Math.Round(n, MidpointRounding.AwayFromZero));
-            var factor = Math.Pow(10, d);
-            return DMValue.FromNumber(Math.Round(n * factor, MidpointRounding.AwayFromZero) / factor);
+                return DMValue.FromNumber(Math.Ceiling(n - 0.5));
+            return DMValue.FromNumber(Math.Ceiling(n / d - 0.5) * d, true);
         }
 
         public static DMValue Abs(DMValue value) => DMValue.FromNumber(Math.Abs(value.ToNumber()));
@@ -1834,12 +2221,16 @@ namespace SS13.DM.Runtime
 
         public static DMValue ArcCos(DMValue value) => DMValue.FromNumber(Math.Acos(value.ToNumber()) * 180.0 / Math.PI);
 
-        public static DMValue Log(DMValue value) => DMValue.FromNumber(Math.Log(value.ToNumber()));
+        public static DMValue Log(DMValue value, DMValue baseValue = default)
+        {
+            if (baseValue.Type == DMValueType.Null) return DMValue.FromNumber(Math.Log(value.ToNumber()));
+            // BYOND log(X, Y): the log of Y with base X (WS7-3).
+            return DMValue.FromNumber(Math.Log(baseValue.ToNumber()) / Math.Log(value.ToNumber()));
+        }
 
         public static DMValue Sign(DMValue value)
         {
-            if (value.Type == DMValueType.String)
-                return DMValue.FromNumber(string.IsNullOrEmpty(value.StringValue) ? 0 : -1);
+            // DM: text is converted to a number first (sign("abc") = 0).
             var n = value.ToNumber();
             return DMValue.FromNumber(n < 0 ? -1 : (n > 0 ? 1 : 0));
         }
@@ -1848,7 +2239,7 @@ namespace SS13.DM.Runtime
 
         public static DMValue LengthChar(DMValue value)
         {
-            if (value.Type == DMValueType.String) return DMValue.FromNumber(value.StringValue.Length);
+            if (value.Type == DMValueType.String) return DMValue.FromNumber(DMValue.CpLength(value.StringValue));
             return Length(value);
         }
 
@@ -1862,28 +2253,40 @@ namespace SS13.DM.Runtime
 
         public static DMValue CopyTextChar(DMValue text, DMValue start, DMValue end = default)
         {
-            var s = text.Type == DMValueType.String ? text.StringValue : text.ToString();
-            var s1 = Math.Clamp(DmIndex(start.ToNumber(), s.Length), 1, s.Length + 1);
-            var e1 = end.Type == DMValueType.Null
-                ? s.Length + 1
-                : Math.Clamp(DmIndex(end.ToNumber(), s.Length), s1, s.Length + 1);
-            return DMValue.FromString(s.Substring(s1 - 1, e1 - s1));
+            // DM 514+: _char variants count characters (code points) too.
+            return CopyText(text, start, end);
         }
 
         public static DMValue Text2Ascii(DMValue text, DMValue pos = default)
         {
+            // BYOND 514+: Unicode code points, positions counted in code
+            // points (WS8-11).
             var s = text.Type == DMValueType.String ? text.StringValue : text.ToString();
-            var p = pos.Type == DMValueType.Null ? 1 : DmIndex(pos.ToNumber(), s.Length);
-            if (p < 1 || p > s.Length) return DMValue.FromNumber(0);
-            return DMValue.FromNumber(s[p - 1]);
+            var cpLen = DMValue.CpLength(s);
+            var p = pos.Type == DMValueType.Null ? 1 : (int)pos.ToNumber();
+            if (p < 1 || p > cpLen) return DMValue.FromNumber(0);
+            var charOffset = DMValue.CpIndexToChar(s, p);
+            if (charOffset + 1 < s.Length && char.IsSurrogatePair(s, charOffset))
+                return DMValue.FromNumber(char.ConvertToUtf32(s, charOffset));
+            return DMValue.FromNumber(s[charOffset]);
         }
 
-        public static DMValue Ascii2Text(DMValue code) => DMValue.FromString(((char)(int)code.ToNumber()).ToString());
+        public static DMValue Ascii2Text(DMValue code)
+        {
+            var n = (int)code.ToNumber();
+            // Invalid code points render as empty text (BYOND 514+ supports
+            // any valid Unicode code point — WS8-10).
+            if (n < 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF)) return DMValue.FromString("");
+            return DMValue.FromString(char.ConvertFromUtf32(n));
+        }
 
         public static DMValue CKey(DMValue value)
         {
             var s = value.Type == DMValueType.String ? value.StringValue : value.ToString();
             var sb = new StringBuilder(s.Length);
+            // BYOND ckey: lowercase; underscores become spaces; spaces and
+            // alphanumerics are kept; other punctuation is stripped
+            // (probe-locked: ckey("My_Thing 2") == "my thing 2").
             foreach (var ch in s.ToLowerInvariant())
             {
                 if (ch == '_') sb.Append(' ');
@@ -1894,15 +2297,35 @@ namespace SS13.DM.Runtime
 
         public static DMValue SortText(DMValue a, DMValue b)
         {
+            // BYOND sorttext(A, B) = 1 when A sorts before B (ascending);
+            // the previous sign was reversed (WS7-6).
             var c = string.Compare(a.ToString(), b.ToString(), StringComparison.OrdinalIgnoreCase);
-            return DMValue.FromNumber(c < 0 ? -1 : (c > 0 ? 1 : 0));
+            return DMValue.FromNumber(c > 0 ? 1 : (c < 0 ? -1 : 0));
         }
 
-        public static DMValue ReplaceTextEx(DMValue haystack, DMValue needle, DMValue replacement)
+        public static DMValue ReplaceTextEx(DMValue haystack, DMValue needle, DMValue replacement, DMValue start = default, DMValue end = default)
         {
             var find = needle.ToString();
             if (string.IsNullOrEmpty(find)) return haystack;
-            return DMValue.FromString(haystack.ToString().Replace(find, replacement.ToString()));
+            var s = haystack.ToString();
+            if (start.Type == DMValueType.Null) return DMValue.FromString(s.Replace(find, replacement.ToString()));
+            // BYOND replacetextEx(..., Start, End): case-SENSITIVE replacement
+            // within the 1-indexed window (WS7-8).
+            int startIdx = Math.Max(1, (int)start.ToNumber());
+            int endIdx = end.Type == DMValueType.Null ? s.Length : (int)end.ToNumber();
+            if (endIdx <= 0) endIdx = s.Length + endIdx;
+            if (endIdx > s.Length) endIdx = s.Length;
+            if (startIdx > endIdx) return haystack;
+            var prefix = s.Substring(0, Math.Min(s.Length, startIdx - 1));
+            var window = s.Substring(startIdx - 1, endIdx - (startIdx - 1));
+            var suffix = s.Substring(endIdx);
+            return DMValue.FromString(prefix + window.Replace(find, replacement.ToString()) + suffix);
+        }
+
+        // findtextEx: case-SENSITIVE findtext (BYOND's Ex suffix — WS7-2).
+        public static DMValue FindTextEx(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)
+        {
+            return FindText(text, needle, start, end, DMValue.FromNumber(1));
         }
 
         public static DMValue HtmlEncode(DMValue value)
@@ -1989,25 +2412,31 @@ namespace SS13.DM.Runtime
             }
         }
 
+        // JsonEscape must emit valid JSON for quotes, backslashes and control
+        // chars. All quote/backslash literals are written as char codes so the
+        // TS template escaping can never corrupt them (WS9-1: the previous
+        // version emitted bare quotes/newlines — invalid JSON).
         private static string JsonEscape(string s)
         {
-            var sb = new StringBuilder("\\"");
+            var sb = new StringBuilder();
+            sb.Append((char)34); // opening quote
             foreach (var ch in s)
             {
                 switch (ch)
                 {
-                    case '"': sb.Append("\\\""); break;
-                    case '\\\\': sb.Append("\\\\"); break;
-                    case '\\n': sb.Append("\\n"); break;
-                    case '\\r': sb.Append("\\r"); break;
-                    case '\\t': sb.Append("\\t"); break;
+                    case (char)34: sb.Append((char)92).Append((char)34); break; // \"
+                    case (char)92: sb.Append((char)92).Append((char)92); break; // \\
+                    case (char)10: sb.Append((char)92).Append('n'); break;     // \n
+                    case (char)13: sb.Append((char)92).Append('r'); break;     // \r
+                    case (char)9: sb.Append((char)92).Append('t'); break;      // \t
                     default:
-                        if (ch < 0x20) sb.Append("\\\\u").Append(((int)ch).ToString("x4"));
+                        if (ch < 0x20) sb.Append((char)92).Append('u').Append(((int)ch).ToString("x4"));
                         else sb.Append(ch);
                         break;
                 }
             }
-            return sb.Append('"').ToString();
+            sb.Append((char)34); // closing quote
+            return sb.ToString();
         }
 
         // ==== Time / params ====
@@ -2016,8 +2445,10 @@ namespace SS13.DM.Runtime
         /// time2text(world.time, format): world time is in deciseconds, epoch
         /// Jan 1 2000 (BYOND semantics). Supports YYYY/MM/DD/hh/mm/ss/MMM.
         /// </summary>
-        public static DMValue Time2Text(DMValue time, DMValue format = default)
+        public static DMValue Time2Text(DMValue time, DMValue format = default, DMValue timezone = default)
         {
+            // timezone is accepted for BYOND arity compatibility; offset
+            // application is a documented approximation (WS7-8).
             var fmt = format.Type == DMValueType.Null ? "hh:mm:ss" : format.StringValue;
             var epoch = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var dt = epoch.AddSeconds(time.ToNumber() / 10.0);
@@ -2043,10 +2474,15 @@ namespace SS13.DM.Runtime
             var list = value.AsList();
             if (list == null) return DMValue.FromString("");
             var parts = new List<string>();
-            for (var i = 1; i <= list.Count; i++)
+            // Positional entries: BYOND uses their 1-based index as the key.
+            for (var i = 1; i <= list.PositionalCount; i++)
             {
-                var key = list.Get(i).ToString();
-                parts.Add(DmUrlEncode(key) + "=" + DmUrlEncode(list.GetAssoc(key).ToString()));
+                parts.Add(i + "=" + DmUrlEncode(list.Get(i).ToString()));
+            }
+            // Assoc entries keep their keys (WS8-15).
+            foreach (var kv in list.AssocEntries)
+            {
+                parts.Add(DmUrlEncode(kv.Key) + "=" + DmUrlEncode(kv.Value.ToString()));
             }
             return DMValue.FromString(string.Join("&", parts));
         }
