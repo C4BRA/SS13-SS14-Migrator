@@ -139,6 +139,25 @@ Behavior matches DM semantics for the supported subset.
 
 ---
 
+## Big-ticket implementation plans
+
+Detailed, code-grounded implementation plans for the remaining loss classes
+(baseline: tgstation audit re-run 2026-08-01, 118,030 total loss sites) live in
+`docs/plans/`:
+
+| Plan | Item | TG sites | Status |
+|---|---|---|---|
+| [01-builtins.md](docs/plans/01-builtins.md) | Builtin proc coverage | 3,553 unknown builtin calls | in progress (2026-08-02: 708 unresolved; pure + file + movement batches landed) |
+| [02-symbol-resolution.md](docs/plans/02-symbol-resolution.md) | Symbol resolution + global procs | 36,911 bare global calls (runtime fallback) | in progress (2026-08-02: milestone 1 — symbol table + audit triage; 93,573 verified) |
+| [03-bitwise.md](docs/plans/03-bitwise.md) | Bitwise operators | 18,060 binary + 1,038 unary → Null | not started |
+| [04-live-server.md](docs/plans/04-live-server.md) | Live-server integration | whole-verification gap | not started |
+| [05-appearance.md](docs/plans/05-appearance.md) | Appearance/icon/overlay system | animate 937, image 442, overlays 117, ... | not started |
+| [06-parse-errors.md](docs/plans/06-parse-errors.md) | Parse-error reduction | 2,473 errors (+ silent classes) | in progress |
+| [07-props.md](docs/plans/07-props.md) | Builtin property reads | 11,644 prop reads + 6,384 GLOB.x | not started |
+| [08-new-type.md](docs/plans/08-new-type.md) | `new /type(...)` semantics | 12,675 sites | not started |
+
+---
+
 ## Out of scope (documented limitations)
 
 - Full DM macro system (`#define` with arguments, conditional `*` blocks), `procmacro`
