@@ -360,6 +360,11 @@ namespace Content.Server.DM
         return ifCode;
 
       case 'BreakStatement':
+        // Labeled break: DM `break name` exits the labeled block — jump to
+        // the post-body label emitted by LabeledBlockStatement (item 59).
+        if (stmt.label) {
+          return `${pad}goto __dmBreak_${stmt.label};\n`;
+        }
         // DM break exits the innermost loop, or the switch when not in a loop;
         // the switch's while(true) wrapper makes plain `break` correct in both.
         // Outside both, a raw `break` would be a C# compile error (CS0139) —
@@ -370,6 +375,11 @@ namespace Content.Server.DM
         return `${pad}break;\n`;
 
       case 'ContinueStatement':
+        // Labeled continue: DM `continue name` jumps back to the labeled
+        // statement — the pre-body label from LabeledBlockStatement (item 59).
+        if (stmt.label) {
+          return `${pad}goto __dmLabel_${stmt.label};\n`;
+        }
         // DM continue: next iteration of the innermost loop. Needs a goto
         // when (a) inside a switch — a plain `continue` would iterate the
         // switch's while(true) wrapper forever instead of the enclosing loop —
@@ -601,12 +611,15 @@ namespace Content.Server.DM
       }
 
       case 'LabeledBlockStatement': {
-        // DM label: { ... } — the label is a no-op marker (no goto support);
-        // the BODY must survive (previously dropped — WS5-9).
-        let labelCode = `${pad}// label: ${stmt.label}\n`;
+        // DM label: { ... } — emit a REAL C# label so labeled break/continue
+        // can goto it (item 59: `// label:` comments were untargetable).
+        // `continue name` jumps to the pre-body label (re-enters the block);
+        // `break name` jumps to the post-body label (exits it).
+        let labelCode = `${pad}__dmLabel_${stmt.label}:\n`;
         for (const s of stmt.body || []) {
           labelCode += this.transpileStatement(s, indent);
         }
+        labelCode += `${pad}__dmBreak_${stmt.label}: ;\n`;
         return labelCode;
       }
 
@@ -930,7 +943,16 @@ namespace Content.Server.DM
   }
 
   private escapeString(str: string): string {
-    return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+    // \\ " \n \r \t are the common escapes; \0 and other control characters
+    // (BEL, NUL, etc. — DM strings can carry them from \x escapes) must not
+    // be emitted raw into a C# string literal (item 59).
+    return str
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t')
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, (c) => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'));
   }
 
   /** Path -> deduped class name, and the class names already taken, for the

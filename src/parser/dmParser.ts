@@ -218,6 +218,12 @@ export class DMParser {
               ['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '||=', '&&='].includes(this.peek().value)) {
             procName += this.advance().value;
           }
+          // operator[](A) — the bracket pair is punctuation (item 59: the
+          // registration key must preserve it; only the C# member name is
+          // sanitized downstream).
+          if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
+            procName += this.advance().value + this.advance().value; // [ ]
+          }
           const ownerNode = this.getOrCreateTypeNode(ownerPath, typeDecls);
 
           const args = this.parseProcArgs();

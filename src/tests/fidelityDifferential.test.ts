@@ -818,6 +818,16 @@ const PROBES: Probe[] = [
     name: 'default arg is an expression evaluated per call',
     dm: `/datum/probe/proc/f(a = list(1, 2))\n\treturn length(a)\n/datum/probe/proc/run()\n\treturn f()`,
     expected: '2'
+  },
+  {
+    name: 'labeled continue jumps back to the labeled loop',
+    dm: `/datum/probe/proc/run()\n\tvar/count = 0\n\tvar/i = 0\n\touter:\n\t\twhile(i < 3)\n\t\t\ti += 1\n\t\t\tvar/j = 0\n\t\t\twhile(j < 3)\n\t\t\t\tj += 1\n\t\t\t\tif(j == 2)\n\t\t\t\t\tcontinue outer\n\t\t\t\tcount += 1\n\treturn count`,
+    expected: '3' // item 59: label + goto, not a comment
+  },
+  {
+    name: 'labeled break exits the labeled block',
+    dm: `/datum/probe/proc/run()\n\tvar/count = 0\n\touter:\n\t\twhile(count < 100)\n\t\t\tcount += 1\n\t\t\tif(count == 3)\n\t\t\t\tbreak outer\n\treturn count`,
+    expected: '3'
   }
 ];
 

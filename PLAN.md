@@ -11,8 +11,8 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **58 / 9** (items 1-58 done; 59-67 open, in progression order) |
-| Semantic probes | **155 / 155** (`npm run audit:semantics`) |
+| Items done / open | **59 / 8** (items 1-59 done; 60-67 open, in progression order) |
+| Semantic probes | **157 / 157** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
@@ -150,10 +150,15 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       **Probes 151 → 155/155** (default-omitted, default-overridden, per-call
       expression default, identifier assoc keys). Files: `dmParser.ts`,
       `csharpEmitter.ts`, `fidelityDifferential.test.ts`.
-59. [ ] **12.4 — Registry keys + escaping + labels.** Preserve `operator[]` in
-      registration keys (sanitize only the C# member name); `escapeString` handle
-      `\0`/control chars; emit C# labels for DM labels instead of `// label:` comments.
-      Files: `csharpEmitter.ts`.
+59. [x] **12.4 — Registry keys + escaping + labels.** `operator[]` proc names parsed
+      and preserved in registration keys (the `[ ]` pair is punctuation — only the
+      C# member name is sanitized downstream); `escapeString` emits `\xHH` for `\0`
+      and other control chars; DM labels now emit REAL C# labels —
+      `__dmLabel_x:` before the body + `__dmBreak_x: ;` after, and labeled
+      `break`/`continue` become `goto`s (previously `// label:` comments).
+      **Probes 155 → 157/157** (labeled continue re-enters the loop; labeled break
+      exits the block). Files: `dmParser.ts`, `csharpEmitter.ts`,
+      `fidelityDifferential.test.ts`.
 60. [ ] **12.5 — Lexer edge literals.** `.5` as a float; `{"a","b"}` brace-list of
       strings vs one template token; `1...5` orphan-dot diagnostics. File: `dmLexer.ts`.
 61. [ ] **12.10 — CLI output-path validation.** Reject `--output` outside the user's
