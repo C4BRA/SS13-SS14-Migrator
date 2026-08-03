@@ -20,8 +20,8 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **572** |
-| Parse diagnostics (tg) | **3,746** errors (needs class triage — §2 / item 56) |
-| Open fix wave | **Plan 12.2–12.11** (12.1 done — item 55 in `PLAN.md`) |
+| Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
+| Open fix wave | **Plan 12.2–12.11** (12.1 + 12.9 done — items 55, 56 in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
@@ -76,11 +76,17 @@ operator[]  → Register(..., "operator", ...)   // [] lost
 ```
 C# method names dedupe (`Operator` / `Operator_2`) so **build** stays green.
 
-#### 🔴 Parse-error count unexplained
+#### 🔴 Parse-error count unexplained — **RESOLVED (item 56, 12.9)**
 
 Measured **3,746** tgstation parse errors vs older docs (~170). Counter is real
 `collector.errors.length`. Types still parse at scale (46,995 types / 64,794 procs).
-Needs class triage before treating as fidelity collapse.
+Root causes triaged and fixed: DM literal-bracket escapes (`\[`, `[[`), nested-string
+quote tracking (own-quote-char + sub-interpolation), `@{"…"}`/`@{…}` verbatim
+strings, `"}`-direct template closes, `\"` escapes in preprocessor scanners,
+`#ifdef` inside multi-line macro calls, and parser gaps (parent-call `..()` vs range,
+switch clause bodies after comment-only cases, inline `try`, brace-form type bodies,
+macro-expanded loop-var/var names, `return` at EOF). **All four corpora now parse at
+0 files / 0 errors (tg 3,746 → 0; tgmc 1,249 → 0; paradise 10,306 → 0; bee 2,339 → 0).**
 
 ### 1.2 Residual product loss (real, after harness correction)
 
@@ -155,7 +161,7 @@ Needs class triage before treating as fidelity collapse.
 | **12.6** | Props `.loc/.type/.dir` (Plan 07) | −6k sites |
 | **12.7** | `new`/New()/entity (Plan 08) | −12k semantic hole |
 | **12.8** | PLAN status rows consistency | **done** — folded into the universal linear plan (`PLAN.md`) |
-| **12.9** | Parse-error class triage (3746) | explain noise vs real |
+| **12.9** | Parse-error class triage (3746) | **done** (item 56) — tg 197 files → 0; all four corpora parse clean (tg/tgmc/paradise/bee 0 files) |
 | **12.10** | CLI output path validation | security parity w/ GUI |
 | **12.11** | Appearance stubs / live-server prep (05/04) | product |
 
@@ -178,7 +184,7 @@ under `~/Documents/antigravity/ss13-audit-corpora/`.
 
 | | tgstation | tgmc | paradise | beestation |
 |---|---:|---:|---:|---:|
-| Parse errors | 3,746 | 1,249 | 10,306 | 2,339 |
+| Parse errors | 0 | 0 | 0 | 0 |
 | Types / procs | 46,995 / 64,794 | 26,853 / 23,519 | 28,849 / 38,763 | 34,803 / 44,822 |
 | Reported loss | **54,160** | **26,928** | **39,362** | **45,043** |
 | Unresolved bare | 572 | 328 | 552 | 468 |

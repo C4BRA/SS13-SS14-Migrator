@@ -11,12 +11,12 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **55 / 12** (items 1-55 done; 56-67 open, in progression order) |
+| Items done / open | **56 / 11** (items 1-56 done; 57-67 open, in progression order) |
 | Semantic probes | **151 / 151** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **572** |
-| Parse diagnostics (tg) | **3,746** (item 56 — triage open) |
+| Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
 
 ---
 
@@ -104,9 +104,8 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 ## Part B — Open progression (next work, in order)
 
-Work the lowest-numbered open item. Each is dependency-ordered: parse-error triage
-(56) comes next because every later number is measured against the (now honest)
-counters.
+Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fold
+(57) comes next — the counters are now honest (12.1) and every file parses (12.9).
 
 55. [x] **12.1 — Harness truth.** False-loss counters removed from `totalLossSites`
       (handled by the pipeline, kept printed for visibility): `..()` 23,040
@@ -115,13 +114,25 @@ counters.
       incomplete — item 63"). **Result: reported == corrected — tg 54,160 → 30,020,
       tgmc 26,928 → 17,982, paradise 39,362 → 25,635, beestation 45,043 → 27,758.**
       File: `src/audit/fidelityAudit.ts`.
-56. [ ] **12.9 — Parse-error triage (3,746).** Explain + reduce. Known composition:
-      197 files; ~111 from interpolation-macro-expansion corrupting strings whose
-      interpolation contains quoted/HTML expansions (e.g. `<span class='examine_hint'>`
-      inside `[...]` — the span_* fix side effect); ~86 residual incl. unit-test
-      macro chains (activated because `UNIT_TESTS` is seeded). Fix must validate
-      quote balance — a naive revert of the expansion deepens ASTs 1,225 → 9,386 and
-      crashes the audit (verified). Files: `src/preprocessor.ts`, `src/parser/dmLexer.ts`.
+56. [x] **12.9 — Parse-error triage (3,746).** Explained + reduced to **0 files across
+      all four corpora (tgstation 197 files / 3,746 errors → 0; tgmc → 0; paradise → 0;
+      beestation → 0).** Root causes, fixed: DM literal-bracket escapes (`\[`, `[[`)
+      unflagged in interpolation scanners (macro-tail corruption, e.g. UNWRAP_
+      SMOOTHING_GROUPS); nested strings need own-quote-char tracking (`'` inside `"…`
+      doesn't close it — `[target]'s`) + sub-interpolation skip; `@{"…"}` template
+      prefix vs raw-`@` regex; templates close at first `"` DIRECTLY followed by `}`
+      (the last-`"}` approach regressed 3→16 files); `@{` braced verbatim strings in
+      `parenBalance`; backslash-escaped quotes (`\"`) must not toggle string state in
+      the 7 preprocessor scanners (duplicated-quote bug from an `i++`-in-while-loop
+      patch — caught by the probe suite, reverted); multi-line macro calls with
+      `#ifdef` guards inside paren blocks (inline conditional resolution in
+      `joinParenBlocks`); parser: `..()` parent-call vs range disambiguation,
+      switch `if`/`else` clause bodies with comment-only bodies, inline `try <stmt>`,
+      brace-form type bodies (`/type { member = x; }` macro expansions), `var/2 = 2`
+      numeric names (define collisions), for-loop var names macro-expanded into
+      paren expressions (`APC` → `(MACHINERY + 1)`), `return` at EOF, `"` escapes in
+      DM strings (decoder verified against probe suite), nested-interp ternaries.
+      Files: `src/preprocessor.ts`, `src/parser/dmLexer.ts`, `src/parser/dmParser.ts`.
 57. [ ] **12.2 — Builtin case-fold.** Lowercase `name` before `MAPPED_BUILTINS` /
       `transpileBuiltinCall` (DM is case-insensitive: `Pick`/`crash`/`replacetextex`
       currently → Null). Files: `builtinMappings.ts`, `fidelityAudit.ts`.

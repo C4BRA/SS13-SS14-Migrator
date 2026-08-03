@@ -278,9 +278,49 @@ export class DMPreprocessor {
       // (multi-line #define js_byjax {"..."} bodies). Inline comments are
       // stripped only outside template strings — JS // comments inside the
       // template content must survive.
+      const condFrames: { parentActive: boolean; branchTaken: boolean; active: boolean }[] = [];
+      const isActive = (): boolean => condFrames.length === 0 || condFrames[condFrames.length - 1].active;
       while ((balance > 0 || state.inTemplate) && i + 1 < lines.length) {
         const nextLine = lines[i + 1];
-        if (nextLine.trim().startsWith('#')) break;
+        const trimmed = nextLine.trim();
+        if (trimmed.startsWith('#')) {
+          // Directives inside an open paren block (e.g. #ifdef TESTING
+          // guarding a chunk of a multi-line list literal) are resolved
+          // inline so the join can continue on the active branch
+          // (item 56: beestation modules/admin/verbs/mapping.dm).
+          const dirLine = DMPreprocessor.stripInlineComment(trimmed);
+          const dm = dirLine.match(/^#(\w+)(.*)$/);
+          const name = dm ? dm[1] : '';
+          const arg = (dm ? dm[2] : '').trim();
+          if (name === 'ifdef' || name === 'ifndef' || name === 'if') {
+            const parentActive = isActive();
+            const value =
+              name === 'ifdef' ? this.defines.has(arg) || this.functionDefines.has(arg)
+                : name === 'ifndef' ? !this.defines.has(arg) && !this.functionDefines.has(arg)
+                  : this.evalIf(arg);
+            condFrames.push({ parentActive, branchTaken: parentActive && value, active: parentActive && value });
+          } else if (name === 'elif' || name === 'else') {
+            const frame = condFrames[condFrames.length - 1];
+            if (frame && frame.parentActive) {
+              if (frame.branchTaken) {
+                frame.active = false;
+              } else {
+                frame.active = true;
+                frame.branchTaken = true;
+              }
+            }
+          } else if (name === 'endif') {
+            condFrames.pop();
+          }
+          i++;
+          continue;
+        }
+        if (!isActive()) {
+          // Inactive branch of a conditional inside the paren block: drop
+          // the line, keep joining.
+          i++;
+          continue;
+        }
         if (!state.inTemplate) {
           line = DMPreprocessor.stripInlineComment(line);
           line += ' ' + DMPreprocessor.stripInlineComment(nextLine).trim();
@@ -372,6 +412,12 @@ export class DMPreprocessor {
       }
       if (!inString && !inIcon && ch === '/' && line[i + 1] === '*') {
         blockComment.inBlockComment = true;
+        i++;
+        continue;
+      }
+      if (ch === '\\' && (line[i + 1] === '"' || line[i + 1] === "'")) {
+        // Backslash-escaped quote/apostrophe inside a string (item 56:
+        // paradise client_procs.dm embeds JS with \" in strings).
         i++;
         continue;
       }
@@ -497,6 +543,10 @@ export class DMPreprocessor {
     let depth = 0;
     for (let i = 0; i < body.length; i++) {
       const ch = body[i];
+      if (ch === '\\' && (body[i + 1] === '"' || body[i + 1] === "'")) {
+        i++;
+        continue;
+      }
       if (ch === '"' && !inIcon) {
         inString = !inString;
       } else if (ch === "'" && !inString) {
@@ -543,6 +593,10 @@ export class DMPreprocessor {
           j++;
         }
         i = j;
+        continue;
+      }
+      if (ch === '\\' && (line[i + 1] === '"' || line[i + 1] === "'")) {
+        i++;
         continue;
       }
       if (ch === '"' && !inIcon) {
@@ -595,13 +649,18 @@ export class DMPreprocessor {
         i += 2;
         continue;
       }
+      if (ch === '\\' && (line[i + 1] === '"' || line[i + 1] === "'")) {
+        result += ch + (line[i + 1] ?? '');
+        i += 2;
+        continue;
+      }
       if (!inString && !inIcon && ch === '/' && line[i + 1] === '/') {
         result += line.slice(i);
         break;
       }
       if (ch === '"' && !inIcon) {
         inString = !inString;
-        result += '"';
+        result += ch;
         i++;
         continue;
       }
@@ -784,6 +843,10 @@ export class DMPreprocessor {
         i++;
         continue;
       }
+      if (ch === '\\' && (line[i + 1] === '"' || line[i + 1] === "'")) {
+        i++;
+        continue;
+      }
       if (!inString && !inIcon && ch === '/' && line[i + 1] === '/') {
         return;
       }
@@ -834,6 +897,11 @@ export class DMPreprocessor {
     let inIcon = false;
     for (let i = 0; i < body.length; ) {
       const ch = body[i];
+      if (ch === '\\' && (body[i + 1] === '"' || body[i + 1] === "'")) {
+        result += ch + (body[i + 1] ?? '');
+        i += 2;
+        continue;
+      }
       if (ch === '"' && !inIcon) {
         inString = !inString;
         result += ch;
@@ -892,6 +960,11 @@ export class DMPreprocessor {
         inString = !inString;
         result += ch;
         i++;
+        continue;
+      }
+      if (ch === '\\' && (body[i + 1] === '"' || body[i + 1] === "'")) {
+        result += ch + (body[i + 1] ?? '');
+        i += 2;
         continue;
       }
       if (ch === "'" && !inString) {
@@ -1025,8 +1098,11 @@ export class DMPreprocessor {
       if ((inString || inIcon) && ch === '[') {
         // String interpolation: skip to the matching ']' so quotes/brackets
         // inside it cannot break the outer string state or paren balance.
+        // A nested string keeps ITS OWN quote char (`'` inside a "..." does
+        // not close it — e.g. "[target]'s" in mechanical_repair.dm, item 56).
         let depth = 1;
         let nested = false;
+        let nestedQuote = '';
         i++;
         while (i < line.length && depth > 0) {
           const c = line[i];
@@ -1035,10 +1111,10 @@ export class DMPreprocessor {
             continue;
           }
           if (!nested) {
-            if (c === '"' || c === "'") nested = true;
+            if (c === '"' || c === "'") { nested = true; nestedQuote = c; }
             else if (c === '[') depth++;
             else if (c === ']') depth--;
-          } else if (c === '"' || c === "'") {
+          } else if (c === nestedQuote) {
             nested = false;
           }
           i++;
@@ -1133,8 +1209,10 @@ export class DMPreprocessor {
         // Quotes inside the interpolation are part of nested string literals
         // and must not toggle the outer string state (e.g. span_danger("...
         // [damage ? "." : "..."]") arguments would otherwise split mid-string).
+        // A nested string keeps ITS OWN quote char (item 56: "[target]'s").
         let depth = 1;
         let nested = false;
+        let nestedQuote = '';
         i++;
         current += ch;
         while (i < text.length && depth > 0) {
@@ -1144,10 +1222,10 @@ export class DMPreprocessor {
             i++;
             current += text[i] ?? '';
           } else if (!nested) {
-            if (c === '"' || c === "'") nested = true;
+            if (c === '"' || c === "'") { nested = true; nestedQuote = c; }
             else if (c === '[') depth++;
             else if (c === ']') depth--;
-          } else if (c === '"' || c === "'") {
+          } else if (c === nestedQuote) {
             nested = false;
           }
           i++;
@@ -1349,7 +1427,7 @@ export class DMPreprocessor {
       if (name.length === 0) return 0;
       // BYOND built-in defines (DM_VERSION etc.) — real compilers carry
       // these, so #if (DM_VERSION < 510) must not fire with 0 (item 56).
-      const builtin = { DM_VERSION: 516, DM_BUILD: 1661, BYOND_MAJOR: 516 }[name];
+      const builtin = { DM_VERSION: 516, DM_BUILD: 1666, BYOND_MAJOR: 516 }[name];
       if (builtin !== undefined) return builtin;
       const def = this.defines.get(name);
       if (def !== undefined) return this.evalIfValue(def, depth + 1);
