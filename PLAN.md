@@ -7,16 +7,19 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-## Progress summary (2026-08-02)
+## Progress summary (2026-08-03)
 
 | Gate | Value |
 |---|---|
-| Items done / open | **67 / 0** — **all 67 items complete** |
+| Items done / open (Part A) | **67 / 0** — the conversion pipeline is complete |
+| Items done / open (Part B) | **0 / 9** — the playability phases (fresh plan, below) |
 | Semantic probes | **171 / 171** (`npm run audit:semantics`) |
-| Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
-| Loss sites (honest, post-12.1) | tg **25,882** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
-| Unresolved bare calls (tg) | **138** (case-fold 165 + item-67 builtins/quote-aware guard) |
-| Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
+| Boot gate | **4 / 4 corpora boot clean** — tgstation 45,967 · tgmc 26,853 · paradise 28,849 · beestation 34,803 types: transpile seconds → build 0 errors → server Ready, port 1212 |
+| Perf audit | 427× emission duplication fixed (17.9 GB → 46 MB tgmc); streaming output; COW define maps (parse −28%); split emitted classes (CLR 65,536 method/type cap); full loop-advance hang audit: **no hang paths found** |
+| Loss sites (honest, post-12.1) | tg **25,882** (tgmc/paradise/bee rows stale — refresh in item 75) |
+| Unresolved bare calls (tg) | **138** |
+| Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** |
+| Playability | **~15–20%** — the pipeline is done; the game layers (entity integration, rendering, tick, verbs, client) are Part B |
 
 ---
 
@@ -232,3 +235,41 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
 - Real-engine API drift → mitigated by `engine.pin` + `scripts/build-loop.sh`.
 - `dotnet` absent → build-check tests degrade gracefully; probes skip (fixed in 11.12).
 - Corpus-scale builds are heavy (NuGet restore + source generators) → `--build-max-procs`.
+
+---
+
+## Part B — From booting to playable (fresh plan)
+
+The pipeline (Part A) is complete: all four corpora parse, build, and BOOT the generated
+server cleanly. The fresh plan targets the product: the **M1 milestone** is a minimum
+playable demo — one converted map, a player mob that spawns, moves, and interacts with
+one object, visibly rendered, in a running server. Everything below is dependency-
+ordered toward M1; the later phases (fidelity, speed) are independently valuable.
+
+68. [ ] **B-0 — Plan + harness hardening.** This restructure; fix the audit-harness gaps
+      (the census never merged lexer diagnostics — the root cause of the false-clean
+      "0 files" claim); commit repo gates (`npm run audit:parse`, `npm run boot:smoke`)
+      so CI catches parse/build/boot regressions. Files: `src/audit/*`, scripts.
+69. [ ] **B-1 — Entity integration wave (critical path).** Spawn DM atoms as real SS14
+      entities: DMRuntimeComponent → entity spawn on map load, turf grids as entities,
+      loc chains (item 62's `.loc` remainder), movement, player mob. The 12,872-site
+      `new` hole becomes the spawn path. Files: runtime template, `ConvertedDMSystem.cs`,
+      emitter.
+70. [ ] **B-2 — World/tick/time layer.** `world.time` live on the engine tick; DM
+      `sleep`/`spawn`/timers driven by the tick loop; subsystem cadence (SS13
+      subsystem scheduling). Files: runtime template, engine adapter.
+71. [ ] **B-3 — Rendering/appearance layer.** Sprites/RSI on entities, overlays,
+      `animate()`/`flick()` (the remaining appearance stubs), lighting basics. The
+      visual layer behind "visibly rendered". Files: `ConvertedDMSystem.cs`, runtime.
+72. [ ] **B-4 — Input/verbs/UI layer.** Verb/command system, client input, chat,
+      `browse`/topic equivalents. The interaction path. Files: runtime, engine adapter.
+73. [ ] **B-5 — Client boot.** Real Robust.Client content entry (`ContentStart`) so
+      players can connect to the booted server. Files: `ss14Template.ts`.
+74. [ ] **B-6 — M1 gate: minimum playable demo.** One converted map, a player mob that
+      spawns, moves, and interacts with one object, visibly rendered — the north-star
+      acceptance test for B-1..B-5.
+75. [ ] **B-7 — Fidelity + loss reduction.** Refresh the 4-corpus fidelity scoreboard
+      (tgmc/paradise/bee rows are stale), attack the remaining buckets (`.loc` 3,229,
+      stubs 4,172, unresolved 138). Files: `fidelityAudit.ts`, runtime.
+76. [ ] **B-8 — Speed.** Worker-thread parallel parse + DMI conversion (files are
+      independent; the audit measured the parse as the dominant stage). Files: `index.ts`.
