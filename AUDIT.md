@@ -16,12 +16,12 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 |---|---|
 | `npm run build` | clean (tsc strict) |
 | `npm test` | green; generated solution builds vs real RobustToolbox |
-| Semantic probes | **164 / 164** (`npm run audit:semantics`) |
+| Semantic probes | **168 / 168** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
-| Loss sites (honest, post-12.1) | tg **27,514** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
+| Loss sites (honest, post-12.1) | tg **26,151** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **Plan 12.11** (12.1–12.7 + 12.9 + 12.10 + Plan 02 done — items 55–64 in `PLAN.md`) |
+| Open fix wave | **Plan 04, 12.12** (12.1–12.7 + 12.9–12.11 + Plan 02 done — items 55–65 in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
@@ -94,7 +94,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 |---|---:|---|
 | Partial `new /type` | 12,872 | fresh datum; New() args + atom loc resolved (item 63); entity integration pending |
 | Broken prop reads | 3,229 | `.loc` only — type/dir/contents/overlays now runtime-resolved (item 62) |
-| Stubbed builtins | 5,352 | animate/sound/image/winset/… → Null (honest) |
+| Stubbed builtins | 4,172 | animate/flick/winset/alert/input/… → Null (honest); image/sound/matrix/icon real datums (item 65) |
 | Unresolved bare calls | 407 | span_*, unit_test helpers, filter, winget, oviewers, stack_trace… (was 572 — item 57 case-fold resolved 165) |
 | `as` casts | 247 | dynamic no-op (often OK) |
 | Appearance / verbs / client | — | Plans 05; stubbed / folded |
@@ -163,7 +163,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 | **12.8** | PLAN status rows consistency | **done** — folded into the universal linear plan (`PLAN.md`) |
 | **12.9** | Parse-error class triage (3746) | **done** (item 56) — tg 197 files → 0; all four corpora parse clean (tg/tgmc/paradise/bee 0 files) |
 | **12.10** | CLI output path validation | **done** (item 61) — routes through the GUI realpath check |
-| **12.11** | Appearance stubs / live-server prep (05/04) | product |
+| **12.11** | Appearance stubs (Plan 05) | **done** (item 65) — image/sound/matrix/icon real datums + /matrix procs; stubbed 5,352 → 4,172 |
 
 The 12.1–12.11 batches are tracked linearly as items 55–67 in `PLAN.md` (universal plan).
 
@@ -188,7 +188,7 @@ under `~/Documents/antigravity/ss13-audit-corpora/`.
 | Types / procs | 46,995 / 64,794 | 26,853 / 23,519 | 28,849 / 38,763 | 34,803 / 44,822 |
 | Reported loss | **54,160** | **26,928** | **39,362** | **45,043** |
 | Unresolved bare | 407 | 328 | 552 | 468 |
-| Stubbed builtins | 5,352 | 2,939 | 3,584 | 4,564 |
+| Stubbed builtins | 4,172 | 2,939 | 3,584 | 4,564 |
 
 JSON history: `docs/audit/10-tgstation-audit.json`, `11-tgstation-audit-post.json`,
 `12-baseline-*.json`.
@@ -207,7 +207,7 @@ totalLossSites (12.1: false counters removed)    30,020
   heavy real buckets:
     new (partial)                 12,872
     broken props (loc only)          3,229
-    stubs                          5,352
+    stubs                          4,172
     unresolved bare                  407
     as / set / client / verb / …    rest
 ```

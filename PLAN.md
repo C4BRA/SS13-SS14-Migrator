@@ -11,10 +11,10 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **64 / 3** (items 1-64 done; 65-67 open, in progression order) |
-| Semantic probes | **164 / 164** (`npm run audit:semantics`) |
+| Items done / open | **65 / 2** (items 1-65 done; 66-67 open, in progression order) |
+| Semantic probes | **168 / 168** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
-| Loss sites (honest, post-12.1) | tg **27,514** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
+| Loss sites (honest, post-12.1) | tg **26,151** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
 
@@ -188,8 +188,12 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       per name, and the transpile run reports the unresolved count. The runtime
       registry stays the fallback. Files: `index.ts`, `csharpEmitter.ts`,
       `symbolTable.ts`.
-65. [ ] **12.11 — Appearance stubs** (Plan 05): `animate`, `image`, `flick`, `sound`,
-      `matrix`, `icon`, `overlays` — 5,352 stubbed sites → real SS14 components.
+65. [x] **12.11 — Appearance stubs** (Plan 05). `image()`/`sound()`/`matrix()`/`icon()`
+      now create real datum values (vars read back; rendering needs the engine —
+      item 66); /matrix builtin procs (scale/translate/turn/invert/multiply)
+      mutate the a-f transform vars; /icon GetWidth/GetHeight return the DMI
+      default. `animate`/`flick` stay Null (visual engine).
+      **Stubbed 5,352 → 4,172; loss 27,514 → 26,151; probes 164 → 168/168.**
 66. [ ] **Live-server integration** (Plan 04): generated solution boots Robust.Server /
       Robust.Client — turns "compiles" into "runs".
 67. [ ] **Remaining builtins:** `filter`, unit-test helpers, `print_language_list`-class

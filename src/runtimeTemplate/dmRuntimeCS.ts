@@ -597,6 +597,96 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static readonly HashSet<string> RegisteredPaths = new();
 
+        static ProcRegistry()
+        {
+            // /matrix builtin procs (item 65): mutate the a-f transform vars
+            // of the receiver so M.Scale(2) followed by transform = M
+            // reads back the scaled matrix.
+            Register("/matrix", "scale", (comp, args) =>
+            {
+                var sx = args.Length > 0 && args[0].Type != DMValueType.Null ? args[0].ToNumber() : 1;
+                var sy = args.Length > 1 && args[1].Type != DMValueType.Null ? args[1].ToNumber() : sx;
+                comp.SetVar("a", DMValue.FromNumber(comp.GetVar("a").ToNumber() * sx));
+                comp.SetVar("d", DMValue.FromNumber(comp.GetVar("d").ToNumber() * sy));
+                return Task.FromResult(DMValue.FromDatum(comp));
+            });
+            Register("/matrix", "translate", (comp, args) =>
+            {
+                var tx = args.Length > 0 ? args[0].ToNumber() : 0;
+                var ty = args.Length > 1 ? args[1].ToNumber() : 0;
+                comp.SetVar("c", DMValue.FromNumber(comp.GetVar("c").ToNumber() + tx));
+                comp.SetVar("f", DMValue.FromNumber(comp.GetVar("f").ToNumber() + ty));
+                return Task.FromResult(DMValue.FromDatum(comp));
+            });
+            Register("/matrix", "turn", (comp, args) =>
+            {
+                var angle = args.Length > 0 ? args[0].ToNumber() : 0;
+                var rad = angle * Math.PI / 180.0;
+                var cos = Math.Cos(rad);
+                var sin = Math.Sin(rad);
+                var a = comp.GetVar("a").ToNumber();
+                var b = comp.GetVar("b").ToNumber();
+                var c = comp.GetVar("c").ToNumber();
+                var d = comp.GetVar("d").ToNumber();
+                var e = comp.GetVar("e").ToNumber();
+                var f = comp.GetVar("f").ToNumber();
+                comp.SetVar("a", DMValue.FromNumber(a * cos - b * sin));
+                comp.SetVar("b", DMValue.FromNumber(a * sin + b * cos));
+                comp.SetVar("c", DMValue.FromNumber(c * cos - d * sin));
+                comp.SetVar("d", DMValue.FromNumber(c * sin + d * cos));
+                comp.SetVar("e", DMValue.FromNumber(e * cos - f * sin));
+                comp.SetVar("f", DMValue.FromNumber(e * sin + f * cos));
+                return Task.FromResult(DMValue.FromDatum(comp));
+            });
+            Register("/matrix", "invert", (comp, args) =>
+            {
+                var a = comp.GetVar("a").ToNumber();
+                var b = comp.GetVar("b").ToNumber();
+                var c = comp.GetVar("c").ToNumber();
+                var d = comp.GetVar("d").ToNumber();
+                var e = comp.GetVar("e").ToNumber();
+                var f = comp.GetVar("f").ToNumber();
+                var det = a * d - b * c;
+                if (Math.Abs(det) < 1e-12) return Task.FromResult(DMValue.FromDatum(comp));
+                comp.SetVar("a", DMValue.FromNumber(d / det));
+                comp.SetVar("b", DMValue.FromNumber(-b / det));
+                comp.SetVar("c", DMValue.FromNumber(-c / det));
+                comp.SetVar("d", DMValue.FromNumber(a / det));
+                comp.SetVar("e", DMValue.FromNumber((c * f - d * e) / det));
+                comp.SetVar("f", DMValue.FromNumber((b * e - a * f) / det));
+                return Task.FromResult(DMValue.FromDatum(comp));
+            });
+            Register("/matrix", "multiply", (comp, args) =>
+            {
+                if (args.Length > 0 && args[0].Type == DMValueType.DatumRef && args[0].DatumRef is DMRuntime other)
+                {
+                    var a = comp.GetVar("a").ToNumber();
+                    var b = comp.GetVar("b").ToNumber();
+                    var c = comp.GetVar("c").ToNumber();
+                    var d = comp.GetVar("d").ToNumber();
+                    var e = comp.GetVar("e").ToNumber();
+                    var f = comp.GetVar("f").ToNumber();
+                    var a2 = other.GetVar("a").ToNumber();
+                    var b2 = other.GetVar("b").ToNumber();
+                    var c2 = other.GetVar("c").ToNumber();
+                    var d2 = other.GetVar("d").ToNumber();
+                    var e2 = other.GetVar("e").ToNumber();
+                    var f2 = other.GetVar("f").ToNumber();
+                    comp.SetVar("a", DMValue.FromNumber(a * a2 + b * c2));
+                    comp.SetVar("b", DMValue.FromNumber(a * b2 + b * d2));
+                    comp.SetVar("c", DMValue.FromNumber(c * a2 + d * c2));
+                    comp.SetVar("d", DMValue.FromNumber(c * b2 + d * d2));
+                    comp.SetVar("e", DMValue.FromNumber(e * a2 + f * c2 + e2));
+                    comp.SetVar("f", DMValue.FromNumber(e * b2 + f * d2 + f2));
+                }
+                return Task.FromResult(DMValue.FromDatum(comp));
+            });
+            // /icon size builtins (item 65): the dimensions are not resolvable
+            // engine-free; GetWidth/GetHeight return the DMI default of 32.
+            Register("/icon", "getwidth", (comp, args) => Task.FromResult(DMValue.FromNumber(32)));
+            Register("/icon", "getheight", (comp, args) => Task.FromResult(DMValue.FromNumber(32)));
+        }
+
         public static void Register(string typePath, string procName, Func<DMRuntime, DMValue[], Task<DMValue>> handler, string[] paramNames = null)
         {
             // DM identifiers are case-insensitive: normalize keys so a call
@@ -1918,16 +2008,107 @@ namespace SS13.DM.Runtime
             return await temp.CallProc(entry.ProcName, args);
         }
 
-        // ==== Recognized-but-stubbed builtins (visual/UI/extension; return Null) ====
+        // ==== Appearance/UI builtins ====
 
+        // Visual engine integration (animate/flick) is a live-server item
+        // (item 66); their data models are real datums below (item 65) so
+        // the corpus reads vars back instead of Null.
         public static DMValue Animate(params DMValue[] args) => DMValue.Null;
-        public static DMValue Image(params DMValue[] args) => DMValue.Null;
         public static DMValue Flick(params DMValue[] args) => DMValue.Null;
-        public static DMValue Sound(params DMValue[] args) => DMValue.Null;
-        public static DMValue Matrix(params DMValue[] args) => DMValue.Null;
         public static DMValue Browse(params DMValue[] args) => DMValue.Null;
         public static DMValue CallExt(params DMValue[] args) => DMValue.Null;
         public static DMValue DetectRustG(params DMValue[] args) => DMValue.FromNumber(0);
+
+        /// <summary>
+        /// DM image(icon, loc, icon_state, layer, dir): a real /image datum
+        /// (item 65) — vars read back correctly; rendering needs the engine.
+        /// </summary>
+        public static DMValue Image(params DMValue[] args)
+        {
+            var datum = new DMRuntime { DMTypePath = "/image" };
+            LiveDatums.Add(datum);
+            if (args.Length > 0) datum.SetVar("icon", args[0]);
+            if (args.Length > 1) datum.SetVar("loc", args[1]);
+            datum.SetVar("icon_state", args.Length > 2 && args[2].Type != DMValueType.Null ? args[2] : DMValue.FromString(""));
+            datum.SetVar("layer", args.Length > 3 && args[3].Type != DMValueType.Null ? args[3] : DMValue.FromNumber(2.0, true));
+            datum.SetVar("dir", args.Length > 4 && args[4].Type != DMValueType.Null ? args[4] : DMValue.FromNumber(2));
+            datum.SetVar("overlays", DMValue.FromList(new DMList()));
+            datum.SetVar("pixel_x", DMValue.FromNumber(0));
+            datum.SetVar("pixel_y", DMValue.FromNumber(0));
+            return DMValue.FromDatum(datum);
+        }
+
+        /// <summary>
+        /// DM sound(file, repeat, wait, volume, channel): a real /sound datum
+        /// (item 65). Playback needs the engine.
+        /// </summary>
+        public static DMValue Sound(params DMValue[] args)
+        {
+            var datum = new DMRuntime { DMTypePath = "/sound" };
+            LiveDatums.Add(datum);
+            datum.SetVar("file", args.Length > 0 ? args[0] : DMValue.Null);
+            datum.SetVar("repeat", args.Length > 1 ? args[1] : DMValue.FromNumber(0));
+            datum.SetVar("wait", args.Length > 2 ? args[2] : DMValue.FromNumber(0));
+            datum.SetVar("volume", args.Length > 3 ? args[3] : DMValue.FromNumber(100));
+            datum.SetVar("channel", args.Length > 4 ? args[4] : DMValue.FromNumber(0));
+            datum.SetVar("falloff", DMValue.FromNumber(5));
+            datum.SetVar("frequency", DMValue.FromNumber(1));
+            return DMValue.FromDatum(datum);
+        }
+
+        /// <summary>
+        /// DM matrix() / matrix(a, b, c, d, e, f) / matrix(M): a real /matrix
+        /// datum holding the 2x3 transform vars (item 65). The builtin procs
+        /// (scale/translate/turn/invert/multiply) mutate those vars.
+        /// </summary>
+        public static DMValue Matrix(params DMValue[] args)
+        {
+            var datum = new DMRuntime { DMTypePath = "/matrix" };
+            LiveDatums.Add(datum);
+            if (args.Length == 6)
+            {
+                datum.SetVar("a", args[0]);
+                datum.SetVar("b", args[1]);
+                datum.SetVar("c", args[2]);
+                datum.SetVar("d", args[3]);
+                datum.SetVar("e", args[4]);
+                datum.SetVar("f", args[5]);
+            }
+            else if (args.Length == 1 && args[0].Type == DMValueType.DatumRef && args[0].DatumRef is DMRuntime src)
+            {
+                datum.SetVar("a", src.GetVar("a"));
+                datum.SetVar("b", src.GetVar("b"));
+                datum.SetVar("c", src.GetVar("c"));
+                datum.SetVar("d", src.GetVar("d"));
+                datum.SetVar("e", src.GetVar("e"));
+                datum.SetVar("f", src.GetVar("f"));
+            }
+            else
+            {
+                datum.SetVar("a", DMValue.FromNumber(1));
+                datum.SetVar("b", DMValue.FromNumber(0));
+                datum.SetVar("c", DMValue.FromNumber(0));
+                datum.SetVar("d", DMValue.FromNumber(1));
+                datum.SetVar("e", DMValue.FromNumber(0));
+                datum.SetVar("f", DMValue.FromNumber(0));
+            }
+            return DMValue.FromDatum(datum);
+        }
+
+        /// <summary>
+        /// DM icon(icon, icon_state, dir, frame, moving): a real /icon datum
+        /// (item 65). The file's dimensions are resolved lazily by
+        /// GetWidth/GetHeight (registered builtins).
+        /// </summary>
+        public static DMValue Icon(params DMValue[] args)
+        {
+            var datum = new DMRuntime { DMTypePath = "/icon" };
+            LiveDatums.Add(datum);
+            datum.SetVar("icon", args.Length > 0 ? args[0] : DMValue.Null);
+            datum.SetVar("icon_state", args.Length > 1 ? args[1] : DMValue.Null);
+            datum.SetVar("dir", args.Length > 2 && args[2].Type != DMValueType.Null ? args[2] : DMValue.FromNumber(2));
+            return DMValue.FromDatum(datum);
+        }
 
 
         public static DMValue DMProb(DMValue chance = default)
@@ -2845,12 +3026,9 @@ namespace SS13.DM.Runtime
         public static DMValue Alert(params DMValue[] args) => DMValue.Null;
 
         public static DMValue Input(params DMValue[] args) => DMValue.Null;
-
-        public static DMValue Icon(params DMValue[] args) => DMValue.Null;
     }
 }
-`
-      },
+`      },
       {
         filename: 'RustGAdapterStubs.cs',
         content: `using System;

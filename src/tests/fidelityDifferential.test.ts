@@ -863,6 +863,26 @@ const PROBES: Probe[] = [
     name: 'atom New receives the loc as its first parameter',
     dm: `/obj/probe/proc/New(a, b)\n\tsrc.first = a\n\tsrc.second = b\n/datum/probe/proc/run()\n\tvar/datum/d = new\n\tvar/obj/probe/o = new /obj/probe(d, 7)\n\treturn (o.first == d) + o.second`,
     expected: '8' // New(loc, args...) keeps the loc as its first argument
+  },
+  {
+    name: 'image() creates a datum with vars',
+    dm: `/datum/probe/proc/run()\n\tvar/image/i = image('icons/x.dmi', null, "on", 4, 1)\n\treturn i.layer + i.dir`,
+    expected: '5' // item 65: layer 4 + dir 1
+  },
+  {
+    name: 'sound() creates a datum with volume',
+    dm: `/datum/probe/proc/run()\n\tvar/sound/s = sound(null, 0, 0, 50, 3)\n\treturn s.volume + s.channel`,
+    expected: '53'
+  },
+  {
+    name: 'matrix scale mutates the transform vars',
+    dm: `/datum/probe/proc/run()\n\tvar/matrix/m = matrix()\n\tm.Scale(2, 3)\n\treturn m.a + m.d`,
+    expected: '5' // 2 + 3 — the builtin /matrix procs register at startup
+  },
+  {
+    name: 'matrix translate then turn',
+    dm: `/datum/probe/proc/run()\n\tvar/matrix/m = matrix()\n\tm.Translate(10, 20)\n\tm.Turn(90)\n\treturn m.e + m.f`,
+    expected: '-20' // 90deg rotates (e,f) = (0,20) -> (-20,0)
   }
 ];
 

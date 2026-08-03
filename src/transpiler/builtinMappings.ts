@@ -31,9 +31,11 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
 // Builtins whose runtime helpers are recognized stubs returning Null/0
 // (engine/UI integration points). The audit counts their call sites as loss —
 // they are NOT "resolved" just because the name is mapped (WS7-16).
+// image/sound/matrix/icon were removed in 12.11: they now create real datum
+// values (vars read back; rendering needs the engine — item 65).
 export const STUBBED_BUILTINS = [
-  'animate', 'image', 'flick', 'sound', 'matrix', 'browse', 'call_ext',
-  '__detect_rust_g', 'alert', 'input', 'icon', 'locate', 'refcount',
+  'animate', 'flick', 'browse', 'call_ext',
+  '__detect_rust_g', 'alert', 'input', 'locate', 'refcount',
   'winset', 'link', 'gradient', 'vector', 'openToolTip', 'closeToolTip',
   'browse_rsc', 'ftp'
 ];
