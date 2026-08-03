@@ -14,7 +14,9 @@
     "audit:fidelity": "node dist/audit/fidelityAudit.js",
     "audit:semantics": "node dist/tests/fidelityDifferential.test.js",
     "setup:engine": "bash scripts/setup-engine.sh",
-    "phase0": "bash scripts/build-loop.sh"
+    "phase0": "bash scripts/build-loop.sh",
+    "audit:parse": "node dist/tests/repoAudit.js",
+    "boot:smoke": "bash scripts/boot-smoke.sh"
   },
   "keywords": [
     "ss13",

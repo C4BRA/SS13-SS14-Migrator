@@ -21,7 +21,10 @@ const usage = 'Usage: npm run audit:repo -- <directory> [out.json]';
 
 function walk(dir: string, ext: string): string[] {
   const out: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  // Sorted walk: the #define/#undef sequence in collectDefinesFromFiles is
+  // order-dependent (fs.readdirSync order is platform/FS dependent), which
+  // made macro expansions flaky — deterministic order (item 68, B-0).
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       out.push(...walk(full, ext));
@@ -75,7 +78,13 @@ function main(): void {
     const pp = new DMPreprocessor(collector, collected.object, collected.function);
     const pre = pp.process(code, file);
 
-    const tokens = new DMLexer(pre).tokenize();
+    // The lexer's diagnostics (unterminated strings/block comments,
+    // inconsistent indentation) live on lexer.diagnostics and MUST be merged
+    // — dropping them made the audit report false-clean "0 files" while the
+    // production pipeline still failed (item 68, B-0).
+    const lexer = new DMLexer(pre);
+    const tokens = lexer.tokenize();
+    collector.merge(lexer.diagnostics);
     const parser = new DMParser(tokens, collector);
     const decls = parser.parse();
     globalVars += parser.globalVars.length;

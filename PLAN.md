@@ -12,7 +12,7 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 | Gate | Value |
 |---|---|
 | Items done / open (Part A) | **67 / 0** — the conversion pipeline is complete |
-| Items done / open (Part B) | **0 / 9** — the playability phases (fresh plan, below) |
+| Items done / open (Part B) | **1 / 8** — playability phases; 68 done |
 | Semantic probes | **171 / 171** (`npm run audit:semantics`) |
 | Boot gate | **4 / 4 corpora boot clean** — tgstation 45,967 · tgmc 26,853 · paradise 28,849 · beestation 34,803 types: transpile seconds → build 0 errors → server Ready, port 1212 |
 | Perf audit | 427× emission duplication fixed (17.9 GB → 46 MB tgmc); streaming output; COW define maps (parse −28%); split emitted classes (CLR 65,536 method/type cap); full loop-advance hang audit: **no hang paths found** |
@@ -246,10 +246,13 @@ playable demo — one converted map, a player mob that spawns, moves, and intera
 one object, visibly rendered, in a running server. Everything below is dependency-
 ordered toward M1; the later phases (fidelity, speed) are independently valuable.
 
-68. [ ] **B-0 — Plan + harness hardening.** This restructure; fix the audit-harness gaps
-      (the census never merged lexer diagnostics — the root cause of the false-clean
-      "0 files" claim); commit repo gates (`npm run audit:parse`, `npm run boot:smoke`)
-      so CI catches parse/build/boot regressions. Files: `src/audit/*`, scripts.
+68. [x] **B-0 — Plan + harness hardening.** PLAN.md restructured (Part A done / Part B
+      fresh); `repoAudit.ts` now MERGES lexer diagnostics (the false-clean "0 files"
+      root cause — verified: all four corpora still 0 files with the merge, so the
+      claim is now real) and walks deterministically (sorted — the define-ordering
+      flake). Repo gates committed: `npm run audit:parse` (per-corpus parse gate) and
+      `npm run boot:smoke` (fixture convert → build → boot → Ready, 0 errors;
+      degrades gracefully without the engine).
 69. [ ] **B-1 — Entity integration wave (critical path).** Spawn DM atoms as real SS14
       entities: DMRuntimeComponent → entity spawn on map load, turf grids as entities,
       loc chains (item 62's `.loc` remainder), movement, player mob. The 12,872-site
