@@ -27,6 +27,12 @@ const MAX_MACRO_EXPANSION_WORK = 200000;
 export class DMPreprocessor {
   private defines = new Map<string, string>();
   private functionDefines = new Map<string, FunctionMacro>();
+  /** True when `defines`/`functionDefines` are the CALLER's maps (shared,
+   *  never mutated). The seed maps are shared copy-on-write: at corpus scale
+   *  the per-file copy of ~11k-18k defines was ~25-30% of the parse time
+   *  (perf audit). Reads hit the shared map directly; the first write
+   *  (a file's own #define/#undef) copies. */
+  private definesShared = false;
   private collector: DiagnosticCollector;
   private blockCommentState: { inBlockComment: boolean } = { inBlockComment: false };
   // BYOND includes each file at most once per compilation; `#pragma multiple`
@@ -41,20 +47,23 @@ export class DMPreprocessor {
     seedFunctionDefines: Map<string, FunctionMacro> | undefined = undefined
   ) {
     this.collector = collector;
-    if (seedDefines) {
-      for (const [name, value] of seedDefines) {
-        if (!this.defines.has(name)) {
-          this.defines.set(name, value);
-        }
-      }
+    if (seedDefines && seedDefines.size > 0) {
+      this.defines = seedDefines;
+      this.definesShared = true;
     }
-    if (seedFunctionDefines) {
-      for (const [name, macro] of seedFunctionDefines) {
-        if (!this.functionDefines.has(name)) {
-          this.functionDefines.set(name, macro);
-        }
-      }
+    if (seedFunctionDefines && seedFunctionDefines.size > 0) {
+      this.functionDefines = seedFunctionDefines;
+      this.definesShared = true;
     }
+  }
+
+  /** Copy-on-write: before the first mutation of a shared seed map, clone it
+   *  so the caller's collection stays pristine across files. */
+  private ensureOwnDefines(): void {
+    if (!this.definesShared) return;
+    this.defines = new Map(this.defines);
+    this.functionDefines = new Map(this.functionDefines);
+    this.definesShared = false;
   }
 
   process(code: string, filePath: string): string {
@@ -159,14 +168,17 @@ export class DMPreprocessor {
                   cleanParams.push(p);
                 }
               }
+              this.ensureOwnDefines();
               this.functionDefines.set(dm[1], { params: cleanParams, variadic, body: bodyClean });
               break;
             }
+            this.ensureOwnDefines();
             this.defines.set(dm[1], bodyClean);
             break;
           }
           case 'undef': {
             if (!isActive()) break;
+            this.ensureOwnDefines();
             this.defines.delete(arg);
             this.functionDefines.delete(arg);
             break;
