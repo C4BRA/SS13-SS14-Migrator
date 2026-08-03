@@ -37,6 +37,12 @@ export class DMLexer {
     'null', 'TRUE', 'FALSE', 'area', 'turf', 'obj', 'mob', 'datum'
   ]);
 
+  // Static Sets for O(1) operator matching instead of O(n) array.includes()
+  private static THREE_CHAR_OPS = new Set(['<<=', '>>=', '||=', '&&=']);
+  private static TWO_CHAR_OPS = new Set(['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '&&', '||', '::', '..', '++', '--', '<<', '>>', '?.', '%=', '&=', '|=', '^=', '%%', '**', '~=', '~!']);
+  private static SINGLE_CHAR_OPS = '+-*/=<>!&|^?:.%~@$';
+  private static PUNCTUATION = '(){}[],;';
+
   constructor(input: string) {
     // Strip a UTF-8 BOM so the first token of Windows-edited files lexes cleanly.
     this.input = input.startsWith('\uFEFF') ? input.slice(1) : input;
@@ -189,17 +195,17 @@ export class DMLexer {
       const startLine = this.line;
       const startCol = this.col;
 
-      // Multi-char operators
+      // Multi-char operators - using static Sets for O(1) lookup
       const twoChar = ch + this.peek();
       const threeChar = ch + this.peek() + (this.pos + 2 < this.input.length ? this.input[this.pos + 2] : '');
-      if (['<<=', '>>=', '||=', '&&='].includes(threeChar)) {
+      if (DMLexer.THREE_CHAR_OPS.has(threeChar)) {
         this.advance();
         this.advance();
         this.advance();
         tokens.push({ type: TokenType.Operator, value: threeChar, line: startLine, column: startCol });
         continue;
       }
-      if (['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '&&', '||', '::', '..', '++', '--', '<<', '>>', '?.', '%=', '&=', '|=', '^=', '%%', '**', '~=', '~!'].includes(twoChar)) {
+      if (DMLexer.TWO_CHAR_OPS.has(twoChar)) {
         this.advance();
         this.advance();
         tokens.push({ type: TokenType.Operator, value: twoChar, line: startLine, column: startCol });
@@ -215,7 +221,7 @@ export class DMLexer {
         continue;
       }
 
-      if ('+-*/=<>!&|^?:.%~@$'.includes(ch)) {
+      if (DMLexer.SINGLE_CHAR_OPS.includes(ch)) {
         this.advance();
         tokens.push({ type: TokenType.Operator, value: ch, line: startLine, column: startCol });
         continue;
@@ -242,7 +248,7 @@ export class DMLexer {
         }
       }
 
-      if ('(){}[],;'.includes(ch)) {
+      if (DMLexer.PUNCTUATION.includes(ch)) {
         this.advance();
         tokens.push({ type: TokenType.Punctuation, value: ch, line: startLine, column: startCol });
         continue;

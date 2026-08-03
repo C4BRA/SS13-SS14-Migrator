@@ -1,0 +1,673 @@
+"use strict";
+// Fidelity audit: measures what is LOST in the DM -> C# conversion.
+// This is a measurement-only harness: it reuses the production pipeline
+// (preprocessor -> lexer -> parser -> IR -> emitter) but counts every
+// construct that is dropped, stubbed, or mis-compiled instead of silently
+// proceeding. Usage:
+//   node dist/audit/fidelityAudit.js <repo-dir> [--json out.json] [--error-classes] [--build out-dir] [--build-max-procs N]
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.runAudit = runAudit;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const preprocessor_js_1 = require("../preprocessor.js");
+const dmLexer_js_1 = require("../parser/dmLexer.js");
+const dmParser_js_1 = require("../parser/dmParser.js");
+const diagnostics_js_1 = require("../diagnostics.js");
+const dmIRGenerator_js_1 = require("../ir/dmIRGenerator.js");
+const csharpEmitter_js_1 = require("../transpiler/csharpEmitter.js");
+const ss14Template_js_1 = require("../project/ss14Template.js");
+const dmRuntimeCS_js_1 = require("../runtimeTemplate/dmRuntimeCS.js");
+const builtinMappings_js_1 = require("../transpiler/builtinMappings.js");
+const symbolTable_js_1 = require("../ir/symbolTable.js");
+const child_process_1 = require("child_process");
+// Builtin property reads the runtime resolves via DMGetProperty: type/dir/
+// contents/overlays get DM's implicit defaults (item 62 — WS13-1), plus
+// len/x/y/z. `.loc` stays broken: it needs the containment model (item 63).
+const BROKEN_PROP_NAMES = ['loc'];
+const RUNTIME_RESOLVED_PROP_NAMES = ['len', 'x', 'y', 'z', 'type', 'dir', 'contents', 'overlays'];
+function emptyCounters() {
+    return {
+        numElif: 0, numIfNumeric: 0, numIfError: 0, numPragmaOnce: 0,
+        numDefineStringTruncation: 0, numGoto: 0, numSetModifiers: 0,
+        numSwitchBraceForm: 0, numWeightedPick: 0, numMultiVarFor: 0,
+        numForStepClause: 0, numForAsFilter: 0, numVerbDecls: 0,
+        numClientDecls: 0, numWorldDecls: 0, numParentTypeDecls: 0,
+        numGlobalVars: 0, numClassicGlobalVars: 0, numGlobAccess: 0,
+        filesWithParseErrors: new Map(),
+        numTry: 0, numLabeledBlock: 0,
+        numNew: 0, numParentCall: 0, numBinaryNull: 0, numBinaryOutput: 0,
+        numAsCast: 0, numUnaryTilde: 0, numSpawnExpr: 0, numStubbedBuiltin: 0,
+        numWorldRef: 0, numPathConstPropRead: 0, numBrokenPropRead: 0, numRuntimeResolvedProps: 0, numUnknownBuiltin: 0,
+        numBareGlobalProcCalls: 0, numTypeResolvedBareCalls: 0, numUnresolvedCalls: 0,
+        parseErrors: 0, parseWarnings: 0, totalLossSites: 0,
+        unknownBuiltins: new Map(), brokenProps: new Map(),
+        errorClasses: new Map(),
+        procCount: 0, typeCount: 0
+    };
+}
+function walk(dir, ext) {
+    const out = [];
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    }
+    catch {
+        return out;
+    }
+    for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            out.push(...walk(full, ext));
+        }
+        else if (entry.isFile() && entry.name.toLowerCase().endsWith(ext)) {
+            out.push(full);
+        }
+    }
+    return out;
+}
+// Source-level heuristics: count constructs that the parser/preprocessor
+// silently mishandle (no AST node is produced for them).
+function countSourceLevel(counters, code) {
+    const lines = code.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const t = line.trim();
+        if (t.startsWith('#elif'))
+            counters.numElif++;
+        else if (t.startsWith('#if')) {
+            const body = t.replace(/^#if/, '');
+            // Numeric/relational conditionals (defined() and bare names are fine)
+            if (/[0-9]|>=|<=|!=|==|>|<|\+|\-|\*|\/|\|\||&&/.test(body.replace(/defined\s*\([^)]*\)/g, ''))) {
+                counters.numIfNumeric++;
+            }
+        }
+        else if (t.startsWith('#error'))
+            counters.numIfError++;
+        else if (/^#pragma\s+once/.test(t))
+            counters.numPragmaOnce++;
+        else if (/^#define/.test(t)) {
+            const q = t.indexOf('"');
+            const c = t.indexOf('//');
+            if (q >= 0 && c > q)
+                counters.numDefineStringTruncation++;
+        }
+        if (/\bgoto\b/.test(t))
+            counters.numGoto++;
+        if (/^\s*set\s+\w/.test(line))
+            counters.numSetModifiers++;
+        if (/\bswitch\s*\([^)]*\)\s*\{/.test(t))
+            counters.numSwitchBraceForm++;
+        if (/\bpick\s*\([^)]*;/.test(t))
+            counters.numWeightedPick++;
+        if (/^\s*for\s*\(\s*var\/[^)]*,\s*\w+\s+in/i.test(t))
+            counters.numMultiVarFor++;
+        // (for ... step n and for ... as type in ... are emitted correctly since
+        // Plan 10 B2 — no longer loss sites, counted for visibility only.)
+        if (/\bfor\s*\([^)]*\bto\b[^)]*\bstep\b/i.test(t))
+            counters.numForStepClause++;
+        if (/\bfor\s*\([^)]*\bas\s+\w+\s+in\b/i.test(t))
+            counters.numForAsFilter++;
+        if (/^\s*\/.*\/verb\//.test(t))
+            counters.numVerbDecls++;
+        if (/^\s*\/client\b/.test(t))
+            counters.numClientDecls++;
+        if (/^\s*\/world\b/.test(t))
+            counters.numWorldDecls++;
+        if (/\bparent_type\s*=/.test(t))
+            counters.numParentTypeDecls++;
+        if (/^\s*var\/global\/|^\s*\w+\/var\/global\//.test(t))
+            counters.numClassicGlobalVars++;
+        // Code-only counters: strip comments and string literals first so
+        // `// goto x` or `"GLOB.fake"` do not register as real sites (WS13-4).
+        const codeOnly = preprocessor_js_1.DMPreprocessor.stripInlineComment(line).replace(/"[^"]*"/g, '""');
+        if (/\bGLOB\.[A-Za-z_]/.test(codeOnly))
+            counters.numGlobAccess++;
+    }
+}
+// Aggregate parse diagnostics by message template so the error backlog is a
+// prioritized list of *classes*, not 2,473 unrelated messages. Quoted token
+// texts (e.g. `Unexpected token 'foo' in expression`) are stripped to the
+// shared template `'<x>'`; file:line samples are kept for the first few hits.
+function collectErrorClasses(counters, errors, warnings, relFile) {
+    const add = (d, isWarning) => {
+        const key = d.message.replace(/'[^']*'/g, "'<x>'");
+        let entry = counters.errorClasses.get(key);
+        if (!entry) {
+            entry = { errors: 0, warnings: 0, samples: [], tokens: new Map() };
+            counters.errorClasses.set(key, entry);
+        }
+        if (isWarning)
+            entry.warnings++;
+        else
+            entry.errors++;
+        if (entry.samples.length < 3)
+            entry.samples.push(`${relFile}:${d.line}`);
+        // Histogram of the actual token values, so the class's dominant construct
+        // is identifiable (e.g. "in 1 to width" -> token "to").
+        for (const m of d.message.matchAll(/'([^']*)'/g)) {
+            const tok = m[1];
+            if (!tok)
+                continue;
+            entry.tokens.set(tok, (entry.tokens.get(tok) ?? 0) + 1);
+        }
+    };
+    for (const e of errors)
+        add(e, false);
+    for (const w of warnings)
+        add(w, true);
+}
+// AST-level counting: walk statement/expression trees and tally every
+// construct the emitter drops or mis-compiles. Bare calls are bucketed with
+// their enclosing type path; a post-pass (runAudit) resolves them against the
+// corpus-wide SymbolTable, so procs declared in other files resolve too.
+function countASTLevel(counters, typeDecls, relFile, symbols) {
+    const seen = new WeakSet();
+    let currentTypePath = null;
+    const visit = (node) => {
+        if (node === null || typeof node !== 'object')
+            return;
+        if (seen.has(node))
+            return;
+        seen.add(node);
+        if (Array.isArray(node)) {
+            for (const item of node)
+                visit(item);
+            return;
+        }
+        switch (node.type) {
+            case 'DMTypeDecl':
+                counters.typeCount++;
+                currentTypePath = node.path;
+                for (const proc of node.procs || []) {
+                    counters.procCount++;
+                    visit(proc);
+                }
+                for (const v of node.vars || [])
+                    visit(v);
+                currentTypePath = null;
+                return;
+            case 'DMProcDecl':
+                visit(node.args);
+                visit(node.statements);
+                return;
+            // --- Dropped statements (emitter default -> "// Unknown statement:") ---
+            case 'TryStatement':
+                counters.numTry++;
+                break;
+            case 'LabeledBlockStatement':
+                counters.numLabeledBlock++;
+                break;
+            // --- Expression losses ---
+            case 'new':
+                counters.numNew++;
+                for (const a of node.arguments || [])
+                    visit(a);
+                return;
+            case 'call': {
+                if (!node.target) {
+                    if (node.name === '..') {
+                        counters.numParentCall++;
+                    }
+                    else if (node.name === 'spawn') {
+                        counters.numSpawnExpr++;
+                    }
+                    else if (builtinMappings_js_1.STUBBED_BUILTINS.includes(node.name.toLowerCase())) {
+                        // Recognized stub -> Null at runtime; a loss, not "resolved"
+                        // (WS7-16). DM names are case-insensitive (item 57).
+                        counters.numStubbedBuiltin++;
+                    }
+                    else if (!builtinMappings_js_1.MAPPED_BUILTINS.includes(node.name.toLowerCase())) {
+                        const ctx = currentTypePath ?? '/';
+                        const entry = counters.unknownBuiltins.get(node.name) ?? { count: 0, samples: [], contexts: new Map() };
+                        entry.count++;
+                        entry.contexts.set(ctx, (entry.contexts.get(ctx) ?? 0) + 1);
+                        if (entry.samples.length < 3)
+                            entry.samples.push(relFile);
+                        counters.unknownBuiltins.set(node.name, entry);
+                    }
+                }
+                visit(node.target);
+                for (const a of node.arguments || [])
+                    visit(a);
+                return;
+            }
+            case 'binary': {
+                switch (node.operator) {
+                    case '&':
+                    case '|':
+                    case '^':
+                    case '~':
+                    case '>>':
+                        counters.numBinaryNull++;
+                        break;
+                    case '<<':
+                        counters.numBinaryOutput++;
+                        break;
+                    case 'as':
+                        counters.numAsCast++;
+                        break;
+                }
+                visit(node.left);
+                visit(node.right);
+                return;
+            }
+            case 'unary':
+                if (node.operator === '~')
+                    counters.numUnaryTilde++;
+                visit(node.operand);
+                return;
+            case 'variable':
+                if (node.name === 'world')
+                    counters.numWorldRef++;
+                return;
+            case 'literal':
+                if (node.literalType === 'string' && typeof node.value === 'string' && node.value.startsWith('/') && node.value.includes('.')) {
+                    // /path/constant.foo — a property read on a type-path constant
+                    // (e.g. GLOB.configuration.thing) that the lexer absorbed into a
+                    // string literal; dead data in the output.
+                    counters.numPathConstPropRead++;
+                }
+                return;
+            case 'property':
+                if (BROKEN_PROP_NAMES.includes(node.property)) {
+                    counters.numBrokenPropRead++;
+                    counters.brokenProps.set(node.property, (counters.brokenProps.get(node.property) ?? 0) + 1);
+                }
+                else if (RUNTIME_RESOLVED_PROP_NAMES.includes(node.property)) {
+                    counters.numRuntimeResolvedProps++;
+                }
+                visit(node.target);
+                return;
+        }
+        // Recurse into everything else (statements with bodies, literals, etc.)
+        for (const key of Object.keys(node)) {
+            visit(node[key]);
+        }
+    };
+    for (const decl of typeDecls) {
+        visit(decl);
+    }
+}
+function runAudit(dir, name) {
+    const files = walk(dir, '.dm');
+    const counters = emptyCounters();
+    console.log(`[${name}] Scanning ${files.length} .dm files ...`);
+    const collected = preprocessor_js_1.DMPreprocessor.collectDefinesFromFiles(files);
+    console.log(`[${name}] Collected ${collected.object.size} object-like, ${collected.function.size} function-like defines.`);
+    const symbols = new symbolTable_js_1.SymbolTable();
+    let done = 0;
+    for (const file of files) {
+        let code;
+        try {
+            code = fs.readFileSync(file, 'utf-8');
+        }
+        catch {
+            continue;
+        }
+        const relFile = path.relative(dir, file);
+        countSourceLevel(counters, code);
+        const collector = new diagnostics_js_1.DiagnosticCollector();
+        collector.file = relFile;
+        const pp = new preprocessor_js_1.DMPreprocessor(collector, collected.object, collected.function);
+        const pre = pp.process(code, file);
+        const lexer = new dmLexer_js_1.DMLexer(pre);
+        const tokens = lexer.tokenize();
+        collector.merge(lexer.diagnostics);
+        const parser = new dmParser_js_1.DMParser(tokens, collector);
+        const typeDecls = parser.parse();
+        symbols.addTypeDecls(typeDecls);
+        countASTLevel(counters, typeDecls, relFile, symbols);
+        // read globalVars afterwards so /global/var/ declarations are included.
+        counters.numGlobalVars += parser.globalVars.length;
+        counters.parseErrors += collector.errors.length;
+        counters.parseWarnings += collector.warnings.length;
+        if (collector.errors.length > 0) {
+            counters.filesWithParseErrors.set(relFile, collector.errors.length);
+        }
+        collectErrorClasses(counters, collector.errors, collector.warnings, relFile);
+        done++;
+        if (done % 500 === 0 || done === files.length) {
+            console.log(`[${name}] ${done}/${files.length} files ...`);
+        }
+    }
+    // Plan 02 — resolve bare calls against the corpus-wide symbol table. A name
+    // declared as a global proc (/proc/foo) resolves from every context via the
+    // runtime registry's /proc fallback; a type-local proc only resolves when the
+    // call site's enclosing type is within its hierarchy. Everything left in
+    // `unknownBuiltins` after this pass is genuinely unresolved (silent Null at
+    // runtime) — the actionable backlog.
+    for (const [name, info] of counters.unknownBuiltins) {
+        if (symbols.hasGlobalProc(name)) {
+            counters.numBareGlobalProcCalls += info.count;
+            counters.unknownBuiltins.delete(name);
+            continue;
+        }
+        let resolved = 0;
+        let unresolved = 0;
+        for (const [ctx, cnt] of info.contexts) {
+            if (symbols.resolveBareProc(ctx === '/' ? null : ctx, name))
+                resolved += cnt;
+            else
+                unresolved += cnt;
+        }
+        counters.numTypeResolvedBareCalls += resolved;
+        if (unresolved === 0) {
+            counters.unknownBuiltins.delete(name);
+        }
+        else {
+            info.count = unresolved;
+        }
+    }
+    counters.numUnresolvedCalls = [...counters.unknownBuiltins.values()].reduce((a, v) => a + v.count, 0);
+    counters.numUnknownBuiltin = counters.numUnresolvedCalls;
+    // Plan 12.1 (item 55): only genuine losses are counted. `..()`, unary `~`,
+    // try/catch, labeled blocks and parent_type are all HANDLED by the pipeline
+    // (CallParentProc / BitwiseNot / emitted try-catch / kept label bodies /
+    // parentPath from parent_type) — they stay printed for visibility but no
+    // longer inflate totalLossSites (previous overcount ≈ 24k).
+    counters.totalLossSites =
+        counters.numGoto + counters.numSetModifiers + counters.numSwitchBraceForm +
+            counters.numWeightedPick + counters.numMultiVarFor +
+            counters.numVerbDecls + counters.numClientDecls +
+            counters.numWorldDecls + counters.numClassicGlobalVars +
+            counters.numNew + counters.numAsCast +
+            counters.numSpawnExpr + counters.numWorldRef +
+            counters.numPathConstPropRead + counters.numBrokenPropRead +
+            counters.numStubbedBuiltin +
+            counters.numUnknownBuiltin;
+    return { name, dir, files: files.length, counters };
+}
+function printResult(r) {
+    const c = r.counters;
+    const line = (label, value, note = '') => {
+        console.log(`  ${label.padEnd(34)} ${String(value).padStart(8)}  ${note}`);
+    };
+    console.log(`\n=== FIDELITY AUDIT: ${r.name} (${r.files} files) ===`);
+    console.log(`Parse diagnostics: ${c.parseErrors} errors, ${c.parseWarnings} warnings`);
+    console.log(`  Types / procs parsed: ${c.typeCount} types, ${c.procCount} procs`);
+    line('/global/var/ decls', c.numGlobalVars, 'emitted into GlobalVars registry');
+    line('var/global/ (classic)', c.numClassicGlobalVars, 'misparsed onto /datum, dropped (WS13-2)');
+    line('GLOB.x accessor reads', c.numGlobAccess, 'resolved via GlobalVars.Get');
+    console.log('-- Preprocessor loss --');
+    line('#elif', c.numElif, 'handled since P10 B6');
+    line('#if numeric/relational', c.numIfNumeric, 'handled since P10 B6');
+    line('#error', c.numIfError, 'handled since P10 B6');
+    line('#pragma once', c.numPragmaOnce, 'include-once default since P10 B6');
+    line('#define with // in string', c.numDefineStringTruncation, 'handled since P10 B6');
+    console.log('-- Parser-level loss --');
+    line('goto', c.numGoto, 'silently misparsed');
+    line('set modifiers (verbs)', c.numSetModifiers, 'dropped');
+    line('switch { } brace form', c.numSwitchBraceForm, 'misparsed');
+    line('weighted pick(a;"x")', c.numWeightedPick, 'weights dropped');
+    line('multi-var for(a, b in ...)', c.numMultiVarFor);
+    line('for ... step n', c.numForStepClause, 'handled since P10 B2');
+    line('for ... as type in ...', c.numForAsFilter, 'handled since P10 B2');
+    line('verb declarations', c.numVerbDecls, 'folded into procs');
+    line('client declarations', c.numClientDecls);
+    line('world declarations', c.numWorldDecls);
+    line('parent_type decls', c.numParentTypeDecls, 'handled since P11 B13 (IR parentPath)');
+    console.log('-- Emitter loss (statement drops) --');
+    line('try/catch', c.numTry, 'handled since P11 B6 (emitted)');
+    line('labeled blocks', c.numLabeledBlock, 'handled since P11 B6 (body kept)');
+    console.log('-- Emitter loss (expression) --');
+    line('new /type(...)', c.numNew, 'fresh datum; New() args + atom loc resolved (item 63); SS14 entity integration pending');
+    line('..() parent calls', c.numParentCall, 'handled since P11 B6 (CallParentProc)');
+    line('bitwise & | ^ ~ >>', c.numBinaryNull, 'handled since P11 B6');
+    line('<< (shift/output)', c.numBinaryOutput, 'handled since P11 B6');
+    line('as casts', c.numAsCast, '-> DMValue.Null');
+    line('unary ~', c.numUnaryTilde, 'handled since P11 B6 (BitwiseNot)');
+    line('spawn() as expression', c.numSpawnExpr, 'empty body');
+    line('world references', c.numWorldRef, '-> Null');
+    line('path-const reads /path.x', c.numPathConstPropRead, 'GLOB.x style, dead literal');
+    line('builtin prop reads', c.numBrokenPropRead, 'loc/type/dir/overlays/contents -> Null');
+    line('runtime-resolved prop reads', c.numRuntimeResolvedProps, 'len/x/y/z handled by the runtime (WS13-1)');
+    line('stubbed builtin calls', c.numStubbedBuiltin, '-> Null at runtime (WS7-16)');
+    line('unknown builtin calls', c.numUnknownBuiltin, '-> CallProc -> Null');
+    line('unresolved bare calls', c.numUnresolvedCalls, 'same number as above — not double-counted');
+    line('bare calls -> /proc globals', c.numBareGlobalProcCalls, 'resolved via /proc registry (verified)');
+    line('bare calls -> type procs', c.numTypeResolvedBareCalls, 'resolved via calling type hierarchy');
+    console.log(`TOTAL LOSS SITES (approx): ${c.totalLossSites}`);
+    if (c.unknownBuiltins.size > 0) {
+        const top = [...c.unknownBuiltins.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 25);
+        console.log('\nTop unresolved bare calls (-> Null at runtime):');
+        for (const [name, info] of top) {
+            console.log(`  ${String(info.count).padStart(7)}  ${name}   (e.g. ${info.samples[0]})`);
+        }
+    }
+    if (c.brokenProps.size > 0) {
+        const top = [...c.brokenProps.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+        console.log('\nBroken builtin property reads:');
+        for (const [name, count] of top) {
+            console.log(`  ${String(count).padStart(7)}  .${name}`);
+        }
+    }
+}
+// Prioritized parse-error backlog: top classes by total diagnostics, each with
+// sample locations for the first few hits. `onlyErrors` keeps warnings out of
+// the ranking (they are low-priority noise like ignored #pragma).
+function printErrorClasses(r, topN = 25) {
+    const classes = [...r.counters.errorClasses.entries()].sort((a, b) => {
+        const ta = a[1].errors + a[1].warnings;
+        const tb = b[1].errors + b[1].warnings;
+        return tb - ta;
+    });
+    const total = classes.reduce((a, [, v]) => a + v.errors + v.warnings, 0);
+    console.log(`\nTop ${Math.min(topN, classes.length)} parse diagnostic classes (${total} total):`);
+    if (classes.length === 0) {
+        console.log('  (no parse diagnostics)');
+        return;
+    }
+    let rank = 0;
+    for (const [cls, v] of classes) {
+        if (rank++ >= topN)
+            break;
+        const count = v.errors + v.warnings;
+        const pct = (100 * count / Math.max(1, total)).toFixed(1);
+        const warn = v.warnings > 0 ? ` (${v.warnings} warnings)` : '';
+        console.log(`  ${String(count).padStart(6)} ${String(pct).padStart(5)}%  ${cls}${warn}`);
+        for (const s of v.samples)
+            console.log(`           e.g. ${s}`);
+        if (v.tokens.size > 0) {
+            const topTokens = [...v.tokens.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+            const tokensStr = topTokens.map(([t, n]) => `'${t}' x${n}`).join(', ');
+            console.log(`           tokens: ${tokensStr}`);
+        }
+    }
+}
+async function runBuildProof(r, outDir, maxProcs) {
+    console.log(`\n[${r.name}] Building representative proc sample (max ${maxProcs} procs) ...`);
+    if (fs.existsSync(outDir))
+        fs.rmSync(outDir, { recursive: true, force: true });
+    fs.mkdirSync(outDir, { recursive: true });
+    const files = walk(r.dir, '.dm');
+    const collected = preprocessor_js_1.DMPreprocessor.collectDefinesFromFiles(files);
+    const allNodes = [];
+    const allGlobals = [];
+    const collector = new diagnostics_js_1.DiagnosticCollector();
+    let count = 0;
+    for (const file of files) {
+        let code;
+        try {
+            code = fs.readFileSync(file, 'utf-8');
+        }
+        catch {
+            continue;
+        }
+        const pp = new preprocessor_js_1.DMPreprocessor(new diagnostics_js_1.DiagnosticCollector(), collected.object, collected.function);
+        const pre = pp.process(code, file);
+        const parser = new dmParser_js_1.DMParser(new dmLexer_js_1.DMLexer(pre).tokenize(), collector);
+        allNodes.push(...parser.parse());
+        allGlobals.push(...parser.globalVars);
+        count++;
+    }
+    console.log(`[${r.name}] Parsed ${count} files for build sample.`);
+    const irGen = new dmIRGenerator_js_1.DMIRGenerator();
+    const irMap = irGen.generateIR(allNodes);
+    // Sample up to maxProcs procs evenly across types
+    const sampled = new Map();
+    let totalProcs = 0;
+    for (const [p, t] of irMap.entries())
+        totalProcs += t.procs.size;
+    const perType = Math.max(1, Math.ceil(maxProcs / Math.max(1, irMap.size)));
+    for (const [p, t] of irMap.entries()) {
+        const procs = new Map();
+        let n = 0;
+        for (const [name, proc] of t.procs.entries()) {
+            procs.set(name, proc);
+            if (++n >= perType)
+                break;
+        }
+        sampled.set(p, procs);
+    }
+    const sampleIr = new Map();
+    for (const [p, t] of irMap.entries()) {
+        sampleIr.set(p, { ...t, procs: sampled.get(p) });
+    }
+    const sampledCount = [...sampleIr.values()].reduce((a, t) => a + t.procs.size, 0);
+    console.log(`[${r.name}] Emitting ${sampledCount} sampled procs from ${irMap.size} types (of ${totalProcs} total).`);
+    const emitter = new csharpEmitter_js_1.CSharpEmitter();
+    const serverDMDir = path.join(outDir, 'Content.Server', 'DM');
+    fs.mkdirSync(serverDMDir, { recursive: true });
+    fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(sampleIr, allGlobals), 'utf-8');
+    fs.writeFileSync(path.join(serverDMDir, 'ConvertedDMSystem.cs'), emitter.generateSystemCS(), 'utf-8');
+    const template = new ss14Template_js_1.SS14Template();
+    template.generateSS14Solution(outDir);
+    for (const f of dmRuntimeCS_js_1.DMRuntimeCS.getRuntimeCSFiles()) {
+        const target = path.join(outDir, 'SS13.DM.Runtime', f.filename);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, f.content, 'utf-8');
+    }
+    console.log(`[${r.name}] Running dotnet build ...`);
+    const engineDir = process.env.SS14_ENGINE_DIR || path.join(outDir, '..', 'RobustToolbox');
+    // Live-streamed build: buffered execSync output makes a healthy 12-15 min
+    // build look identical to a hang. Spawn with piped output that echoes as it
+    // arrives, and SIGKILL (single-process MSBuild via -m:1) if it exceeds the
+    // 30-minute budget so a genuinely stuck build cannot block forever.
+    // Array-form spawn (no shell) so a hostile SS14_ENGINE_DIR cannot inject
+    // shell commands (WS12-6).
+    const child = (0, child_process_1.spawn)('dotnet', ['build', 'Content.sln', '--nologo', '-v', 'q', '-m:1', '-nodeReuse:false', '--disable-build-servers', `-p:EngineDir=${engineDir}`], { cwd: outDir, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', (d) => { process.stdout.write(d); output += d.toString(); });
+    child.stderr.on('data', (d) => { process.stderr.write(d); output += d.toString(); });
+    const timer = setTimeout(() => {
+        console.log(`[${r.name}] dotnet build exceeded ${30} min — killing (SIGKILL; this is a timeout, NOT a compile failure)`);
+        child.kill('SIGKILL');
+    }, 30 * 60 * 1000);
+    const buildFailed = await new Promise((resolve) => {
+        child.on('close', (code) => {
+            clearTimeout(timer);
+            resolve(code !== 0);
+        });
+    });
+    if (!buildFailed) {
+        console.log(`[${r.name}] BUILD SUCCESS`);
+        return;
+    }
+    const errLines = output.split('\n').filter((l) => l.includes('error CS'));
+    const byCode = new Map();
+    for (const l of errLines) {
+        const m = l.match(/error (CS\d+)/);
+        if (m)
+            byCode.set(m[1], (byCode.get(m[1]) ?? 0) + 1);
+    }
+    const sorted = [...byCode.entries()].sort((a, b) => b[1] - a[1]);
+    console.log(`[${r.name}] BUILD FAILED with ${errLines.length} C# errors`);
+    for (const [code, n] of sorted.slice(0, 15)) {
+        console.log(`  ${String(n).padStart(7)}  ${code}`);
+    }
+    const samples = errLines.slice(0, 5).map((l) => l.trim());
+    for (const s of samples)
+        console.log(`    e.g. ${s}`);
+}
+async function main() {
+    const args = process.argv.slice(2);
+    const dir = args[0];
+    if (!dir) {
+        console.error('Usage: node dist/audit/fidelityAudit.js <repo-dir> [--json out.json] [--build out-dir] [--build-max-procs N]');
+        process.exit(1);
+    }
+    let jsonOut;
+    let buildDir;
+    let showErrorClasses = false;
+    let maxProcs = 1500;
+    for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--json')
+            jsonOut = args[++i];
+        else if (args[i] === '--error-classes')
+            showErrorClasses = true;
+        else if (args[i] === '--build')
+            buildDir = args[++i];
+        else if (args[i] === '--build-max-procs')
+            maxProcs = parseInt(args[++i], 10) || 1500;
+    }
+    if (!fs.existsSync(dir)) {
+        console.error(`Directory not found: ${dir}`);
+        process.exit(1);
+    }
+    const name = path.basename(dir);
+    const result = runAudit(dir, name);
+    printResult(result);
+    if (showErrorClasses)
+        printErrorClasses(result);
+    if (jsonOut) {
+        const mapify = (v) => {
+            if (v instanceof Map)
+                return Object.fromEntries([...v.entries()].map(([k, val]) => [k, mapify(val)]));
+            if (Array.isArray(v))
+                return v.map(mapify);
+            if (v && typeof v === 'object') {
+                const o = {};
+                for (const [k, val] of Object.entries(v))
+                    o[k] = mapify(val);
+                return o;
+            }
+            return v;
+        };
+        const serializable = mapify({ ...result, counters: { ...result.counters } });
+        fs.writeFileSync(jsonOut, JSON.stringify(serializable, null, 2));
+        console.log(`\nJSON written to ${jsonOut}`);
+    }
+    if (buildDir) {
+        await runBuildProof(result, buildDir, maxProcs);
+    }
+}
+const isDirectRun = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('fidelityAudit.js');
+if (isDirectRun) {
+    main().catch(err => {
+        console.error('Audit error:', err);
+        process.exit(1);
+    });
+}

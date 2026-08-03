@@ -1,18 +1,9 @@
-# Dependencies
-node_modules/
-
-# Build output
-dist/
-*.tsbuildinfo
-
-# Temp test/artifact files
-temp_test_*
-temp_gui_input_*
-*.log
-
-# macOS
-.DS_Store
-
-# IDE
-.idea/
-.vscode/
+```
+# Image files
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+*.webm
+```
