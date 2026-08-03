@@ -61,6 +61,9 @@ export class SymbolTable {
 
   /** Merge a file's parsed type declarations into the table. */
   addTypeDecls(typeDecls: DMTypeDeclNode[]): void {
+    // The LRU resolution caches below would serve stale results if the
+    // table grew after lookups — invalidate on every mutation.
+    this.clearCaches();
     for (const decl of typeDecls) {
       const path = normalizeTypePath(decl.path);
       let sym = this.types.get(path);
