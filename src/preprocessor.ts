@@ -472,6 +472,25 @@ export class DMPreprocessor {
 
   // True when a #define body is complete: strings/icons balanced, and parens/
   // brackets/braces not left open. Used to absorb multi-line define bodies.
+  // Even quote counts (ignoring escapes) — a string-interpolation region the
+  // lexer scans must stay quote-balanced (item 56 guard).
+  private static isQuoteBalanced(s: string): boolean {
+    let dq = 0;
+    let sq = 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === '\\') {
+        i++;
+        continue;
+      }
+      if (c === '"') dq++;
+      else if (c === "'") sq++;
+    }
+    return dq % 2 === 0 && sq % 2 === 0;
+  }
+
+  // True when a #define body is complete: strings/icons balanced, and parens/
+  // brackets/braces not left open. Used to absorb multi-line define bodies.
   private static isBalancedDefineBody(body: string): boolean {
     let inString = false;
     let inIcon = false;
@@ -599,13 +618,22 @@ export class DMPreprocessor {
         continue;
       }
       if (inString && ch === '[') {
+        // DM doubles brackets to escape them in text: [[ is a literal [,
+        // never the start of interpolation.
+        if (line[i + 1] === '[') {
+          result += '[[';
+          i += 2;
+          continue;
+        }
         // String interpolation [expr]: the content is code — macro names
         // inside it must expand too (BYOND expands macros anywhere in code).
         // Scan to the matching ']' (bracket-depth counted, quotes tracked so
-        // a "]" inside a nested string does not close the region).
+        // a "]" inside a nested string does not close the region). DM's
+        // literal-bracket escapes (\[ ]\] [[) are skipped without depth change.
         let j = i + 1;
         let depth = 1;
         let nested = false;
+        let nestedQuote = '';
         while (j < line.length && depth > 0) {
           const c = line[j];
           if (c === '\\') {
@@ -613,16 +641,38 @@ export class DMPreprocessor {
             continue;
           }
           if (!nested) {
-            if (c === '"' || c === "'") nested = true;
+            if (c === '"' || c === "'") { nested = true; nestedQuote = c; }
+            else if (c === '[' && line[j + 1] === '[') { j += 2; continue; }
             else if (c === '[') depth++;
             else if (c === ']') depth--;
-          } else if (c === '"' || c === "'") {
+          } else if (c === nestedQuote) {
             nested = false;
+          } else if (nested && c === '[') {
+            // A nested string may itself contain interpolation
+            // ("text [more [expr] text]" from macro substitution) — skip to
+            // its matching ']' so it cannot corrupt the outer tracking.
+            let sub = 1;
+            let k = j + 1;
+            while (k < line.length && sub > 0) {
+              if (line[k] === '[') sub++;
+              else if (line[k] === ']') sub--;
+              k++;
+            }
+            j = k;
+            continue;
           }
           j++;
         }
         const inner = line.slice(i + 1, j - 1);
-        result += '[' + this.expandMacros(inner, depth + 1, cmt) + ']';
+        const expanded = this.expandMacros(inner, depth + 1, cmt);
+        // The expansion is re-scanned by the lexer's quote-aware walk and
+        // re-parsed as an expression. Expansions that introduce unbalanced
+        // quotes (e.g. a macro whose body is HTML like span_notice) would
+        // corrupt the enclosing string — keep the original text instead
+        // (item 56: the unexpanded call resolves to Null at runtime, honest
+        // loss, instead of breaking the whole statement).
+        const expandedOk = DMPreprocessor.isQuoteBalanced(expanded) && DMPreprocessor.isQuoteBalanced(inner);
+        result += expandedOk ? '[' + expanded + ']' : '[' + inner + ']';
         i = j;
         continue;
       }
@@ -851,29 +901,61 @@ export class DMPreprocessor {
         continue;
       }
       if (inString && ch === '[') {
+        // DM doubles brackets to escape them in text: [[ is a literal [,
+        // never the start of interpolation.
+        if (body[i + 1] === '[') {
+          result += '[[';
+          i += 2;
+          continue;
+        }
         // String interpolation [expr]: parameters inside it are code and must
         // be substituted (e.g. span macros with "[text]" bodies).
         let j = i + 1;
         let depth = 1;
         let nested = false;
+        let nestedQuote = '';
         while (j < body.length && depth > 0) {
           const c = body[j];
           if (c === '\\') {
+            // Escaped char inside the interpolation (\" \' \\ \[ \] ...):
+            // skip both — an escaped bracket does not change depth.
             j += 2;
             continue;
           }
           if (!nested) {
-            if (c === '"' || c === "'") nested = true;
+            if (c === '"' || c === "'") { nested = true; nestedQuote = c; }
+            else if (c === '[' && body[j + 1] === '[') { j += 2; continue; }
             else if (c === '[') depth++;
             else if (c === ']') depth--;
-          } else if (c === '"' || c === "'") {
+          } else if (c === nestedQuote) {
             nested = false;
+          } else if (nested && c === '[') {
+            // A nested string may itself contain interpolation
+            // ("text [more [expr] text]" from macro substitution) — skip to
+            // its matching ']' so it cannot corrupt the outer tracking.
+            let sub = 1;
+            let k = j + 1;
+            while (k < body.length && sub > 0) {
+              if (body[k] === '[') sub++;
+              else if (body[k] === ']') sub--;
+              k++;
+            }
+            j = k;
+            continue;
           }
           j++;
         }
         const inner = body.slice(i + 1, j - 1);
         result += '[' + this.substituteParams(inner, subst) + ']';
         i = j;
+        continue;
+      }
+      if (inString && ch === '\\') {
+        // Escaped char inside a string: the next char is literal, never a
+        // bracket/quote that starts or ends structure (\[ \[[ ]\] \" \\).
+        const esc = body[i + 1] ?? '';
+        result += ch + esc;
+        i += 2;
         continue;
       }
       if (!inString && !inIcon && (/[A-Za-z_]/.test(ch) || (ch === '#' && (body[i + 1] === '#' || /[A-Za-z_]/.test(body[i + 1] || ''))))) {
@@ -1265,6 +1347,10 @@ export class DMPreprocessor {
       while (pos < s.length && /[A-Za-z0-9_]/.test(s[pos])) pos++;
       const name = s.slice(start, pos);
       if (name.length === 0) return 0;
+      // BYOND built-in defines (DM_VERSION etc.) — real compilers carry
+      // these, so #if (DM_VERSION < 510) must not fire with 0 (item 56).
+      const builtin = { DM_VERSION: 516, DM_BUILD: 1661, BYOND_MAJOR: 516 }[name];
+      if (builtin !== undefined) return builtin;
       const def = this.defines.get(name);
       if (def !== undefined) return this.evalIfValue(def, depth + 1);
       return 0;

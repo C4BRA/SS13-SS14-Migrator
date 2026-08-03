@@ -349,6 +349,21 @@ export class DMParser {
         continue;
       }
 
+      // Structural Dedent leftover from an indented block whose body was
+      // consumed inline (e.g. a verb with a set header) — skip (item 56).
+      if (this.isType(TokenType.Dedent)) {
+        this.advance();
+        continue;
+      }
+
+      // A bare string literal at top level (e.g. tgstation's
+      // __interop_version.dm, which is `"5.11.0"` alone) is a CI interop
+      // marker — skip silently (item 56).
+      if (this.isType(TokenType.StringLiteral) || this.isType(TokenType.Number)) {
+        this.advance();
+        continue;
+      }
+
       // Top-level token we don't understand: report and recover
       const skip = this.advance();
       this.diagnostics.error(`Unexpected top-level token '${skip.value}'`, skip.line, skip.column);
@@ -418,8 +433,10 @@ export class DMParser {
         continue;
       }
 
-      // Var assignment override (e.g. name = "Sword", density = 1)
-      if (token.type === TokenType.Identifier) {
+      // Var assignment override (e.g. name = "Sword", density = 1). DM
+      // keywords like step/to/as/in are legal var names (item 56).
+      if (token.type === TokenType.Identifier ||
+          (token.type === TokenType.Keyword && !['var', 'proc', 'verb', 'const', 'global', 'tmp', 'new', 'del', 'qdel', 'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'spawn', 'sleep', 'try', 'catch', 'null', 'TRUE', 'FALSE', 'usr', 'src', 'args', 'prob', 'locate', 'istype', 'ispath'].includes(token.value))) {
         // Bare relative child type on its own line (WS2-3): `/obj/item` +
         // indented `sword` + indented members declares `/obj/item/sword`.
         if (this.peekNext()?.type === TokenType.Newline && this.tokens[this.pos + 2]?.type === TokenType.Indent) {
@@ -628,10 +645,24 @@ export class DMParser {
     let i = 0;
     while (i < value.length) {
       const ch = value[i];
+      // DM doubles brackets to escape them in text: [[ is a literal [.
+      if (ch === '[' && value[i + 1] === '[') {
+        current += '[';
+        i += 2;
+        continue;
+      }
       if (ch === '[') {
         let depth = 1;
         let j = i + 1;
         while (j < value.length && depth > 0) {
+          if (value[j] === '\\') {
+            j += 2; // \[ \] \" \\ — escaped, never structural
+            continue;
+          }
+          if (value[j] === '[' && value[j + 1] === '[') {
+            j += 2; // [[ literal bracket — no depth change
+            continue;
+          }
           if (value[j] === '[') depth++;
           else if (value[j] === ']') depth--;
           j++;
@@ -660,9 +691,25 @@ export class DMParser {
         this.advance();
       }
       let varName = '';
-      if (this.isType(TokenType.TypePath)) {
-        // var/type/name or var /type/name: split into type and last segment
-        const pathVal = this.advance().value;
+      // var/static/list/name — walk /-separated segments; keywords (static,
+      // global, tmp) are valid type segments (item 56).
+      const segments: string[] = [];
+      while (true) {
+        if (this.isType(TokenType.TypePath)) {
+          segments.push(this.advance().value.replace(/^\//, ''));
+        } else if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+          segments.push(this.advance().value);
+        } else {
+          break;
+        }
+        if (this.isType(TokenType.Operator) && this.peek().value === '/') {
+          this.advance();
+          continue;
+        }
+        break;
+      }
+      if (segments.length > 0) {
+        const pathVal = segments.join('/');
         const lastSlash = pathVal.lastIndexOf('/');
         if (lastSlash > 0) {
           varType = pathVal.substring(0, lastSlash);
@@ -670,8 +717,6 @@ export class DMParser {
         } else {
           varName = pathVal.replace(/^\//, '');
         }
-      } else if (this.isType(TokenType.Identifier)) {
-        varName = this.advance().value;
       }
       // Block var declaration: `var` (or a trailing pseudo-var like
       // `var/SpacemanDMM_private` from VAR_PRIVATE) on its own line followed
@@ -725,7 +770,9 @@ export class DMParser {
       }
       let initialVal: any = null;
       // Initialized length: var/list/screen_groups[6] — drop the length expr.
-      if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
+      // Empty brackets: var/list/x[] — the list-declaration suffix.
+      // Multi-dim: var/list/clients_by_zlevel[][] — repeated dims (item 56).
+      while (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
         this.advance();
         if (!(this.isType(TokenType.Punctuation) && this.peek().value === ']')) {
           this.parseExpression();
@@ -820,8 +867,23 @@ export class DMParser {
         if (this.matchOperator('=')) {
           this.parseExpression();
         }
+        // Verb-set clauses like `set src in view(1)` / `set popup_menu = TRUE`:
+        // consume the `in <expr>` tail so it never leaks as a phantom token
+        // (item 56 — `Unexpected token 'in'` on macro-expanded verbs).
+        if (this.peek().value === 'in') {
+          this.advance();
+          this.parseExpression();
+        }
         if (this.isType(TokenType.Punctuation) && this.peek().value === ';') {
           this.advance();
+        }
+        // A set header on the proc's declaration line (verb/foo() set hidden
+        // = TRUE) is verb config — the real body continues on the next line
+        // (item 56).
+        if (inline && this.isType(TokenType.Newline)) {
+          this.advance();
+          while (this.isType(TokenType.Newline)) this.advance();
+          if (this.isType(TokenType.Indent)) this.advance();
         }
         continue;
       }
@@ -905,11 +967,30 @@ export class DMParser {
 
       const token = this.peek();
 
+      // `{ ... }` at statement level is a statement BLOCK, not a list
+      // literal (macro-expanded do/while and one-line chains — item 56).
+      if (this.isType(TokenType.Punctuation) && token.value === '{') {
+        this.advance();
+        statements.push(...this.parseProcBody(true));
+        this.matchPunctuation('}');
+        continue;
+      }
+
+      // A stray `else` at statement level (macro-expanded single-line chains
+      // where the else's if has already completed) — skip with a warning
+      // instead of an expression error (item 56).
+      if (this.isType(TokenType.Keyword) && token.value === 'else') {
+        this.advance();
+        this.diagnostics.warning('else without a matching if', token.line, token.column);
+        continue;
+      }
+
       if (token.value === 'return') {
         this.advance();
         let returnValue: ExpressionNode | undefined;
         const nextVal = this.peek().value;
-        if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && nextVal !== ';' && nextVal !== '}') {
+        if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && nextVal !== ';' && nextVal !== '}' &&
+          !(this.isType(TokenType.Keyword) && ['var', 'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'spawn', 'sleep', 'try', 'catch', 'continue', 'break', 'set'].includes(nextVal))) {
           returnValue = this.parseExpression();
         }
         statements.push({ type: 'ReturnStatement', returnValue });
@@ -1003,7 +1084,8 @@ export class DMParser {
         }
         // Initialized length: var/list/x[max(1, 0)] — drop the length expr.
         // Empty brackets: var/list/x[] — the list-declaration suffix.
-        if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
+        // Multi-dim: var/grid[a][b] — repeated dims (item 56).
+        while (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
           this.advance();
           if (!(this.isType(TokenType.Punctuation) && this.peek().value === ']')) {
             this.parseExpression();
@@ -1060,6 +1142,15 @@ export class DMParser {
         }
       }
 
+      // A TypePath naming a declaration (`/obj/x/proc/y`, `/obj/x/verb/y`,
+      // anything containing /var/) at statement level is the start of a new
+      // top-level declaration — macro-expanded single-line chains continue
+      // with the next proc on the same line (item 56).
+      if (this.isType(TokenType.TypePath) &&
+          (/\/var\//.test(token.value) || /^(.+)\/(proc|verb)\/([^\/]+)$/.test(token.value))) {
+        break;
+      }
+
       // Generic expression statement
       const expr = this.parseExpression();
       statements.push({ type: 'ExpressionStatement', expression: expr });
@@ -1101,6 +1192,12 @@ export class DMParser {
     if (this.isType(TokenType.Indent)) {
       return parseBlock();
     }
+    // Empty-statement body: for(...); / while(x); — the ';' is a no-op
+    // (item 56).
+    if (this.isType(TokenType.Punctuation) && this.peek().value === ';') {
+      this.advance();
+      return [];
+    }
     return [this.parseSingleStatement()];
   }
 
@@ -1129,7 +1226,10 @@ export class DMParser {
     const kind = this.advance().value; // sleep / spawn
     let timeExpr: ExpressionNode | undefined;
     if (this.matchPunctuation('(')) {
-      timeExpr = this.parseExpression();
+      // Empty args: spawn() — the body runs immediately (item 56).
+      if (!(this.isType(TokenType.Punctuation) && this.peek().value === ')')) {
+        timeExpr = this.parseExpression();
+      }
       this.matchPunctuation(')');
     }
     let body: DMStatementNode[] = [];
@@ -1237,8 +1337,13 @@ export class DMParser {
       }
       if (this.matchPunctuation(',') || this.matchPunctuation(';')) {
         const condition = this.parseExpression();
+        // 2-clause form: for(var/i = init, cond) — the increment is optional
+        // (item 56).
         this.matchPunctuation(',') || this.matchPunctuation(';');
-        const increment = this.parseExpression();
+        let increment: ExpressionNode | undefined;
+        if (!(this.isType(TokenType.Punctuation) && this.peek().value === ')')) {
+          increment = this.parseExpression();
+        }
         this.matchPunctuation(')');
         const loopBody = this.parseLoopBody();
         return { type: 'CForStatement', loopVariable: loopVar, init, condition, increment, loopBody };
@@ -1280,7 +1385,11 @@ export class DMParser {
       }
       const condition = this.parseExpression();
       this.matchPunctuation(',') || this.matchPunctuation(';');
-      const increment = this.parseExpression();
+      // 2-clause form: for(expr, cond) — the increment is optional (item 56).
+      let increment: ExpressionNode | undefined;
+      if (!(this.isType(TokenType.Punctuation) && this.peek().value === ')')) {
+        increment = this.parseExpression();
+      }
       this.matchPunctuation(')');
       const loopBody = this.parseLoopBody();
       return { type: 'CForStatement', loopVariable: loopVar, init, condition, increment, loopBody };
@@ -1426,13 +1535,24 @@ export class DMParser {
       if (this.matchOperator('=')) {
         varInit = this.parseExpression();
       }
+      // Multi-dimensional var: var/grid[a][b] — consume the index dims
+      // (item 56). The dims are kept as an array of expressions.
+      const dims: ExpressionNode[] = [];
+      while (this.matchPunctuation('[')) {
+        dims.push(this.parseExpression());
+        this.matchPunctuation(']');
+      }
+      if (dims.length > 0) {
+        return { type: 'VarDeclStatement', varName, varInit, dims } as any;
+      }
       return { type: 'VarDeclStatement', varName, varInit };
     }
     if (token.value === 'return') {
       this.advance();
       let returnValue: ExpressionNode | undefined;
       const nextVal = this.peek().value;
-      if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && nextVal !== ';' && nextVal !== '}') {
+      if (!this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent) && nextVal !== ';' && nextVal !== '}' &&
+          !(this.isType(TokenType.Keyword) && ['var', 'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'spawn', 'sleep', 'try', 'catch', 'continue', 'break', 'set'].includes(nextVal))) {
         returnValue = this.parseExpression();
       }
       return { type: 'ReturnStatement', returnValue };
@@ -1514,22 +1634,25 @@ export class DMParser {
         break;
       }
       if (stopAtColon && token.value === ':') {
-        // Inside a ternary true-branch, a `:` is the ternary colon — unless it
-        // starts a dereference off a plain identifier AND the access target is
-        // itself followed by another `:` (a ? b:c : d). The deref target
-        // followed by an expression ender means the `:` was the ternary colon
-        // (a ? b : c). A plain identifier base is required so `null`, calls and
-        // chained derefs always fall back to the ternary colon.
+        // Inside a ternary true-branch a ':' is the ternary colon, except when
+        // it starts a dynamic access chain: a ? b:c?:d : e (null-conditional
+        // after the deref) or a ? b:c : (e) (parenthesized false-branch). A
+        // plain deref (b:c : d) is token-identical to a nested-ternary
+        // true-branch (a ? b ? c : d : e), which wins in corpus code (item 56).
         const target = this.peekNext();
         const after = this.tokens[this.pos + 2];
+        const afterAfter = this.tokens[this.pos + 3];
         const derefTarget =
           target &&
           (target.type === TokenType.Identifier ||
             (target.type === TokenType.Keyword && target.value === 'step'));
         if (!derefTarget || left.type !== 'variable') break;
-        // b:c : d — fall through so the `:` is consumed as dynamic access
-        // below; b : c — the `:` is the ternary colon, so break here.
-        if (!(after && after.value === ':')) break;
+        // b:c?:d or b:c : (e) — the ':' starts a dynamic access chain; fall
+        // through to the ':' handler below (the token must be consumed). A
+        // '? ' with a non-':' after (a ? b : c ? c : d) is the ternary colon.
+        const nullCond = after && after.value === '?' && afterAfter && afterAfter.value === ':';
+        const parenFalse = after && after.value === ':' && afterAfter && afterAfter.value === '(';
+        if (!(nullCond || parenFalse)) break;
       }
 
       const op = token.value;
@@ -1540,6 +1663,12 @@ export class DMParser {
       // segment as a variable: a/b/c -> (a / b) / c. Real type constants are
       // never used in divisor position without a separating operator.
       if (token.type === TokenType.TypePath) {
+        // A path naming a declaration (`/obj/x/proc/y`, `/verb/`, or any
+        // /var/) is the NEXT top-level declaration on a macro-expanded line,
+        // not a divisor — leave it for the statement/top-level loops (item 56).
+        if (/\/var\//.test(token.value) || /^(.+)\/(proc|verb)\/([^\/]+)$/.test(token.value)) {
+          break;
+        }
         this.advance();
         const segments = token.value.split('/').filter((s) => s.length > 0);
         for (const segment of segments) {
@@ -1553,35 +1682,20 @@ export class DMParser {
         continue;
       }
 
-      // Postfix increment/decrement: x++ / x--
-      if ((op === '++' || op === '--') && (left.type === 'variable' || left.type === 'property' || left.type === 'index')) {
+      // Postfix increment/decrement: x++ / x-- (also after a unary:
+      // !x++ is !(x++) — item 56)
+      if ((op === '++' || op === '--') && (left.type === 'unary' && (left.operand.type === 'variable' || left.operand.type === 'property' || left.operand.type === 'index'))) {
+        // Re-run the increment on the unary's operand: !x++ == !(x++)
         this.advance();
-        const one: ExpressionNode = { type: 'literal', value: 1, literalType: 'number' };
-        const baseOp = op === '++' ? '+' : '-';
-        if (left.type === 'variable') {
-          left = {
-            type: 'assignment',
-            target: left.name,
-            value: { type: 'binary', operator: baseOp, left: { type: 'variable', name: left.name }, right: one }
-          };
-        } else if (left.type === 'property') {
-          left = {
-            type: 'property_assignment',
-            target: left.target,
-            property: left.property,
-            value: { type: 'binary', operator: baseOp, left, right: one }
-          };
-        } else {
-          left = {
-            type: 'index_assignment',
-            target: left.target,
-            index: left.index,
-            value: { type: 'binary', operator: baseOp, left, right: one }
-          };
-        }
+        const inc = this.buildPostfixIncrement(left.operand, op);
+        left = { type: 'unary', operator: left.operator, operand: inc } as any;
         continue;
       }
-
+      if ((op === '++' || op === '--') && (left.type === 'variable' || left.type === 'property' || left.type === 'index')) {
+        this.advance();
+        left = this.buildPostfixIncrement(left, op);
+        continue;
+      }
       // Compound assignment: x += 1 (DM allows it in expressions, e.g. the
       // increment clause of a C-style for loop).
       if ((op === '+=' || op === '-=' || op === '*=' || op === '/=' || op === '%=' ||
@@ -1617,6 +1731,9 @@ export class DMParser {
         this.advance();
         const propToken = this.advance();
         left = { type: 'property', target: left, property: propToken.value } as any;
+        // The property may itself carry postfix ops: /type::proc() is a call
+        // (item 56 — `Unexpected token ')'` otherwise).
+        left = this.parsePostfix(left);
         continue;
       }
 
@@ -1625,6 +1742,9 @@ export class DMParser {
         this.advance();
         const propToken = this.advance();
         left = { type: 'property', target: left, property: propToken.value } as any;
+        // The property may itself carry postfix ops: (x):InvokeAsync() is a
+        // call (item 56).
+        left = this.parsePostfix(left);
         continue;
       }
 
@@ -1634,6 +1754,9 @@ export class DMParser {
         this.advance();
         const propToken = this.advance();
         left = { type: 'property', target: left, property: propToken.value } as any;
+        // The property may itself carry postfix ops: x?:y?:z(...) is a call
+        // (item 56).
+        left = this.parsePostfix(left);
         continue;
       }
 
@@ -1847,7 +1970,12 @@ export class DMParser {
               this.advance();
             }
             if (this.matchPunctuation(')')) break;
-            args.push(this.parseExpression());
+            // DM allows empty arguments: f(a, , b) passes null (item 56).
+            if (this.isType(TokenType.Punctuation) && (this.peek().value === ',' || this.peek().value === ')')) {
+              args.push({ type: 'literal', value: null, literalType: 'null' });
+            } else {
+              args.push(this.parseExpression());
+            }
             if (this.matchPunctuation(',')) continue;
           }
           while (parenIndents > 0) {
@@ -1926,14 +2054,18 @@ export class DMParser {
       // '?.' is DM's null-conditional access; treated as plain access (the
       // runtime already returns Null for missing properties).
       if (this.peek().value === '.' || this.peek().value === '?.') {
-        this.advance();
-        const propToken = this.peek();
-        if (propToken.type === TokenType.Identifier || propToken.type === TokenType.Keyword) {
+        const nxt = this.peekNext();
+        // Only a property access when an identifier/keyword follows — a bare
+        // `.` (the return-value var) or a `.` before an operator starts a NEW
+        // statement (item 56: `if(C) . += "</a>"` — the postfix loop must not
+        // eat the body's leading dot).
+        if (nxt && (nxt.type === TokenType.Identifier || nxt.type === TokenType.Keyword)) {
+          this.advance();
+          const propToken = this.peek();
           this.advance();
           node = { type: 'property', target: node, property: propToken.value };
         } else {
-          this.diagnostics.error("Expected identifier after '.'", propToken.line, propToken.column);
-          return node;
+          break;
         }
       } else if (this.matchPunctuation('(')) {
         const args: ExpressionNode[] = [];
@@ -1960,6 +2092,9 @@ export class DMParser {
             // Raw format string: keep [x] markers verbatim for the runtime.
             const lit = this.advance();
             args.push({ type: 'literal', value: lit.value, literalType: 'string' });
+          } else if (this.isType(TokenType.Punctuation) && (this.peek().value === ',' || this.peek().value === ')')) {
+            // DM allows empty arguments: f(a, , b) passes null (item 56).
+            args.push({ type: 'literal', value: null, literalType: 'null' });
           } else {
             args.push(this.parseExpression());
           }
@@ -2038,6 +2173,34 @@ export class DMParser {
 
   private isRightAssociative(op: string): boolean {
     return ['=', '?', '+=', '-=', '*=', '/=', '%=', '<<=', '>>=', '&=', '|=', '^=', '||=', '&&='].includes(op);
+  }
+
+  // x++ / x-- rewritten as an assignment: x = x + 1 (or the property /
+  // index form). Shared by the expression loop and the unary wrapper.
+  private buildPostfixIncrement(left: ExpressionNode, op: string): ExpressionNode {
+    const one: ExpressionNode = { type: 'literal', value: 1, literalType: 'number' };
+    const baseOp = op === '++' ? '+' : '-';
+    if (left.type === 'variable') {
+      return {
+        type: 'assignment',
+        target: left.name,
+        value: { type: 'binary', operator: baseOp, left: { type: 'variable', name: left.name }, right: one }
+      };
+    }
+    if (left.type === 'property') {
+      return {
+        type: 'property_assignment',
+        target: left.target,
+        property: left.property,
+        value: { type: 'binary', operator: baseOp, left, right: one }
+      };
+    }
+    return {
+      type: 'index_assignment',
+      target: (left as any).target,
+      index: (left as any).index,
+      value: { type: 'binary', operator: baseOp, left, right: one }
+    };
   }
 
   private getOrCreateTypeNode(path: string, map: Map<string, DMTypeDeclNode>): DMTypeDeclNode {

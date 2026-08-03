@@ -155,6 +155,13 @@ export class DMLexer {
         tokens.push(this.readRegex());
         continue;
       }
+      if (ch === '@' && this.peek() === '{') {
+        // @{"..."} template-string prefix: the { is the template opener and
+        // must not fall into the raw-@ branch below (item 56 — readRegex
+        // would scan to the next @ anywhere in the file and swallow it).
+        this.advance();
+        continue;
+      }
       if (ch === '@' && this.peek() !== '"' && this.peek() !== "'" && !/[\s]/.test(this.peek())) {
         tokens.push(this.readRegex());
         continue;
@@ -316,6 +323,11 @@ export class DMLexer {
         // (e.g. /datum/action/lung_punch//comment).
         break;
       }
+      if (ch === '/' && this.input[this.pos + 1] === '*') {
+        // `/*` starts a block comment — the trailing '/' of the path must
+        // not be consumed into it (item 56: assert_gases(/datum/gas/nitrogen/*, ...)).
+        break;
+      }
       if (ch === '/' || this.isAlpha(ch) || this.isDigit(ch) || ch === '_') {
         path += ch;
         this.advance();
@@ -395,13 +407,24 @@ export class DMLexer {
         break;
       }
       if (ch === '[') {
+        // DM doubles brackets to escape them in text: [[ is a literal [ —
+        // not the start of interpolation.
+        if (this.input[this.pos + 1] === '[') {
+          str += '[[';
+          this.advance();
+          this.advance();
+          continue;
+        }
         // DM string interpolation: [expr] may contain quotes and nested
         // brackets; scan to the matching ']' keeping the raw text. The scan
-        // is quote-aware so a ']' inside a nested string literal does not
-        // close the region (WS1-3), and backslash escapes are skipped.
+        // is quote-aware: a nested "string" or 'file' literal is tracked with
+        // ITS OWN quote char, so href='byond://…' inside a "…" does not
+        // toggle the nesting (WS1-3 + item 56). Backslash escapes (\[ \] \"
+        // \\) are skipped without changing depth.
         let depth = 0;
         let closedBracket = false;
         let nested = false;
+        let nestedQuote = '';
         while (this.pos < this.input.length) {
           const c = this.input[this.pos];
           if (c === '\\' && (nested || depth > 0)) {
@@ -413,6 +436,12 @@ export class DMLexer {
           if (!nested) {
             if (c === '"' || c === "'") {
               nested = true;
+              nestedQuote = c;
+            } else if (c === '[' && this.input[this.pos + 1] === '[') {
+              str += '[[';
+              this.advance();
+              this.advance();
+              continue;
             } else if (c === '[') {
               depth++;
             } else if (c === ']') {
@@ -424,8 +453,24 @@ export class DMLexer {
                 break;
               }
             }
-          } else if (c === '"' || c === "'") {
+          } else if (c === nestedQuote) {
             nested = false;
+          } else if (nested && c === '[') {
+            // A nested string may itself contain interpolation
+            // ("text [more [expr] text]" from macro substitution) — skip to
+            // its matching ']' so it cannot corrupt the outer tracking.
+            let sub = 1;
+            let k = this.pos + 1;
+            while (k < this.input.length && sub > 0) {
+              if (this.input[k] === '[') sub++;
+              else if (this.input[k] === ']') sub--;
+              k++;
+            }
+            while (this.pos < k) {
+              str += this.input[this.pos];
+              this.advance();
+            }
+            continue;
           }
           str += c;
           this.advance();
@@ -505,22 +550,28 @@ export class DMLexer {
   private readTemplateString(): Token {
     const startLine = this.line;
     const startCol = this.col;
+    const openPos = this.pos;
     this.advance(); // {
     this.advance(); // "
     let str = '';
     let closed = false;
     while (this.pos < this.input.length) {
       const ch = this.input[this.pos];
-      if (ch === '"') {
-        // End only when the quote is followed by the closing '}'.
-        let j = this.pos + 1;
-        while (j < this.input.length && (this.input[j] === ' ' || this.input[j] === '\t')) j++;
-        if (this.input[j] === '}') {
-          this.advance(); // "
-          this.advance(); // }
-          closed = true;
-          break;
-        }
+      if (ch === '\\') {
+        // Escaped char: \" \} — never a closing quote.
+        str += ch + (this.input[this.pos + 1] ?? '');
+        this.advance();
+        this.advance();
+        continue;
+      }
+      if (ch === '"' && this.input[this.pos + 1] === '}') {
+        // The template closes at the first " DIRECTLY followed by '}'.
+        // Quotes inside the content (JSON objects, " }" with whitespace)
+        // do not close it (item 56).
+        this.advance(); // "
+        this.advance(); // }
+        closed = true;
+        break;
       }
       str += ch;
       this.advance();
