@@ -178,7 +178,12 @@ export class YAMLGenerator {
 
   // YAML 1.1 scalars that must be quoted or they deserialize to the wrong
   // type in YamlDotNet: booleans, nulls, and numeric forms (WS6-1).
-  private static readonly YAML_PLAIN_UNSAFE = /^(yes|no|on|off|true|false|null|~)$|^[-+]?[0-9]|^0x[0-9a-fA-F]|^\.(inf|nan)/i;
+  // Scalars that must be quoted or they deserialize to the wrong type in
+  // YamlDotNet: booleans, nulls, numeric forms, and values that START with a
+  // YAML indicator (`-`/`?` — a bare `-` parses as a block-sequence marker:
+  // "Block sequence entries are not allowed in this context", corpus:
+  // tgstation random_name_spacer = "-").
+  private static readonly YAML_PLAIN_UNSAFE = /^(yes|no|on|off|true|false|null|~)$|^[-+]?[0-9]|^0x[0-9a-fA-F]|^\.(inf|nan)|^[-?]/i;
 
   private yamlScalar(v: any, forceQuote = false): string {
     if (typeof v === 'number' || typeof v === 'boolean') return String(v);

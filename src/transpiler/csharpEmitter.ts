@@ -59,19 +59,36 @@ export class CSharpEmitter {
    * static method per DM proc, operating on the engine-free DMRuntime datum.
    */
   public generateProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[] = []): string {
-    const parts: string[] = [];
-    this.emitProcsCS(irMap, globals, { head: (c) => parts.push(c), member: (c) => parts.push(c), tail: (c) => parts.push(c) });
-    return parts.join('');
+    const regs: string[] = [];
+    const members: string[] = [];
+    const head: string[] = [];
+    const tail: string[] = [];
+    this.emitProcsCS(irMap, globals, {
+      head: (c) => head.push(c),
+      pair: (reg, member) => {
+        if (reg) regs.push(reg);
+        if (member) members.push(member);
+      },
+      close: () => { /* the string variant closes RegisterProcs after the regs */ },
+      tail: (c) => tail.push(c),
+    });
+    // Order: header + RegisterProcs open, registrations, RegisterProcs
+    // close, proc members, class close + GlobalVars.
+    return head.join('') + regs.join('\n') + '\n        }\n' + members.join('') + tail.join('');
   }
 
-  /** Corpus-scale emission streams the proc bodies to the FILE SYSTEM instead
-   *  of one giant string. Splits into multiple partial-class files so Roslyn
-   *  never compiles a single 100 MB+ source file (superlinear per-file cost —
-   *  a 118 MB ConvertedDMProcs.cs for tgstation hung the build). Each member
-   *  chunk becomes ConvertedDMProcs_<n>.cs with a partial-class wrapper. */
+  /** Corpus-scale emission writes proc bodies to the FILE SYSTEM instead of
+   *  one giant string, split into multiple SEPARATE classes:
+   *  - ConvertedDMProcs.cs keeps RegisterProcs() (calling each part's
+   *    registration method) + GlobalVars.
+   *  - ConvertedDMProcs_<n>.cs holds a chunk of proc methods AND its own
+   *    RegisterProcs_<n>() registration method.
+   *  Two .NET limits make this necessary: Roslyn's superlinear per-file
+   *  compile cost (a 118 MB single file hung the build), and the CLR's
+   *  per-TYPE method cap (~65,536 — tgstation's 64,794 procs in one partial
+   *  class failed at load with TypeLoadException 'contains more methods'). */
   public generateProcsCSFile(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[], filePath: string): void {
-    const dir = path.dirname(filePath);
-    const MEMBER_FILE_PREFIX = `using System;
+    const PART_PREFIX = `using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using SS13.DM.Runtime;
@@ -79,46 +96,55 @@ using static SS13.DM.Runtime.DMRuntimeHelpers;
 
 namespace Content.Server.DM
 {
-    public static partial class ConvertedDMProcs
-    {
 `;
     let headOut = '';
     let tailOut = '';
-    const members: string[] = [];
+    const pairs: { reg: string | null; member: string | null }[] = [];
     this.emitProcsCS(irMap, globals, {
       head: (c) => { headOut += c; },
-      member: (c) => { members.push(c); },
+      pair: (reg, member) => { pairs.push({ reg, member }); },
+      close: () => { /* file 1's RegisterProcs closes after the part calls */ },
       tail: (c) => { tailOut += c; },
     });
 
-    // File 1: registrations + RegisterProcs + GlobalVars (the class close is
-    // emitted by the tail; the members live in the partial files below).
-    fs.writeFileSync(filePath, headOut + tailOut);
-
-    // Member partial files, capped at ~4 MB each so Roslyn's per-file cost
-    // stays linear.
-    let part = 1;
-    let buffer = '';
+    // Chunk the pairs by member size (~4 MB per part keeps Roslyn linear and
+    // every class far below the CLR's per-type method cap).
+    const parts: { regs: string[]; members: string }[] = [];
+    let current: { regs: string[]; members: string } = { regs: [], members: '' };
     const FLUSH_AT = 4 * 1024 * 1024;
-    for (const chunk of members) {
-      buffer += chunk;
-      if (buffer.length >= FLUSH_AT) {
-        fs.writeFileSync(`${filePath.replace(/\.cs$/, '')}_${part}.cs`, MEMBER_FILE_PREFIX + buffer + `    }
-}
-`);
-        buffer = '';
-        part++;
+    for (const { reg, member } of pairs) {
+      if (member && current.members.length + member.length > FLUSH_AT && current.members.length > 0) {
+        parts.push(current);
+        current = { regs: [], members: '' };
       }
+      if (reg) current.regs.push(reg);
+      if (member) current.members += member;
     }
-    if (buffer.length > 0) {
-      fs.writeFileSync(`${filePath.replace(/\.cs$/, '')}_${part}.cs`, MEMBER_FILE_PREFIX + buffer + `    }
+    if (current.members.length > 0 || current.regs.length > 0) parts.push(current);
+
+    // File 1: RegisterProcs() delegates to each part's registration method.
+    const partCalls = parts.map((_, i) => `            ConvertedDMProcs_${i + 1}.RegisterProcs_${i + 1}();`).join('\n');
+    fs.writeFileSync(filePath, headOut + partCalls + '\n        }\n' + tailOut);
+
+    // Part files: a separate class per chunk, with its own registration
+    // method referencing the methods in the SAME class.
+    parts.forEach((part, i) => {
+      const n = i + 1;
+      const content = `${PART_PREFIX}    public static class ConvertedDMProcs_${n}
+    {
+        public static void RegisterProcs_${n}()
+        {
+${part.regs.join('\n')}
+        }
+${part.members}    }
 }
-`);
-    }
+`;
+      fs.writeFileSync(`${filePath.replace(/\.cs$/, '')}_${n}.cs`, content);
+    });
   }
 
   private emitProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[],
-                      sinks: { head: (chunk: string) => void; member: (chunk: string) => void; tail: (chunk: string) => void }): void {
+                      sinks: { head: (chunk: string) => void; pair: (reg: string | null, member: string | null) => void; close: () => void; tail: (chunk: string) => void }): void {
     this.pathClassNameMap.clear();
     this.usedClassNames.clear();
     sinks.head(`using System;
@@ -133,23 +159,26 @@ namespace Content.Server.DM
     /// Transpiled DM procs. Engine-free: operates on the pure DMRuntime datum
     /// and the ProcRegistry, so it compiles and runs without RobustToolbox.
     /// The engine-facing ConvertedDMSystem calls RegisterProcs() at startup.
+    /// The corpus-scale proc methods live in ConvertedDMProcs_<n> classes
+    /// (each with its own RegisterProcs_<n>) — see generateProcsCSFile.
     /// </summary>
     public static partial class ConvertedDMProcs
     {
         public static void RegisterProcs()
         {
 `);
-    const registrations: string[] = [];
+    const pathRegs: string[] = [];
+    const procRegs: string[] = [];
 
-    // Pass 1: registrations (small). They must precede the proc members in
-    // the file (RegisterProcs closes before the members), and the members
-    // are the streaming part — collect registrations here, stream members
-    // in pass 2. Both passes use the same deduped member names.
+    // Pass 1: registrations (small) + the member names. Both passes use the
+    // same deduped member names. Var-only types get a RegisterPath entry
+    // (no proc member); proc registrations pair with their members in
+    // pass 2's order.
     for (const [pathKey, irType] of irMap.entries()) {
       if (irType.procs.size === 0) {
         // Var-only types still register their path so typesof() enumerates
         // them (WS9-4).
-        registrations.push(`            ProcRegistry.RegisterPath("${pathKey}");`);
+        pathRegs.push(`            ProcRegistry.RegisterPath("${pathKey}");`);
         continue;
       }
 
@@ -161,26 +190,28 @@ namespace Content.Server.DM
         const paramNames = procNode.args && procNode.args.length > 0
           ? `, new[] { ${procNode.args.map((a: any) => `"${this.escapeString(a.name)}"`).join(', ')} }`
           : '';
-        registrations.push(
+        procRegs.push(
           `            ProcRegistry.Register("${this.escapeString(pathKey)}", "${this.escapeString(procName)}", Proc_${className}_${csharpProcName}${paramNames});`
         );
       }
     }
 
-    for (const reg of registrations) {
-      sinks.head(`${reg}\n`);
+    // Var-only path registrations: reg-only pairs (registration order is
+    // irrelevant to the registry).
+    for (const reg of pathRegs) {
+      sinks.pair(reg, null);
     }
-    // Closes RegisterProcs(); the members + class close follow.
-    sinks.head(`        }\n`);
 
-    // Pass 2: the proc bodies — streamed to the sink as they are generated.
+    // Pass 2: the proc bodies, each paired with its registration so the
+    // file writer can chunk them into self-contained classes.
     // This was the loop that built the 17.9 GB single-file output at corpus
     // scale (10M inherited members for 23k declared procs — fixed in the IR).
+    let regIndex = 0;
     for (const [pathKey, irType] of irMap.entries()) {
       if (irType.procs.size === 0) continue;
 
       const className = this.pathToClassName(pathKey);
-      sinks.member(`\n        // Procs for ${pathKey}\n`);
+      sinks.pair(null, `\n        // Procs for ${pathKey}\n`);
       const usedProcMembers = new Set<string>();
       this.currentTypePath = pathKey;
 
@@ -218,10 +249,11 @@ namespace Content.Server.DM
         } else {
           member += `        }\n`;
         }
-        sinks.member(member);
+        sinks.pair(procRegs[regIndex++], member);
       }
     }
-    // Closes the ConvertedDMProcs class; GlobalVars follows (tail).
+    // Closes RegisterProcs(); the class close + GlobalVars follow (tail).
+    sinks.close();
     sinks.tail(`    }
 
 `);
