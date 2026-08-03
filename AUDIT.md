@@ -21,7 +21,7 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **Plan 12.5–12.11** (12.1–12.4 + 12.9 done — items 55–59 in `PLAN.md`) |
+| Open fix wave | **Plan 12.6–12.11** (12.1–12.5 + 12.9 done — items 55–60 in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
@@ -157,7 +157,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 | **12.2** | Builtin case-fold + top bare calls | **done** (item 57) — unresolved bare (tg) 572 → 407; `Pick`/`crash`/`replacetextex` resolve instead of Null |
 | **12.3** | Default args + assoc identifier keys | **done** (item 58) — missing args bind declared defaults; `list(a = 1)` / `{a = 1}` emit `MakeListAssoc` pairs; probes → 155/155 |
 | **12.4** | operator registry keys, `escapeString` `\0`, label break | dispatch + safety |
-| **12.5** | Lexer `.5` / brace-lists / `1...5` | parse fidelity |
+| **12.5** | Lexer `.5` / brace-lists / `1...5` | **done** (item 60) — leading-dot floats,  lists vs templates |
 | **12.6** | Props `.loc/.type/.dir` (Plan 07) | −6k sites |
 | **12.7** | `new`/New()/entity (Plan 08) | −12k semantic hole |
 | **12.8** | PLAN status rows consistency | **done** — folded into the universal linear plan (`PLAN.md`) |

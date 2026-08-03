@@ -11,7 +11,7 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **59 / 8** (items 1-59 done; 60-67 open, in progression order) |
+| Items done / open | **60 / 7** (items 1-60 done; 61-67 open, in progression order) |
 | Semantic probes | **157 / 157** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
@@ -159,8 +159,12 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       **Probes 155 → 157/157** (labeled continue re-enters the loop; labeled break
       exits the block). Files: `dmParser.ts`, `csharpEmitter.ts`,
       `fidelityDifferential.test.ts`.
-60. [ ] **12.5 — Lexer edge literals.** `.5` as a float; `{"a","b"}` brace-list of
-      strings vs one template token; `1...5` orphan-dot diagnostics. File: `dmLexer.ts`.
+60. [x] **12.5 — Lexer edge literals.** `.5` lexes as a float (readNumber accepts a
+      leading dot — `1...5` becomes the range `1 .. .5`); `{"a", "b"}` is a
+      brace-LIST of strings, not one template token (peek the first closing quote:
+      `,` → list, `}` → template — SQL templates like `{" INSERT INTO …"}` and
+      single-string `{"x"}` keep template semantics); `1.5..3` / `0. * 10` unchanged.
+      File: `dmLexer.ts`.
 61. [ ] **12.10 — CLI output-path validation.** Reject `--output` outside the user's
       home (parity with the GUI's realpath check). File: `src/cli.ts`.
 62. [ ] **12.6 — Builtin property reads** (Plan 07): `.loc` 3,070 · `.type` 2,021 ·

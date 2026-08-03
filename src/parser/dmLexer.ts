@@ -168,7 +168,9 @@ export class DMLexer {
       }
 
       // Numbers
-      if (this.isDigit(ch)) {
+      if (this.isDigit(ch) || (ch === '.' && this.isDigit(this.peek()))) {
+        // `.5` — a leading-dot float literal (item 60); readNumber already
+        // accepts the dot as the first char.
         tokens.push(this.readNumber());
         continue;
       }
@@ -226,9 +228,18 @@ export class DMLexer {
       }
 
       // DM multi-line template string: {" ... "} — scan to the closing "}.
+      // A `{"a", "b"}` is a brace-LIST of strings, not a template: peek at the
+      // first closing quote — followed by `,` → list literal (item 60).
       if (ch === '{' && this.peek() === '"') {
-        tokens.push(this.readTemplateString());
-        continue;
+        let j = this.pos + 2;
+        while (j < this.input.length && this.input[j] !== '"') j++;
+        const after = j < this.input.length ? this.input[j + 1] : '';
+        if (after === ',') {
+          // fall through to the '{' punctuation branch (list literal)
+        } else {
+          tokens.push(this.readTemplateString());
+          continue;
+        }
       }
 
       if ('(){}[],;'.includes(ch)) {
