@@ -864,8 +864,9 @@ namespace Content.Server.DM
       }
     }
 
-    // Built-in DM procs
-    const builtin = transpileBuiltinCall(node.name, args);
+    // Built-in DM procs (names are case-insensitive — fold before the lookup,
+    // item 57: `Pick`/`crash`/`replacetextex` all resolve).
+    const builtin = transpileBuiltinCall(node.name.toLowerCase(), args);
     if (builtin !== null) {
       return builtin;
     }

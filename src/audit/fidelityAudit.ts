@@ -253,11 +253,11 @@ function countASTLevel(
             counters.numParentCall++;
           } else if (node.name === 'spawn') {
             counters.numSpawnExpr++;
-          } else if (STUBBED_BUILTINS.includes(node.name)) {
+          } else if (STUBBED_BUILTINS.includes(node.name.toLowerCase())) {
             // Recognized stub -> Null at runtime; a loss, not "resolved"
-            // (WS7-16).
+            // (WS7-16). DM names are case-insensitive (item 57).
             counters.numStubbedBuiltin++;
-          } else if (!MAPPED_BUILTINS.includes(node.name)) {
+          } else if (!MAPPED_BUILTINS.includes(node.name.toLowerCase())) {
             const ctx = currentTypePath ?? '/';
             const entry = counters.unknownBuiltins.get(node.name) ?? { count: 0, samples: [], contexts: new Map<string, number>() };
             entry.count++;

@@ -11,11 +11,11 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **56 / 11** (items 1-56 done; 57-67 open, in progression order) |
+| Items done / open | **57 / 10** (items 1-57 done; 58-67 open, in progression order) |
 | Semantic probes | **151 / 151** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
-| Unresolved bare calls (tg) | **572** |
+| Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
 
 ---
@@ -133,9 +133,14 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       paren expressions (`APC` → `(MACHINERY + 1)`), `return` at EOF, `"` escapes in
       DM strings (decoder verified against probe suite), nested-interp ternaries.
       Files: `src/preprocessor.ts`, `src/parser/dmLexer.ts`, `src/parser/dmParser.ts`.
-57. [ ] **12.2 — Builtin case-fold.** Lowercase `name` before `MAPPED_BUILTINS` /
-      `transpileBuiltinCall` (DM is case-insensitive: `Pick`/`crash`/`replacetextex`
-      currently → Null). Files: `builtinMappings.ts`, `fidelityAudit.ts`.
+57. [x] **12.2 — Builtin case-fold.** `name.toLowerCase()` before `MAPPED_BUILTINS` /
+      `STUBBED_BUILTINS` / `transpileBuiltinCall` (DM is case-insensitive); mapping
+      table + switch cases normalized to lowercase (`CRASH` → `crash`, `findtextEx` →
+      `findtextex`, `replacetextEx` → `replacetextex`, `SpacemanDMM_unlint` →
+      `spacemandmm_unlint` — returns keep proper C# helper casing). **Result:
+      unresolved bare calls (tg) 572 → 407 (165 sites: `Pick`/`crash`/`replacetextex`
+      etc. resolve instead of → Null).** Files: `builtinMappings.ts`,
+      `csharpEmitter.ts`, `fidelityAudit.ts`.
 58. [ ] **12.3 — Proc default arguments + identifier assoc keys.** `proc/test(a = 1)`
       must apply the default; `list(a = 1)` must emit an assoc pair, not
       `comp.SetVar("a", ...)`. Files: `dmParser.ts`, `csharpEmitter.ts`.

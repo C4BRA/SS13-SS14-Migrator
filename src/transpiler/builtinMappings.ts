@@ -2,19 +2,19 @@
 // Returns the C# expression string, or null for user-defined procs.
 
 export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 'ispath', 'prob', 'pick', 'rand',
-  'list', 'length', 'text', 'text2num', 'num2text', 'copytext', 'findtext', 'findtextEx',
+  'list', 'length', 'text', 'text2num', 'num2text', 'copytext', 'findtext', 'findtextex',
   'clamp', 'max', 'min', 'round', 'abs', 'uppertext', 'lowertext', 'hascall',
   'alert', 'input', 'icon', 'islist', 'replacetext',
   'isnull', 'isnum', 'istext', 'isturf', 'isobj', 'ismob', 'isarea', 'ismovable',
-  'isloc', 'isitem', 'iscarbon', 'isliving', 'CRASH', 'nameof', 'typesof',
+  'isloc', 'isitem', 'iscarbon', 'isliving', 'crash', 'nameof', 'typesof',
   'initial', 'call', 'turn', 'get_step', 'get_dist', 'get_dir', 'get_turf',
   'range', 'view', 'oview', 'block', 'splittext', 'jointext', 'params2list',
   'text2path', 'rgb', 'fexists', 'isnan', 'isinf', 'json_decode', 'animate',
   'image', 'flick', 'sound', 'matrix', 'browse', 'call_ext', '__detect_rust_g',
   'floor', 'ceil', 'sqrt', 'sin', 'cos', 'arccos', 'log', 'sign',
   'copytext_char', 'length_char', 'text2ascii', 'ascii2text', 'ckey', 'sorttext',
-  'replacetextEx', 'html_encode', 'html_decode', 'rgb2num', 'json_encode',
-  'time2text', 'list2params', 'arglist', 'alist', 'SpacemanDMM_unlint', 'file',
+  'replacetextex', 'html_encode', 'html_decode', 'rgb2num', 'json_encode',
+  'time2text', 'list2params', 'arglist', 'alist', 'spacemandmm_unlint', 'file',
   'isfile', 'fdel', 'fcopy', 'fcopy_rsc', 'flist', 'ref', 'refcount',
   'step', 'step_towards', 'step_away', 'get_step_away', 'get_step_towards',
   'orange', 'viewers', 'hearers',
@@ -24,6 +24,9 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
   'roll', 'winset', 'link', 'gradient', 'vector', 'openToolTip',
   'closeToolTip', 'browse_rsc', 'ftp'
 ];
+
+// NOTE: every entry above is LOWERCASE. DM proc names are case-insensitive —
+// callers must lowercase `name` before these lookups (item 57).
 
 // Builtins whose runtime helpers are recognized stubs returning Null/0
 // (engine/UI integration points). The audit counts their call sites as loss —
@@ -77,7 +80,7 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.CopyText(${args})`;
     case 'findtext':
       return `DMRuntimeHelpers.FindText(${args})`;
-    case 'findtextEx':
+    case 'findtextex':
       return `DMRuntimeHelpers.FindTextEx(${args})`;
     case 'clamp':
       return `DMRuntimeHelpers.Clamp(${args})`;
@@ -128,7 +131,7 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMIsType(${args}, DMValue.FromString("/mob/living/carbon"))`;
     case 'isliving':
       return `DMIsType(${args}, DMValue.FromString("/mob/living"))`;
-    case 'CRASH':
+    case 'crash':
       return `DMRuntimeHelpers.DMCRASH(${args})`;
     case 'nameof':
       return `DMRuntimeHelpers.NameOf(${args})`;
@@ -242,7 +245,7 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.CKey(${args})`;
     case 'sorttext':
       return `DMRuntimeHelpers.SortText(${args})`;
-    case 'replacetextEx':
+    case 'replacetextex':
       return `DMRuntimeHelpers.ReplaceTextEx(${args})`;
     case 'html_encode':
       return `DMRuntimeHelpers.HtmlEncode(${args})`;
@@ -260,7 +263,7 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.DMArgList(${args})`;
     case 'alist':
       return `DMRuntimeHelpers.MakeList(${args})`;
-    case 'SpacemanDMM_unlint':
+    case 'spacemandmm_unlint':
       return `DMRuntimeHelpers.SpacemanUnlint(${args})`;
     case 'file':
       return `DMRuntimeHelpers.File(${args})`;
