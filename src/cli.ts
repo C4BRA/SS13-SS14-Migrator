@@ -36,11 +36,20 @@ Options:
     process.exit(1);
   }
 
+  // Reject output paths outside the user's home — parity with the GUI's
+  // realpath check (item 61): `~/x` is expanded and symlinks pointing
+  // outside $HOME are refused.
+  const validatedOutput = GUIServer.validateOutputPath(outputDir);
+  if (validatedOutput === null) {
+    console.error(`[dm2ss14] Error: --output must be inside your home directory (got '${outputDir}').`);
+    process.exit(1);
+  }
+
   const transpiler = new DM2SS14Transpiler();
   try {
     await transpiler.transpile({
       inputDir: path.resolve(inputDir),
-      outputDir: path.resolve(outputDir)
+      outputDir: validatedOutput
     });
   } catch (err: any) {
     console.error(`[dm2ss14] Error: ${err.message}`);

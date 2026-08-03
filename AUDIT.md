@@ -21,7 +21,7 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **Plan 12.6–12.11** (12.1–12.5 + 12.9 done — items 55–60 in `PLAN.md`) |
+| Open fix wave | **Plan 12.6–12.7, 12.11** (12.1–12.5 + 12.9 + 12.10 done — items 55–61 in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
@@ -162,7 +162,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 | **12.7** | `new`/New()/entity (Plan 08) | −12k semantic hole |
 | **12.8** | PLAN status rows consistency | **done** — folded into the universal linear plan (`PLAN.md`) |
 | **12.9** | Parse-error class triage (3746) | **done** (item 56) — tg 197 files → 0; all four corpora parse clean (tg/tgmc/paradise/bee 0 files) |
-| **12.10** | CLI output path validation | security parity w/ GUI |
+| **12.10** | CLI output path validation | **done** (item 61) — routes through the GUI realpath check |
 | **12.11** | Appearance stubs / live-server prep (05/04) | product |
 
 The 12.1–12.11 batches are tracked linearly as items 55–67 in `PLAN.md` (universal plan).
