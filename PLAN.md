@@ -11,8 +11,8 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **62 / 5** (items 1-62 done; 63-67 open, in progression order) |
-| Semantic probes | **161 / 161** (`npm run audit:semantics`) |
+| Items done / open | **63 / 4** (items 1-63 done; 64-67 open, in progression order) |
+| Semantic probes | **164 / 164** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **27,514** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
@@ -175,9 +175,13 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       to `/datum`. `.loc` stays a loss (needs the containment model — item 63).
       **tg 6,251 → 3,229 sites; loss 30,020 → 27,514; probes 157 → 161/161.**
       Files: runtime template, fidelityAudit.ts, probes.
-63. [ ] **12.7 — `new` / New() / loc / entity semantics** (Plan 08): 12,872 sites —
-      fresh datum today; complete `New()` arg propagation, `loc`, entity integration.
-      Files: runtime + emitter.
+63. [x] **12.7 — `new` / New() / loc / entity semantics** (Plan 08). `DMNew` now
+      sets the ATOM loc var from the first constructor argument (new Type(loc,
+      args...) — `/datum` types keep their New signature intact; New() still
+      receives every argument, matching corpus New(loc, ...) procs). Entity
+      integration remains pending. **Probes 161 → 164/164** (atom loc var,
+      datum New arg passthrough, New(loc, ...) first-param). Files: runtime
+      template, fidelityAudit.ts, probes.
 64. [ ] **Symbol resolution pass in production** (Plan 02): audit-only `SymbolTable`
       today; make the emitter resolve proc targets + warn on unknown (runtime registry
       remains the fallback).

@@ -793,8 +793,22 @@ namespace SS13.DM.Runtime
             // Datum type paths are canonicalized to lowercase (DM type paths
             // are case-insensitive) so IsType/registry lookups match the
             // emitted registrations (WS4-1). A bare new is /datum (item 62).
-            var datum = new DMRuntime { DMTypePath = (typePath.Length == 0 ? "/datum" : typePath).ToLowerInvariant() };
+            var normalized = (typePath.Length == 0 ? "/datum" : typePath).ToLowerInvariant();
+            var datum = new DMRuntime { DMTypePath = normalized };
             LiveDatums.Add(datum);
+            // DM: new Type(loc, args...) — the first argument of an ATOM
+            // constructor is its loc (item 63). New() still receives every
+            // argument: corpus New procs declare New(loc, ...) and bind
+            // loc from their own first parameter. Pure /datum types have no
+            // loc (a stray var write would be harmless, but they must not
+            // be split from their New signature).
+            if (args.Length > 0 &&
+                (normalized.StartsWith("/atom") || normalized.StartsWith("/obj") ||
+                 normalized.StartsWith("/mob") || normalized.StartsWith("/turf") ||
+                 normalized.StartsWith("/area")))
+            {
+                datum.SetVar("loc", args[0]);
+            }
             await datum.CallProc("New", args);
             return DMValue.FromDatum(datum);
         }

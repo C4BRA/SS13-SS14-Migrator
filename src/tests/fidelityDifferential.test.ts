@@ -848,6 +848,21 @@ const PROBES: Probe[] = [
     name: '.overlays defaults to an empty list',
     dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn length(d.overlays)`,
     expected: '0'
+  },
+  {
+    name: 'new Type(loc, args) sets the loc var',
+    dm: `/obj/probe/proc/New(a, b)\n\treturn\n/datum/probe/proc/run()\n\tvar/datum/d = new\n\tvar/obj/probe/o = new /obj/probe(d, 7)\n\treturn o.loc == d`,
+    expected: '1' // item 63: the first new() argument is the atom loc
+  },
+  {
+    name: 'new /datum(x) passes x to New without a loc split',
+    dm: `/datum/probe/proc/New(a)\n\tsrc.arg = a\n/datum/probe/proc/run()\n\tvar/datum/probe/p = new /datum/probe(9)\n\treturn p.arg`,
+    expected: '9' // pure datums have no loc; New receives the argument
+  },
+  {
+    name: 'atom New receives the loc as its first parameter',
+    dm: `/obj/probe/proc/New(a, b)\n\tsrc.first = a\n\tsrc.second = b\n/datum/probe/proc/run()\n\tvar/datum/d = new\n\tvar/obj/probe/o = new /obj/probe(d, 7)\n\treturn (o.first == d) + o.second`,
+    expected: '8' // New(loc, args...) keeps the loc as its first argument
   }
 ];
 

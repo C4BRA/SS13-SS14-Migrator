@@ -461,7 +461,7 @@ function printResult(r: CodebaseResult): void {
   line('try/catch', c.numTry, 'handled since P11 B6 (emitted)');
   line('labeled blocks', c.numLabeledBlock, 'handled since P11 B6 (body kept)');
   console.log('-- Emitter loss (expression) --');
-  line('new /type(...)', c.numNew, 'fresh datum; New()/loc/entity incomplete (item 63)');
+  line('new /type(...)', c.numNew, 'fresh datum; New() args + atom loc resolved (item 63); SS14 entity integration pending');
   line('..() parent calls', c.numParentCall, 'handled since P11 B6 (CallParentProc)');
   line('bitwise & | ^ ~ >>', c.numBinaryNull, 'handled since P11 B6');
   line('<< (shift/output)', c.numBinaryOutput, 'handled since P11 B6');
