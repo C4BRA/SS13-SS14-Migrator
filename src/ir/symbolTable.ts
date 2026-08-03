@@ -12,10 +12,52 @@ export interface TypeSymbol {
   varNames: Map<string, DMVarDeclNode>;
 }
 
+// Simple LRU cache for hot path resolution (avoids repeated hierarchy walks)
+class LRUCache<V> {
+  private max: number;
+  private cache: Map<string, V>;
+  
+  constructor(maxSize: number = 256) {
+    this.max = maxSize;
+    this.cache = new Map();
+  }
+  
+  get(key: string): V | undefined {
+    const value = this.cache.get(key);
+    if (value !== undefined) {
+      // Move to end (most recently used)
+      this.cache.delete(key);
+      this.cache.set(key, value);
+    }
+    return value;
+  }
+  
+  set(key: string, value: V): void {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.max) {
+      // Remove oldest (first) entry
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
+    }
+    this.cache.set(key, value);
+  }
+  
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
 export class SymbolTable {
   types: Map<string, TypeSymbol> = new Map();
   globalProcs: Set<string> = new Set();
   rootPath = '/datum';
+  
+  // LRU caches for hot path resolution (item 8)
+  private bareProcCache = new LRUCache<boolean>(256);
+  private typeProcCache = new LRUCache<boolean>(256);
 
   /** Merge a file's parsed type declarations into the table. */
   addTypeDecls(typeDecls: DMTypeDeclNode[]): void {
@@ -48,18 +90,37 @@ export class SymbolTable {
    *  exact type -> ancestors -> /proc). */
   resolveBareProc(typePath: string | null | undefined, name: string): boolean {
     if (!typePath) return this.hasGlobalProc(name);
-    return this.resolveTypeProc(typePath, name) || this.hasGlobalProc(name);
+    const cacheKey = `${typePath}|${name.toLowerCase()}`;
+    const cached = this.bareProcCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const result = this.resolveTypeProc(typePath, name) || this.hasGlobalProc(name);
+    this.bareProcCache.set(cacheKey, result);
+    return result;
   }
 
   /** Proc reachable through the type hierarchy of `typePath` only. */
   resolveTypeProc(typePath: string, name: string): boolean {
+    const cacheKey = `${typePath}|${name.toLowerCase()}`;
+    const cached = this.typeProcCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    
     let current: string | null = normalizeTypePath(typePath);
     while (current) {
       const sym = this.types.get(current);
-      if (sym && sym.procNames.has(name.toLowerCase())) return true;
+      if (sym && sym.procNames.has(name.toLowerCase())) {
+        this.typeProcCache.set(cacheKey, true);
+        return true;
+      }
       current = sym ? sym.parentPath : computeParentPath(current);
     }
+    this.typeProcCache.set(cacheKey, false);
     return false;
+  }
+  
+  /** Clear resolution caches when symbol table changes. */
+  clearCaches(): void {
+    this.bareProcCache.clear();
+    this.typeProcCache.clear();
   }
 }
 

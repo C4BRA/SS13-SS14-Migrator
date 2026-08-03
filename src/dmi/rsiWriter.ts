@@ -87,18 +87,19 @@ export class RSIWriter {
           const ss14Dir = state.dirs === 4 ? [0, 2, 1, 3][d] : d;
           // Stack all frames of this direction vertically.
           const stacked = Buffer.alloc(meta.width * meta.height * state.frames * 4);
+          const frameSize = meta.width * meta.height * 4;
+          const sheetStride = sheet.width * 4;
+          const rowBytes = meta.width * 4;
           for (let f = 0; f < state.frames; f++) {
-            const sx = f * meta.width;
+            const sx = f * meta.width * 4;
             const sy = d * meta.height;
+            const destOffset = f * frameSize;
+            const srcRowStart = sy * sheetStride + sx;
+            // Bulk copy entire scanlines instead of per-pixel operations
             for (let y = 0; y < meta.height; y++) {
-              for (let x = 0; x < meta.width; x++) {
-                const si = ((sy + y) * sheet.width + (sx + x)) * 4;
-                const di = ((f * meta.height + y) * meta.width + x) * 4;
-                stacked[di] = sheet.rgba[si];
-                stacked[di + 1] = sheet.rgba[si + 1];
-                stacked[di + 2] = sheet.rgba[si + 2];
-                stacked[di + 3] = sheet.rgba[si + 3];
-              }
+              const srcOffset = srcRowStart + y * sheetStride;
+              const dstOffset = destOffset + y * rowBytes;
+              sheet.rgba.copy(stacked, dstOffset, srcOffset, srcOffset + rowBytes);
             }
           }
           const png = encodePNG({ width: meta.width, height: meta.height * state.frames, rgba: stacked });

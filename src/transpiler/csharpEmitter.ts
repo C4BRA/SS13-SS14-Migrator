@@ -201,6 +201,7 @@ namespace Content.Server.DM
 
         this.currentProcName = procName;
 
+        this.tempCounter = 0; // Reset temp counter per-proc (item 10)
         if (this.referencesIdentifier(procNode, 'args')) {
           member += `            var __dmArgs = DMList.FromArray(args);\n`;
         }
