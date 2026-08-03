@@ -157,7 +157,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 | **12.2** | Builtin case-fold + top bare calls | **done** (item 57) — unresolved bare (tg) 572 → 407; `Pick`/`crash`/`replacetextex` resolve instead of Null |
 | **12.3** | Default args + assoc identifier keys | **done** (item 58) — missing args bind declared defaults; `list(a = 1)` / `{a = 1}` emit `MakeListAssoc` pairs; probes → 155/155 |
 | **12.4** | operator registry keys, `escapeString` `\0`, label break | dispatch + safety |
-| **12.5** | Lexer `.5` / brace-lists / `1...5` | **done** (item 60) — leading-dot floats,  lists vs templates |
+| **12.5** | Lexer `.5` / brace-lists / `1...5` | **done** (item 60) — leading-dot floats; `{"a", "b"}` lists vs templates |
 | **12.6** | Props `.loc/.type/.dir` (Plan 07) | −6k sites |
 | **12.7** | `new`/New()/entity (Plan 08) | −12k semantic hole |
 | **12.8** | PLAN status rows consistency | **done** — folded into the universal linear plan (`PLAN.md`) |
