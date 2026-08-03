@@ -409,10 +409,11 @@ async function runCSharpEmitterTests() {
       else
         doOther()
 `);
-  assertContains(sw, `while (true)\n            {\n                if (DMValue.In(comp.GetVar("x"), DMValue.FromNumber(1)).IsTrue())`, 'switch wrapper + first case');
-  assertContains(sw, `else if (DMValue.In(comp.GetVar("x"), DMValue.FromNumber(2)).IsTrue())\n                {\n                    break;\n                }`, 'continue in case (no loop) exits the switch');
+  assertContains(sw, `while (true)\n            {\n                if (DMValue.In(__dm_t`, 'switch wrapper + first case uses the single-evaluated value temp');
+  assertContains(sw, `else if (DMValue.In(__dm_t`, 'switch case conditions reuse the value temp (CS0136 fix)');
+  assertContains(sw, `else if (DMValue.In(__dm_t`, 'continue in case (no loop) exits the switch');
   assertContains(sw, `                }\n                break;\n            }\n            return comp.GetVar(".");`, 'terminating break after the case chain');
-  assert((sw.match(/DMValue\.In\(comp\.GetVar\("x"\),/g) || []).length === 2, 'switch value single-evaluated (reused in each case cond)');
+  assert((sw.match(/DMValue\.In\(__dm_t/g) || []).length === 2, 'switch value single-evaluated (reused in each case cond)');
 
   // Test 42: Plan 09 B2 — continue in a C-style for still runs the increment
   const cforCont = transpileProc(`/obj/foo/proc/run()

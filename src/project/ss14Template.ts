@@ -108,16 +108,70 @@ EndGlobal
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Real-SS14 layout: the engine's content mounts are relative to the
+         binary (StartType.Content: ../../ = solution root). Without the
+         flattened output path the mounts resolve into bin/Debug/net10.0
+         and never find the resources (item 66). -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>..\\bin\\Content.Server\\</OutputPath>
   </PropertyGroup>
-  ${engineDirProp}
   <ItemGroup>
     <ProjectReference Include="..\\SS13.DM.Runtime\\SS13.DM.Runtime.csproj" />
     <ProjectReference Include="..\\Content.Shared\\Content.Shared.csproj" />
-    <ProjectReference Include="$(EngineDir)/Robust.Shared/Robust.Shared.csproj" />
-    <ProjectReference Include="$(EngineDir)/Robust.Server/Robust.Server.csproj" />
+    <!-- Resources + config land next to the binary so the engine's content
+         mount finds them at boot (item 66). -->
+    <Content Include="..\\Resources\\**" Link="Resources/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="server_config.toml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- Engine references go through the official Imports (direct references
+       are rejected by Robust.ProjectReferences.targets); the source
+       generators produce the ISerializationGenerated implementations and
+       entity-system subscriptions (item 66). <output>/RobustToolbox is a
+       symlink to the engine checkout (created at transpile time). -->
+  <Import Project="..\\RobustToolbox\\Imports\\Shared.props" />
+  <Import Project="..\\RobustToolbox\\Imports\\Server.props" />
+  <Import Project="..\\RobustToolbox\\MSBuild\\Robust.Properties.targets" />
+  <Import Project="..\\RobustToolbox\\MSBuild\\Robust.EntitySystemSubscriptionsGenerator.targets" />
+  <!-- The engine mounts content assemblies + resources from bin/RobustToolbox
+       (contentBuildDir); mirror the build output there after build. -->
+  <Target Name="CopyContentToBuildDir" AfterTargets="Build">
+    <ItemGroup>
+      <DmDlls Include="$(OutputPath)*.dll" />
+      <DmRes Include="$(OutputPath)Resources\\**\\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DmDlls)" DestinationFolder="..\\bin\\RobustToolbox\\" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(DmRes)" DestinationFiles="..\\bin\\RobustToolbox\\Resources\\%(RecursiveDir)%(Filename)%(Extension)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>`;
     fs.writeFileSync(path.join(serverDir, 'Content.Server.csproj'), serverCsproj, 'utf-8');
+    // server_config.toml is copied to the output by the csproj above.
+    fs.writeFileSync(path.join(serverDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
+
+    // The mod loader bootstraps every GameShared subclass in the content
+    // assembly as an entry point. Without one, the component factory never
+    // auto-registers and the entity manager fails at Initialize with
+    // 'Unknown type: MetaDataComponent' (item 66).
+    const entryPointCS = `using Robust.Shared.ContentPack;
+using Robust.Shared.GameObjects;
+using Robust.Shared.IoC;
+
+namespace Content.Server
+{
+    /// <summary>
+    /// Minimal content entry point (item 66): registers components so the
+    /// entity manager can initialize, then generates network IDs.
+    /// </summary>
+    public sealed class EntryPoint : GameServer
+    {
+        public override void Init()
+        {
+            base.Init();
+            IoCManager.Resolve<IComponentFactory>().DoAutoRegistrations();
+            IoCManager.Resolve<IComponentFactory>().GenerateNetIds();
+        }
+    }
+}`;
+    fs.writeFileSync(path.join(serverDir, 'EntryPoint.cs'), entryPointCS, 'utf-8');
 
     // Engine-facing adapter: SS14 component holding the DM datum. The YAML
     // prototype emitter writes `type: DMRuntime` (component name = class name
@@ -142,7 +196,7 @@ namespace Content.Server.DM
     /// happen in ConvertedDMSystem.OnDMComponentInit.
     /// </summary>
     [RegisterComponent]
-    public sealed class DMRuntimeComponent : Component
+    public sealed partial class DMRuntimeComponent : Component
     {
         [DataField("dmTypePath")]
         public string DMTypePath { get; set; } = "/datum";
@@ -156,17 +210,18 @@ namespace Content.Server.DM
 `;
     fs.writeFileSync(path.join(dmServerDir, 'DMRuntimeComponent.cs'), dmComponentCS, 'utf-8');
 
-    // Real Robust.Server boot entry (item 66): RobustServerHost.Run loads the
-    // content assembly, resources and config, then enters the game loop.
-    // Verification: `scripts/setup-engine.sh` then `dotnet run` from the
-    // output directory — the server must reach "Running" (lobby, no rules).
+    // Real Robust.Server boot entry (item 66): ContentStart.Start is the
+    // engine's public host (Robust.Server.Program is internal at this pin) —
+    // it loads the content assembly, resources and config, then enters the
+    // game loop. Verification: `scripts/setup-engine.sh` then `dotnet run`
+    // from the output directory — the server must reach "Ready" (lobby).
     const programCS = `using Robust.Server;
 
 namespace Content.Server
 {
     internal static class Program
     {
-        public static void Main(string[] args) => RobustServerHost.Run(args);
+        public static void Main(string[] args) => ContentStart.Start(args);
     }
 }`;
     fs.writeFileSync(path.join(serverDir, 'Program.cs'), programCS, 'utf-8');
@@ -197,5 +252,19 @@ namespace Content.Server
     const configDir = path.join(resourcesDir, 'ConfigFiles');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
+
+    // The engine's content mounts resolve <solution>/RobustToolbox relative
+    // to the binary (StartType.Content) — symlink the checkout there when it
+    // is discoverable (SS14_ENGINE_DIR or the repo's sibling — item 66).
+    const engineDir = process.env.SS14_ENGINE_DIR || path.resolve(__dirname, '../../../RobustToolbox');
+    const engineLink = path.join(outputDir, 'RobustToolbox');
+    if (fs.existsSync(engineDir) && !fs.existsSync(engineLink)) {
+      try {
+        fs.symlinkSync(engineDir, engineLink, 'dir');
+      } catch {
+        // Best-effort: without the link the engine resources mount fails and
+        // the server cannot boot; the operator can create the link manually.
+      }
+    }
   }
 }

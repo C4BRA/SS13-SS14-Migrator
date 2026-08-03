@@ -46,11 +46,11 @@ const OVERLOAD_SIGNATURES = [
   'Text2Num(DMValue value, DMValue radix)',
   'Num2Text(DMValue value, DMValue len, DMValue pad)',
   'FindText(DMValue text, DMValue needle, DMValue start = default, DMValue end = default, DMValue caseSensitive = default)',
-  'ReplaceText(DMValue haystack, DMValue needle, DMValue replacement, DMValue start, DMValue end)',
+  'ReplaceText(DMValue haystack, DMValue needle, DMValue replacement, DMValue start = default, DMValue end = default)',
   'SplitText(DMValue text, DMValue separator, DMValue start = default, DMValue end = default, DMValue includeDelimiters = default)',
   'StepTowards(DMValue atom, DMValue trg, DMValue speed)',
-  'StepAway(DMValue atom, DMValue trg, DMValue max, DMValue speed)',
-  'JoinText(DMValue value, DMValue separator, DMValue start, DMValue end)'
+  'StepAway(DMValue atom, DMValue trg, DMValue max = default, DMValue speed = default)',
+  'JoinText(DMValue value, DMValue separator, DMValue start = default, DMValue end = default)'
 ];
 const helpersContent = files.find(f => f.filename === 'DMRuntimeHelpers.cs')!.content;
 for (const sig of OVERLOAD_SIGNATURES) {

@@ -37,15 +37,20 @@ export class CSharpEmitter {
     }
     this.symbols = symbols ?? null;
     this.warnedCalls.clear();
-
-    // ConvertedDMProcs.cs — engine-free: transpiled DM procs + proc registry
-    // registration. Compiles against SS13.DM.Runtime alone (used by the
-    // semantic-probe harness without any engine).
     const procsCode = this.generateProcsCS(irMap, globals);
     fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMProcs.cs'), procsCode, 'utf-8');
+    fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMSystem.cs'), this.generateSystemCS(), 'utf-8');
+  }
 
-    // ConvertedDMSystem.cs — engine adapter: an SS14 EntitySystem wired to the
-    // real RobustToolbox API (compiles against Robust.Shared).
+  /** Corpus-scale variant: streams the proc file instead of building it in
+   *  memory (item 66). */
+  public emitCSharpSystemsFile(irMap: Map<string, DMIRType>, outputServerDir: string, globals: DMGlobalVarDeclNode[] = [], symbols?: SymbolTable): void {
+    if (!fs.existsSync(outputServerDir)) {
+      fs.mkdirSync(outputServerDir, { recursive: true });
+    }
+    this.symbols = symbols ?? null;
+    this.warnedCalls.clear();
+    this.generateProcsCSFile(irMap, globals, path.join(outputServerDir, 'ConvertedDMProcs.cs'));
     fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMSystem.cs'), this.generateSystemCS(), 'utf-8');
   }
 
@@ -54,9 +59,33 @@ export class CSharpEmitter {
    * static method per DM proc, operating on the engine-free DMRuntime datum.
    */
   public generateProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[] = []): string {
+    const parts: string[] = [];
+    this.emitProcsCS(irMap, globals, (chunk) => parts.push(chunk));
+    return parts.join('');
+  }
+
+  /** Corpus-scale emission streams the proc bodies to the file instead of
+   *  building one giant string (45k+ types / 65k procs exceed the node heap
+   *  when accumulated — item 66 full-corpus boot). Synchronous appends so
+   *  the file is complete when the transpile returns. */
+  public generateProcsCSFile(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[], filePath: string): void {
+    fs.writeFileSync(filePath, '');
+    let buffer = '';
+    const FLUSH_AT = 4 * 1024 * 1024;
+    this.emitProcsCS(irMap, globals, (chunk) => {
+      buffer += chunk;
+      if (buffer.length >= FLUSH_AT) {
+        fs.appendFileSync(filePath, buffer);
+        buffer = '';
+      }
+    });
+    fs.appendFileSync(filePath, buffer);
+  }
+
+  private emitProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[], emit: (chunk: string) => void): void {
     this.pathClassNameMap.clear();
     this.usedClassNames.clear();
-    let code = `using System;
+    emit(`using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using SS13.DM.Runtime;
@@ -73,10 +102,13 @@ namespace Content.Server.DM
     {
         public static void RegisterProcs()
         {
-`;
+`);
     const registrations: string[] = [];
-    const procMembers: string[] = [];
 
+    // Pass 1: registrations (small). They must precede the proc members in
+    // the file (RegisterProcs closes before the members), and the members
+    // are the streaming part — collect registrations here, stream members
+    // in pass 2. Both passes use the same deduped member names.
     for (const [pathKey, irType] of irMap.entries()) {
       if (irType.procs.size === 0) {
         // Var-only types still register their path so typesof() enumerates
@@ -86,21 +118,38 @@ namespace Content.Server.DM
       }
 
       const className = this.pathToClassName(pathKey);
-      procMembers.push(`\n        // Procs for ${pathKey}\n`);
+      const usedProcMembers = new Set<string>();
+
+      for (const [procName, procNode] of irType.procs.entries()) {
+        const csharpProcName = this.nextProcMemberName(procName, usedProcMembers);
+        const paramNames = procNode.args && procNode.args.length > 0
+          ? `, new[] { ${procNode.args.map((a: any) => `"${this.escapeString(a.name)}"`).join(', ')} }`
+          : '';
+        registrations.push(
+          `            ProcRegistry.Register("${this.escapeString(pathKey)}", "${this.escapeString(procName)}", Proc_${className}_${csharpProcName}${paramNames});`
+        );
+      }
+    }
+
+    for (const reg of registrations) {
+      emit(`${reg}\n`);
+    }
+    // Closes RegisterProcs(); the class closes after the streamed members.
+    emit(`        }\n`);
+
+    // Pass 2: the proc bodies — streamed to the sink as they are generated.
+    // This was the loop that built the 17.9 GB single-file output at corpus
+    // scale (10M inherited members for 23k declared procs — fixed in the IR).
+    for (const [pathKey, irType] of irMap.entries()) {
+      if (irType.procs.size === 0) continue;
+
+      const className = this.pathToClassName(pathKey);
+      emit(`\n        // Procs for ${pathKey}\n`);
       const usedProcMembers = new Set<string>();
       this.currentTypePath = pathKey;
 
       for (const [procName, procNode] of irType.procs.entries()) {
-        // C# member names must be unique and identifier-safe: sanitize the
-        // proc name and case-fold it (DM procs are case-insensitive, so
-        // `foo` and `Foo` on one type would otherwise collide — CS0111).
-        let csharpProcName = this.sanitizeIdentifier(this.capitalize(procName));
-        if (usedProcMembers.has(csharpProcName)) {
-          let suffix = 2;
-          while (usedProcMembers.has(`${csharpProcName}_${suffix}`)) suffix++;
-          csharpProcName = `${csharpProcName}_${suffix}`;
-        }
-        usedProcMembers.add(csharpProcName);
+        const csharpProcName = this.nextProcMemberName(procName, usedProcMembers);
         let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntime comp, DMValue[] args)\n        {\n`;
 
         procNode.args.forEach((arg, idx) => {
@@ -133,38 +182,19 @@ namespace Content.Server.DM
         } else {
           member += `        }\n`;
         }
-        procMembers.push(member);
-
-        // Registration carries the parameter names so runtime arglist() can
-        // bind associative named arguments (WS8-14). Names are escaped:
-        // `operator""`-style proc names must not break the string literal.
-        const paramNames = procNode.args && procNode.args.length > 0
-          ? `, new[] { ${procNode.args.map((a: any) => `"${this.escapeString(a.name)}"`).join(', ')} }`
-          : '';
-        registrations.push(
-          `            ProcRegistry.Register("${this.escapeString(pathKey)}", "${this.escapeString(procName)}", Proc_${className}_${csharpProcName}${paramNames});`
-        );
+        emit(member);
       }
     }
+    // Closes the ConvertedDMProcs class; GlobalVars follows.
+    emit(`    }
 
-    for (const reg of registrations) {
-      code += `${reg}\n`;
-    }
-    code += `        }\n`;
-
-    for (const member of procMembers) {
-      code += member;
-    }
-
-    code += `    }
-
-`;
+`);
 
     // GlobalVars: materializes /global/var/ declarations. Initialized once,
     // lazily, in declaration order; GLOB.x reads/writes and bare calls in
     // initializers resolve here. Undeclared names read as Null (matching DM
     // before the global is assigned).
-    code += `    public static class GlobalVars
+    emit(`    public static class GlobalVars
     {
         private static readonly Dictionary<string, DMValue> Vars = new Dictionary<string, DMValue>();
         private static bool _initialized;
@@ -192,7 +222,7 @@ namespace Content.Server.DM
         {
             if (_initialized) return;
             _initialized = true;
-`;
+`);
     const prevMode = this.globalsMode;
     this.globalsMode = true;
     for (const g of globals) {
@@ -203,14 +233,13 @@ namespace Content.Server.DM
       if (expr === null && g.initialValue) {
         expr = `DMValue.FromString("${this.escapeString(g.initialValue.replace(/^["']|["']$/g, ''))}")`;
       }
-      code += `            Vars["${g.name}"] = ${expr ?? 'DMValue.Null'};\n`;
+      emit(`            Vars["${g.name}"] = ${expr ?? 'DMValue.Null'};\n`);
     }
     this.globalsMode = prevMode;
-    code += `        }
+    emit(`        }
     }
 }
-`;
-    return code;
+`);
   }
 
   /**
@@ -291,13 +320,18 @@ namespace Content.Server.DM
 
       case 'SwitchStatement':
         let switchCode = `${pad}// DM switch: emitted as if/else chain inside a while(true)\n${pad}// wrapper so that break/continue inside case bodies are valid C#\n`;
+        // The switch value is evaluated ONCE into a local: DM semantics (the
+        // value must not be re-evaluated per case), and the emitted temp
+        // (e.g. an `is var` pattern temp) must not be re-declared in every
+        // case condition (CS0136 — corpus: tgmc).
+        const switchTemp = this.nextTemp();
+        switchCode += `${pad}var ${switchTemp} = ${this.transpileExpression(stmt.switchValue)};\n`;
         switchCode += `${pad}while (true)\n${pad}{\n`;
         this.switchDepth++;
         const cases: { values: any[]; body: any[] }[] = stmt.cases || [];
-        const switchCond = this.transpileExpression(stmt.switchValue);
         for (let i = 0; i < cases.length; i++) {
           const c = cases[i];
-          const conds = c.values.map(v => `DMValue.In(${switchCond}, ${this.transpileExpression(v)}).IsTrue()`).join(' || ');
+          const conds = c.values.map(v => `DMValue.In(${switchTemp}, ${this.transpileExpression(v)}).IsTrue()`).join(' || ');
           switchCode += `${pad}    ${i === 0 ? 'if' : 'else if'} (${conds})\n${pad}    {\n`;
           for (const s of c.body || []) {
             switchCode += this.transpileStatement(s, indent + 8);
@@ -471,8 +505,16 @@ namespace Content.Server.DM
             this.continueLabels.pop();
             this.loopDepth--;
             cforCode += `${pad}        }\n`;
-            cforCode += `${pad}        ${contLabel}:\n`;
-            cforCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.increment)});\n`;
+            if (stmt.increment) {
+              // The increment runs behind the continue label so a `continue`
+              // still advances the loop.
+              cforCode += `${pad}        ${contLabel}:\n`;
+              cforCode += `${pad}        comp.SetVar("${stmt.loopVariable}", ${this.transpileExpression(stmt.increment)});\n`;
+            } else {
+              // 2-clause form (for(var/i = init, cond)): no increment — the
+              // label still needs a statement for the goto (item 66).
+              cforCode += `${pad}        ${contLabel}: ;\n`;
+            }
             cforCode += `${pad}    }\n`;
           } else if (stmt.condition) {
             // Bare-init C-style loop (for(words, words > 0, words--)): the
@@ -573,11 +615,12 @@ namespace Content.Server.DM
             return `${pad}${bare};\n`;
           }
           if (stmt.expression.type === 'assignment' || stmt.expression.type === 'index_assignment') {
-            const ia = stmt.expression as any;
             // Datum-property index writes emit a parenthesized ternary
             // (`(x).AsDatum() is var t ? ... : Null`) which is not a valid
-            // statement — discard the value explicitly.
-            if (ia.type === 'index_assignment' && ia.target?.type === 'property' && ia.target?.target?.type !== 'variable') {
+            // statement — discard the value explicitly. This applies to ANY
+            // `is var`-shaped set expression, whatever the target chain
+            // (corpus build: tgmc CS0201 on variable-target index writes).
+            if (expr.includes(' is var ')) {
               return `${pad}_ = ${expr};\n`;
             }
             // Variable/GLOB writes may be parenthesized awaits
@@ -616,6 +659,10 @@ namespace Content.Server.DM
             tryCode += this.transpileStatement(s, indent + 4);
           }
           tryCode += `${pad}}\n`;
+        } else {
+          // DM allows a bare try without a catch — C# requires a catch or
+          // finally after the block (item 66 corpus build: tgmc CS1524).
+          tryCode += `${pad}finally { }\n`;
         }
         return tryCode;
       }
@@ -998,6 +1045,20 @@ namespace Content.Server.DM
   private sanitizeIdentifier(name: string): string {
     const cleaned = name.replace(/[^A-Za-z0-9_]/g, '');
     return cleaned.length > 0 ? cleaned : 'X';
+  }
+
+  /** Deduped, identifier-safe C# member name for a proc (DM names are
+   *  case-insensitive, so `foo` and `Foo` on one type collide — CS0111).
+   *  Pass 1 (registrations) and pass 2 (members) must agree on the name. */
+  private nextProcMemberName(procName: string, used: Set<string>): string {
+    let name = this.sanitizeIdentifier(this.capitalize(procName));
+    if (used.has(name)) {
+      let suffix = 2;
+      while (used.has(`${name}_${suffix}`)) suffix++;
+      name = `${name}_${suffix}`;
+    }
+    used.add(name);
+    return name;
   }
 
   /** Item 64: resolve a call target against the corpus symbol table and warn

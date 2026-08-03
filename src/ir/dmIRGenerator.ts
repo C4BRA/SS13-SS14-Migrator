@@ -85,7 +85,12 @@ export class DMIRGenerator {
         anchored: parentIR ? parentIR.anchored : false,
         opacity: parentIR ? parentIR.opacity : false,
         customVars: new Map(parentIR ? parentIR.customVars : []),
-        procs: new Map(parentIR ? parentIR.procs : []),
+        // OWN procs only: the runtime registry resolves inherited procs by
+        // walking the type hierarchy at call time (TryGetInherited), so
+        // copying the parent's map here made the emitter emit every ancestor
+        // proc for every descendant (~427x duplication at corpus scale —
+        // tgmc emitted 10,039,587 members for 23,519 declared procs).
+        procs: new Map(),
         isDynamic: parentIR ? parentIR.isDynamic : false
       };
 

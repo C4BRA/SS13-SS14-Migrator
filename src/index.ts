@@ -79,6 +79,10 @@ export class DM2SS14Transpiler {
     if (globals.length > 0) {
       console.log(`      Collected ${globals.length} /global/var/ declarations.`);
     }
+    // The parsed ASTs are only needed for IR generation — release them before
+    // emission so the YAML + C# outputs (which are large at corpus scale)
+    // fit in the heap alongside the IR (item 66 full-corpus boot).
+    allASTNodes.length = 0;
 
     // Corpus-wide symbol table for emit-time call-target resolution (item 64).
     const symbols = new SymbolTable();
@@ -94,9 +98,14 @@ export class DM2SS14Transpiler {
     console.log(`[3/5] Emitting SS14 YAML Prototypes and C# ECS Systems...`);
     const protoDir = path.join(options.outputDir, 'Resources', 'Prototypes');
     this.yamlGenerator.generateYAMLPrototypes(irMap, protoDir);
+    console.log(`      YAML prototypes emitted (${irMap.size} types).`);
 
     const serverDMDir = path.join(options.outputDir, 'Content.Server', 'DM');
-    this.csharpEmitter.emitCSharpSystems(irMap, serverDMDir, globals, symbols);
+    console.log(`      Emitting C# ECS systems...`);
+    // Streaming emission: the proc bodies are written to the file as they
+    // are generated instead of accumulating one giant string (45k+ types at
+    // corpus scale would exceed the node heap — item 66).
+    this.csharpEmitter.emitCSharpSystemsFile(irMap, serverDMDir, globals, symbols);
     console.warn = emitterWarn;
     if (unresolvedCallNames > 0) {
       console.log(`      Symbol pass: ${unresolvedCallNames} unresolved call names (runtime fallback — see warnings above).`);
@@ -164,6 +173,11 @@ export class DM2SS14Transpiler {
     if (!fs.existsSync(dir)) return results;
 
     const list = fs.readdirSync(dir);
+    // Deterministic walk: collectDefinesFromFiles' #define/#undef sequence
+    // depends on file order (fs.readdirSync order is platform/FS dependent),
+    // which made macro expansions flaky (a corpus file intermittently got an
+    // unterminated /* */ from a differently-collected define — perf audit).
+    list.sort();
     for (const file of list) {
       const filePath = path.join(dir, file);
       let stat;

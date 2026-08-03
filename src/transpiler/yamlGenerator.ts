@@ -3,12 +3,20 @@ import * as path from 'path';
 import { DMIRType } from '../ir/dmIRGenerator.js';
 
 export class YAMLGenerator {
+  // Structural parent prototypes the converter references (BaseItem etc.)
+  // that no DM type defines — plain entity stubs so the engine's prototype
+  // loader resolves every `parent:` (item 66 boot).
+  private static readonly BASE_PARENT_STUBS = ['BaseItem', 'BaseFloor', 'BaseWall', 'BaseMobDummy'];
+
   public generateYAMLPrototypes(irMap: Map<string, DMIRType>, outputDir: string): void {
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
     const prototypes: any[] = [];
+    for (const stub of YAMLGenerator.BASE_PARENT_STUBS) {
+      prototypes.push({ type: 'entity', id: stub });
+    }
     // Deterministic id assignment with collision dedupe: distinct DM paths can
     // map to the same id (/obj/item/a_b vs /obj/item/a/b — WS6-4), and
     // duplicates would break prototype loading.
@@ -50,9 +58,11 @@ export class YAMLGenerator {
           type: 'Fixtures',
           fixtures: {
             fix1: {
-              shape: {
-                type: 'PhysShapeAABB'
-              },
+              // The engine's IPhysShape is not polymorphic-serializable at
+              // this pin (no ImplicitDataDefinitionForInheritors marker), so
+              // a `shape:` mapping fails to deserialize ("No data definition
+              // found for type IPhysShape"). Fixture.Shape defaults to
+              // PhysShapeAabb when omitted — the boot-clean form (item 66).
               density: 100,
               hard: true
             }
@@ -85,8 +95,35 @@ export class YAMLGenerator {
       });
     }
 
-    const yamlContent = this.serializePrototypesToYAML(prototypes);
-    fs.writeFileSync(path.join(outputDir, 'converted_entities.yml'), yamlContent, 'utf-8');
+    const yamlPath = path.join(outputDir, 'converted_entities.yml');
+    // Streaming write: at corpus scale the YAML for 45k+ types is too large
+    // to accumulate as one string without risking the node heap (item 66).
+    fs.writeFileSync(yamlPath, '# Auto-generated SS14 Prototypes converted from SS13 DM\n');
+    let buffer = '';
+    const FLUSH_AT = 4 * 1024 * 1024;
+    const emit = (chunk: string): void => {
+      buffer += chunk;
+      if (buffer.length >= FLUSH_AT) {
+        fs.appendFileSync(yamlPath, buffer);
+        buffer = '';
+      }
+    };
+    for (const proto of prototypes) {
+      emit(`- type: ${proto.type}\n`);
+      emit(`  id: ${proto.id}\n`);
+      if (proto.parent) emit(`  parent: ${proto.parent}\n`);
+      if (proto.name) emit(`  name: ${this.yamlScalar(proto.name, true)}\n`);
+      if (proto.description) emit(`  description: ${this.yamlScalar(proto.description, true)}\n`);
+      if (proto.components && proto.components.length > 0) {
+        emit(`  components:\n`);
+        for (const comp of proto.components) {
+          emit(`  - type: ${comp.type}\n`);
+          emit(this.serializeProps(comp, 4, true));
+        }
+      }
+      emit('\n');
+    }
+    fs.appendFileSync(yamlPath, buffer);
   }
 
   private parentIdFor(irType: DMIRType, pathKey: string, idMap: Map<string, string>): string | null {
@@ -107,35 +144,25 @@ export class YAMLGenerator {
     return dmPath.replace(/^\//, '').replace(/\//g, '_').toLowerCase();
   }
 
-  private serializePrototypesToYAML(prototypes: any[]): string {
-    let yaml = '# Auto-generated SS14 Prototypes converted from SS13 DM\n';
-    for (const proto of prototypes) {
-      yaml += `- type: ${proto.type}\n`;
-      yaml += `  id: ${proto.id}\n`;
-      if (proto.parent) yaml += `  parent: ${proto.parent}\n`;
-      if (proto.name) yaml += `  name: ${this.yamlScalar(proto.name, true)}\n`;
-      if (proto.description) yaml += `  description: ${this.yamlScalar(proto.description, true)}\n`;
-      if (proto.components && proto.components.length > 0) {
-        yaml += `  components:\n`;
-        for (const comp of proto.components) {
-          yaml += `  - type: ${comp.type}\n`;
-          yaml += this.serializeProps(comp, 4);
-        }
-      }
-      yaml += '\n';
-    }
-    return yaml;
-  }
-
-  private serializeProps(obj: any, indent: number): string {
+  private serializeProps(obj: any, indent: number, skipTopLevelType = false): string {
     let out = '';
     for (const [k, v] of Object.entries(obj ?? {})) {
-      // The `type` key is NOT skipped: it is only meaningful at the component
-      // level (emitted by the caller as `- type: X`) and must survive nested
-      // (fixture `shape.type: PhysShapeAABB`, user vars named `type` —
-      // WS6-3/WS6-6).
+      // The component's own `type` is emitted by the caller as `- type: X`;
+      // serializing it again produces a duplicate YAML key that the engine's
+      // parser rejects ("An item with the same key has already been added",
+      // item 66 boot). Nested objects keep `type` (fixture shape.type, user
+      // vars named `type` — WS6-3/WS6-6).
+      if (skipTopLevelType && k === 'type') continue;
       out += `${' '.repeat(indent)}${k}:`;
       if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+        const entries = Object.entries(v);
+        if (entries.length === 0) {
+          // An empty mapping must be `{}` — a bare `key:` parses as null and
+          // the engine rejects it for non-nullable fields like the
+          // DMRuntimeComponent's initialVars dictionary (item 66 boot).
+          out += ' {}\n';
+          continue;
+        }
         out += `\n${this.serializeProps(v, indent + 2)}`;
       } else if (Array.isArray(v)) {
         out += `\n`;

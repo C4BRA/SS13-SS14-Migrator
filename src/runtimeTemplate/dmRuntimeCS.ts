@@ -749,15 +749,17 @@ namespace SS13.DM.Runtime
 {
     public static class DMTickScheduler
     {
-        public static async Task Sleep(double deciseconds)
+        public static async Task<DMValue> Sleep(double deciseconds)
         {
             int milliseconds = (int)(deciseconds * 100);
             await Task.Delay(Math.Max(1, milliseconds));
+            return DMValue.Null;
         }
 
-        public static async Task Sleep(DMValue deciseconds)
+        public static async Task<DMValue> Sleep(DMValue deciseconds)
         {
             await Sleep(deciseconds.ToNumber());
+            return DMValue.Null;
         }
 
         public static void Spawn(double deciseconds, Action action)
@@ -903,8 +905,11 @@ namespace SS13.DM.Runtime
             return DMValue.FromDatum(datum);
         }
 
-        public static DMValue DMDelete(DMValue target)
+        public static DMValue DMDelete(params DMValue[] targets)
         {
+            // Extra arguments (qdel(x, ...) corpus forms) are accepted and
+            // ignored — only the first target is deleted (CS1501 fix).
+            var target = targets.Length > 0 ? targets[0] : DMValue.Null;
             if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
             {
                 // Engine integration point: queue entity deletion.
@@ -1083,7 +1088,7 @@ namespace SS13.DM.Runtime
         /// (0/absent = the whole string). An empty needle is a no-op (BYOND
         /// replaces nothing; a naive scan would infinite-loop).
         /// </summary>
-        public static DMValue ReplaceText(DMValue haystack, DMValue needle, DMValue replacement, DMValue start, DMValue end)
+        public static DMValue ReplaceText(DMValue haystack, DMValue needle, DMValue replacement, DMValue start = default, DMValue end = default)
         {
             var s = haystack.ToString();
             var n = needle.ToString();
@@ -1167,7 +1172,7 @@ namespace SS13.DM.Runtime
         /// path literal through, so nameof(/datum/action/proc/Trigger) yields
         /// "Trigger".)
         /// </summary>
-        public static DMValue NameOf(DMValue path)
+        public static DMValue NameOf(DMValue path, DMValue unused = default)
         {
             var s = path.ToString();
             var idx = s.LastIndexOf('/');
@@ -1520,14 +1525,11 @@ namespace SS13.DM.Runtime
         /// trying the direct away direction first and then 45-degree rotations,
         /// stopping once past max tiles (0 = 1) or after the given number of steps.
         /// </summary>
-        public static DMValue StepAway(DMValue atom, DMValue trg)
+        public static DMValue StepAway(DMValue atom, DMValue trg, DMValue max = default, DMValue speed = default)
         {
             // BYOND default Max = 5 tiles; speed 0 = step size (one step).
-            return StepAway(atom, trg, DMValue.FromNumber(5), DMValue.FromNumber(1));
-        }
-
-        public static DMValue StepAway(DMValue atom, DMValue trg, DMValue max, DMValue speed)
-        {
+            if (max.Type == DMValueType.Null) max = DMValue.FromNumber(5);
+            if (speed.Type == DMValueType.Null) speed = DMValue.FromNumber(1);
             if (atom.Type != DMValueType.DatumRef || atom.DatumRef is not DMRuntime) return DMValue.FromNumber(0);
             if (trg.Type != DMValueType.DatumRef || trg.DatumRef is not DMRuntime) return DMValue.FromNumber(0);
             var maxDist = Math.Max(1, (int)max.ToNumber());
@@ -1671,7 +1673,7 @@ namespace SS13.DM.Runtime
         /// DM splicetext(text, start, end): remove [start, end] from the text
         /// (item 67 — previously an unresolved bare call).
         /// </summary>
-        public static DMValue Splicetext(DMValue text, DMValue start, DMValue end = default)
+        public static DMValue Splicetext(DMValue text, DMValue start, DMValue end = default, DMValue unused = default)
         {
             var s = text.ToString();
             if (s.Length == 0) return text;
@@ -1784,7 +1786,7 @@ namespace SS13.DM.Runtime
         /// DM jointext(list, sep, start, end): join elements start..end
         /// (1-indexed, inclusive; end 0 = to the end).
         /// </summary>
-        public static DMValue JoinText(DMValue value, DMValue separator, DMValue start, DMValue end)
+        public static DMValue JoinText(DMValue value, DMValue separator, DMValue start = default, DMValue end = default)
         {
             var sep = separator.Type == DMValueType.Null && separator.NumberValue == 0 ? "" : separator.ToString();
             var sb = new System.Text.StringBuilder();
@@ -1943,7 +1945,7 @@ namespace SS13.DM.Runtime
         /// DM fcopy_rsc(src, dst): copies a bundled resource. Engine-free runtime
         /// has no rsc packaging, so this behaves like fcopy.
         /// </summary>
-        public static DMValue FileCopyRsc(DMValue src, DMValue dst) => FileCopy(src, dst);
+        public static DMValue FileCopyRsc(DMValue src, DMValue dst = default) => FileCopy(src, dst);
 
         /// <summary>
         /// DM flist(path): list of entry names (files and directories) in a folder.
@@ -2522,7 +2524,7 @@ namespace SS13.DM.Runtime
         // ===== Tier-3 builtins (2026-08-02 wave) =====
 
         // arctan in degrees (BYOND trig is degree-based).
-        public static DMValue Arctan(DMValue value) => DMValue.FromNumber(Math.Atan(value.ToNumber()) * 180.0 / Math.PI, true);
+        public static DMValue Arctan(DMValue value, DMValue unused = default) => DMValue.FromNumber(Math.Atan(value.ToNumber()) * 180.0 / Math.PI, true);
 
         // regex_quote(text): escape regex metacharacters (REGEX_QUOTE macro).
         public static DMValue RegexQuote(DMValue value) => DMValue.FromString(Regex.Escape(value.ToString()));
@@ -2817,8 +2819,12 @@ namespace SS13.DM.Runtime
 
         public static DMValue ArcCos(DMValue value) => DMValue.FromNumber(Math.Acos(value.ToNumber()) * 180.0 / Math.PI);
 
-        public static DMValue Log(DMValue value, DMValue baseValue = default)
+        public static DMValue Log(params DMValue[] args)
         {
+            // Log(value) / Log(base, value) — arglist() flattening passes a
+            // single DMValue[] (the params form accepts it).
+            var value = args.Length > 0 ? args[0] : DMValue.Null;
+            var baseValue = args.Length > 1 ? args[1] : default(DMValue);
             if (baseValue.Type == DMValueType.Null) return DMValue.FromNumber(Math.Log(value.ToNumber()));
             // BYOND log(X, Y): the log of Y with base X (WS7-3).
             return DMValue.FromNumber(Math.Log(baseValue.ToNumber()) / Math.Log(value.ToNumber()));
@@ -2979,7 +2985,7 @@ namespace SS13.DM.Runtime
 
         // ==== JSON ====
 
-        public static DMValue JsonEncode(DMValue value) => DMValue.FromString(JsonValue(value));
+        public static DMValue JsonEncode(DMValue value, DMValue unused = default) => DMValue.FromString(JsonValue(value));
 
         private static string JsonValue(DMValue v)
         {

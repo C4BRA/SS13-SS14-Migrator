@@ -322,6 +322,11 @@ export class DMPreprocessor {
           continue;
         }
         if (!state.inTemplate) {
+          // The accumulator is re-stripped every iteration: appended lines
+          // may carry quotes whose state depends on the accumulated context
+          // (template boundaries — jobban_holder.dm), so a standalone strip
+          // of the appended line could hide a // comment. O(n^2) on the
+          // merged length, but merged lines are short in practice.
           line = DMPreprocessor.stripInlineComment(line);
           line += ' ' + DMPreprocessor.stripInlineComment(nextLine).trim();
         } else {
@@ -598,6 +603,16 @@ export class DMPreprocessor {
         continue;
       }
       if (ch === '\\' && (line[i + 1] === '"' || line[i + 1] === "'")) {
+        i++;
+        continue;
+      }
+      if (!inString && !inIcon && ch === '*' && line[i + 1] === '/') {
+        // A block-comment CLOSER (*//... — e.g. a decorative banner like
+        // `*/////////////////////////`) must pass through: the following `//`
+        // would otherwise truncate the line to `*` and the matching `/*`
+        // would never close (corpus: tgmc modules.dm unterminated-comment
+        // parse error). The strip is line-based with no carried block state,
+        // so the closer itself has to survive.
         i++;
         continue;
       }
