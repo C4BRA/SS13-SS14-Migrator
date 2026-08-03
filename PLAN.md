@@ -167,7 +167,7 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       File: `dmLexer.ts`.
 61. [x] **12.10 — CLI output-path validation.** `--output` outside the user's home is
       rejected — the CLI now routes through the GUI's `validateOutputPath` (`~`
-      expansion, ` ` rejection, realpath of the deepest existing ancestor so
+      expansion, `` rejection, realpath of the deepest existing ancestor so
       symlinks pointing outside `$HOME` are refused). File: `src/cli.ts`.
 62. [x] **12.6 — Builtin property reads** (Plan 07). `DMGetProperty` now resolves
       `.type` (the datum type path), `.dir` (SOUTH=2 default), `.contents` /
