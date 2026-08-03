@@ -16,12 +16,12 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 |---|---|
 | `npm run build` | clean (tsc strict) |
 | `npm test` | green; generated solution builds vs real RobustToolbox |
-| Semantic probes | **168 / 168** (`npm run audit:semantics`) |
+| Semantic probes | **171 / 171** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
-| Loss sites (honest, post-12.1) | tg **26,151** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
-| Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
+| Loss sites (honest, post-12.1) | tg **25,882** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
+| Unresolved bare calls (tg) | **138** (item 67 — remainder are user procs resolved by the registry at call time) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **12.12** (items 1–66 done; 67 open in `PLAN.md`) |
+| Open fix wave | **none — all 67 PLAN.md items complete** |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,

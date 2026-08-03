@@ -18,6 +18,9 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
   'isfile', 'fdel', 'fcopy', 'fcopy_rsc', 'flist', 'ref', 'refcount',
   'step', 'step_towards', 'step_away', 'get_step_away', 'get_step_towards',
   'orange', 'viewers', 'hearers',
+  // Item 67: remaining corpus builtins
+  'oviewers', 'get_step_rand', 'get_step_to', 'splicetext', 'filter',
+  'stack_trace', 'output',
   // Tier-3 wave (2026-08-02): remaining corpus backlog
   'regex', 'regex_quote', 'astype', 'isicon', 'icon_states', 'arctan',
   'findlasttext', 'values_sum', 'values_dot', 'values_min', 'values_max',
@@ -299,6 +302,20 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.Viewers(${args})`;
     case 'hearers':
       return `DMRuntimeHelpers.Hearers(${args})`;
+    case 'oviewers':
+      return `DMRuntimeHelpers.Oviewers(${args})`;
+    case 'get_step_rand':
+      return `DMRuntimeHelpers.GetStepRand(${args})`;
+    case 'get_step_to':
+      return `DMRuntimeHelpers.GetStepTo(${args})`;
+    case 'splicetext':
+      return `DMRuntimeHelpers.Splicetext(${args})`;
+    case 'filter':
+      return `DMRuntimeHelpers.Filter(${args})`;
+    case 'stack_trace':
+      return `DMRuntimeHelpers.StackTrace(${args})`;
+    case 'output':
+      return `DMRuntimeHelpers.Output(${args})`;
     default:
       return null;
   }

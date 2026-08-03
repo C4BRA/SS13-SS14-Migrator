@@ -883,6 +883,21 @@ const PROBES: Probe[] = [
     name: 'matrix translate then turn',
     dm: `/datum/probe/proc/run()\n\tvar/matrix/m = matrix()\n\tm.Translate(10, 20)\n\tm.Turn(90)\n\treturn m.e + m.f`,
     expected: '-20' // 90deg rotates (e,f) = (0,20) -> (-20,0)
+  },
+  {
+    name: 'splicetext removes a range',
+    dm: `/datum/probe/proc/run()\n\treturn splicetext("abcdef", 2, 4)`,
+    expected: 'aef' // item 67: head "a" + tail "ef"
+  },
+  {
+    name: 'filter() creates a datum with vars',
+    dm: `/datum/probe/proc/run()\n\tvar/filter/f = filter("blur", 5)\n\treturn f.size`,
+    expected: '5' // item 67: the size argument reads back
+  },
+  {
+    name: 'stack_trace returns null',
+    dm: `/datum/probe/proc/run()\n\treturn stack_trace("x")`,
+    expected: 'null' // debug aid; Null in the engine-free runtime
   }
 ];
 

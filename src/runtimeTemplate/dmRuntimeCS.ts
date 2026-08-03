@@ -1639,6 +1639,79 @@ namespace SS13.DM.Runtime
             return MobScan(center, dist, true);
         }
 
+        /// <summary>
+        /// DM oviewers(dist, center): viewers of the area EXCLUDING the
+        /// center itself (BYOND's o-prefixed variants drop the center).
+        /// </summary>
+        public static DMValue Oviewers(params DMValue[] args)
+        {
+            var (center, dist) = CenterDist(2, args);
+            return MobScan(center, dist, false);
+        }
+
+        /// <summary>
+        /// DM get_step_rand(atom): one step in a random direction
+        /// (item 67 — previously an unresolved bare call).
+        /// </summary>
+        public static DMValue GetStepRand(DMValue atom)
+        {
+            return GetStep(atom, DMValue.FromNumber(System.Random.Shared.Next(8) + 1));
+        }
+
+        /// <summary>
+        /// DM get_step_to(atom, target): one step toward the target
+        /// (straight-line approximation of BYOND's pathfinding — item 67).
+        /// </summary>
+        public static DMValue GetStepTo(DMValue atom, DMValue target)
+        {
+            return GetStepTowards(atom, target);
+        }
+
+        /// <summary>
+        /// DM splicetext(text, start, end): remove [start, end] from the text
+        /// (item 67 — previously an unresolved bare call).
+        /// </summary>
+        public static DMValue Splicetext(DMValue text, DMValue start, DMValue end = default)
+        {
+            var s = text.ToString();
+            if (s.Length == 0) return text;
+            int startIdx = start.Type == DMValueType.Null && start.NumberValue == 0 ? 1 : Math.Max(1, (int)start.ToNumber());
+            int endIdx = end.Type == DMValueType.Null && end.NumberValue == 0 ? s.Length : (int)end.ToNumber();
+            if (endIdx < startIdx) return text;
+            // copytext end is exclusive: head = chars 1..startIdx-1,
+            // tail = chars endIdx+1..end (item 67).
+            var head = startIdx > 1 ? CopyText(text, DMValue.FromNumber(1), DMValue.FromNumber(startIdx)) : DMValue.FromString("");
+            var tail = endIdx < s.Length ? CopyText(text, DMValue.FromNumber(endIdx + 1), DMValue.FromNumber(s.Length + 1)) : DMValue.FromString("");
+            return DMValue.FromString(head.ToString() + tail.ToString());
+        }
+
+        /// <summary>
+        /// DM filter(type, ...): a real /filter datum (item 67) — vars read
+        /// back; rendering needs the engine.
+        /// </summary>
+        public static DMValue Filter(params DMValue[] args)
+        {
+            var datum = new DMRuntime { DMTypePath = "/filter" };
+            LiveDatums.Add(datum);
+            datum.SetVar("type", args.Length > 0 && args[0].Type != DMValueType.Null ? args[0] : DMValue.FromString("drop_shadow"));
+            datum.SetVar("size", args.Length > 1 ? args[1] : DMValue.FromNumber(3));
+            datum.SetVar("color", args.Length > 2 ? args[2] : DMValue.Null);
+            datum.SetVar("alpha", DMValue.FromNumber(255));
+            return DMValue.FromDatum(datum);
+        }
+
+        /// <summary>
+        /// DM stack_trace(msg): prints the trace in BYOND; the engine-free
+        /// runtime has no trace infrastructure — Null (debug aid, item 67).
+        /// </summary>
+        public static DMValue StackTrace(params DMValue[] args) => DMValue.Null;
+
+        /// <summary>
+        /// DM output(msg, target): sends text to a client UI element; the
+        /// engine-free runtime has no client — Null (item 67).
+        /// </summary>
+        public static DMValue Output(params DMValue[] args) => DMValue.Null;
+
         private static DMValue MobScan(DMValue center, DMValue distValue, bool includeCenter)
         {
             var dist = distValue.ToNumber();

@@ -11,11 +11,11 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **66 / 1** (items 1-66 done; 67 open, in progression order) |
-| Semantic probes | **168 / 168** (`npm run audit:semantics`) |
+| Items done / open | **67 / 0** — **all 67 items complete** |
+| Semantic probes | **171 / 171** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
-| Loss sites (honest, post-12.1) | tg **26,151** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
-| Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
+| Loss sites (honest, post-12.1) | tg **25,882** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
+| Unresolved bare calls (tg) | **138** (case-fold 165 + item-67 builtins/quote-aware guard) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
 
 ---
@@ -201,8 +201,14 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       the full boot run are gated on the engine:
       scripts/setup-engine.sh, then dotnet run — the server must reach the
       lobby state (acceptance gate; RobustToolbox not present on this machine).
-67. [ ] **Remaining builtins:** `filter`, unit-test helpers, `print_language_list`-class
-      user procs, `stack_trace`, `winset`-family UI — 572 unresolved sites.
+67. [x] **Remaining builtins.** Quote-aware interpolation guard (an apostrophe in a
+      macro body no longer blocks expansion — FORMAT_LIMB_OWNER family, 165 sites);
+      new builtins: `filter()` (real /filter datum), `splicetext` (real),
+      `oviewers`/`get_step_rand`/`get_step_to` (real), `stack_trace`/`output`
+      (engine-free Null). **Unresolved bare calls 407 → 138; loss 26,151 →
+      25,882; probes 168 → 171/171.** The rest of the 138 are user procs
+      (span_*, unit-test helpers) that the runtime registry resolves at call
+      time.
 
 ---
 

@@ -518,21 +518,23 @@ export class DMPreprocessor {
 
   // True when a #define body is complete: strings/icons balanced, and parens/
   // brackets/braces not left open. Used to absorb multi-line define bodies.
-  // Even quote counts (ignoring escapes) — a string-interpolation region the
-  // lexer scans must stay quote-balanced (item 56 guard).
+  // Quote-AWARE balance for the interpolation guard (item 56/67): an
+  // apostrophe inside a "..." string must not unbalance the check — e.g.
+  // #define n(limb) (limb.owner ? "[limb.owner]'s ..." : limb) expanded
+  // inside an interpolation would otherwise be kept unexpanded forever.
   private static isQuoteBalanced(s: string): boolean {
-    let dq = 0;
-    let sq = 0;
+    let inString = false;
+    let inIcon = false;
     for (let i = 0; i < s.length; i++) {
       const c = s[i];
       if (c === '\\') {
         i++;
         continue;
       }
-      if (c === '"') dq++;
-      else if (c === "'") sq++;
+      if (c === '"' && !inIcon) inString = !inString;
+      else if (c === "'" && !inString) inIcon = !inIcon;
     }
-    return dq % 2 === 0 && sq % 2 === 0;
+    return !inString && !inIcon;
   }
 
   // True when a #define body is complete: strings/icons balanced, and parens/
