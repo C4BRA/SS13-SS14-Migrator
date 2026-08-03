@@ -386,7 +386,7 @@ async function runCSharpEmitterTests() {
     return target
 `);
   assertContains(inClause, `comp.SetVar("target", args.Length > 0 ? args[0] : DMValue.Null);`, 'in-clause arg is a real parameter');
-  assertContains(inClause, `comp.SetVar("flag", args.Length > 1 ? args[1] : DMValue.Null);`, 'second arg still positional');
+  assertContains(inClause, `comp.SetVar("flag", args.Length > 1 ? args[1] : DMValue.FromNumber(0));`, 'second arg keeps its default (item 58)');
   assert(!inClause.includes('args.Length > 2'), 'no phantom parameter from in-clause');
 
   // Test 40: Plan 09 B1 — string interpolation [expr] transpiles to concatenation

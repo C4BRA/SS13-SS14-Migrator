@@ -11,8 +11,8 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **57 / 10** (items 1-57 done; 58-67 open, in progression order) |
-| Semantic probes | **151 / 151** (`npm run audit:semantics`) |
+| Items done / open | **58 / 9** (items 1-58 done; 59-67 open, in progression order) |
+| Semantic probes | **155 / 155** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
@@ -141,9 +141,15 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       unresolved bare calls (tg) 572 → 407 (165 sites: `Pick`/`crash`/`replacetextex`
       etc. resolve instead of → Null).** Files: `builtinMappings.ts`,
       `csharpEmitter.ts`, `fidelityAudit.ts`.
-58. [ ] **12.3 — Proc default arguments + identifier assoc keys.** `proc/test(a = 1)`
-      must apply the default; `list(a = 1)` must emit an assoc pair, not
-      `comp.SetVar("a", ...)`. Files: `dmParser.ts`, `csharpEmitter.ts`.
+58. [x] **12.3 — Proc default arguments + identifier assoc keys.** `proc/test(a = 1)`
+      now applies the default at the call site (`comp.SetVar("a", args.Length > 0 ?
+      args[0] : DMValue.FromNumber(1))` — the default is kept as an AST in
+      `parseProcArg`); `list(a = 1)` / `{a = 1}` emit associative pairs with the
+      identifier as a text key (assoc-context depth flag in the parser — no more
+      `comp.SetVar("a", ...)`; brace-lists route through `MakeListAssoc`).
+      **Probes 151 → 155/155** (default-omitted, default-overridden, per-call
+      expression default, identifier assoc keys). Files: `dmParser.ts`,
+      `csharpEmitter.ts`, `fidelityDifferential.test.ts`.
 59. [ ] **12.4 — Registry keys + escaping + labels.** Preserve `operator[]` in
       registration keys (sanitize only the C# member name); `escapeString` handle
       `\0`/control chars; emit C# labels for DM labels instead of `// label:` comments.

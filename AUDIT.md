@@ -16,12 +16,12 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 |---|---|
 | `npm run build` | clean (tsc strict) |
 | `npm test` | green; generated solution builds vs real RobustToolbox |
-| Semantic probes | **151 / 151** (`npm run audit:semantics`) |
+| Semantic probes | **155 / 155** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
 | Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **Plan 12.3–12.11** (12.1 + 12.2 + 12.9 done — items 55, 56, 57 in `PLAN.md`) |
+| Open fix wave | **Plan 12.4–12.11** (12.1 + 12.2 + 12.3 + 12.9 done — items 55–58 in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
@@ -155,7 +155,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 |---|---|---|
 | **12.1** | Harness truth (drop false counters/labels) | **done** (item 55) — tg 54,160 → 30,020, reported == corrected |
 | **12.2** | Builtin case-fold + top bare calls | **done** (item 57) — unresolved bare (tg) 572 → 407; `Pick`/`crash`/`replacetextex` resolve instead of Null |
-| **12.3** | Default args + assoc identifier keys | correctness |
+| **12.3** | Default args + assoc identifier keys | **done** (item 58) — missing args bind declared defaults; `list(a = 1)` / `{a = 1}` emit `MakeListAssoc` pairs; probes → 155/155 |
 | **12.4** | operator registry keys, `escapeString` `\0`, label break | dispatch + safety |
 | **12.5** | Lexer `.5` / brace-lists / `1...5` | parse fidelity |
 | **12.6** | Props `.loc/.type/.dir` (Plan 07) | −6k sites |
@@ -195,9 +195,10 @@ JSON history: `docs/audit/10-tgstation-audit.json`, `11-tgstation-audit-post.jso
 
 ### Probe suite
 
-**151/151 passing.** Core semantics (truthiness, lists, `..()`, short-circuit,
+**155/155 passing.** Core semantics (truthiness, lists, `..()`, short-circuit,
 ranges, text, json_encode escapes, float division provenance, step-range continue)
-plus builtin batches and Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …).
+plus builtin batches and Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …)
+and item-58 (default args omitted/overridden/expression, assoc identifier keys).
 
 ### Loss scoreboard (tgstation, honest view — post-12.1)
 

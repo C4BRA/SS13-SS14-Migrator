@@ -798,6 +798,26 @@ const PROBES: Probe[] = [
     name: 'world.view and world.tick_lag are numbers',
     dm: `/datum/probe/proc/run()\n\treturn world.view + world.tick_lag`,
     expected: '6' // BYOND defaults 5 + 1
+  },
+  {
+    name: 'default arg applies when omitted',
+    dm: `/datum/probe/proc/f(a = 5)\n\treturn a\n/datum/probe/proc/run()\n\treturn f()`,
+    expected: '5' // BYOND: missing arg binds the declared default (item 58)
+  },
+  {
+    name: 'default arg overridden by a real argument',
+    dm: `/datum/probe/proc/f(a = 5)\n\treturn a\n/datum/probe/proc/run()\n\treturn f(7)`,
+    expected: '7'
+  },
+  {
+    name: 'assoc identifier key list(a = 1)',
+    dm: `/datum/probe/proc/run()\n\tvar/list/l = list(a = 1, "b" = 2)\n\treturn l["a"] + l["b"]`,
+    expected: '3' // identifier keys are associative pairs (item 58)
+  },
+  {
+    name: 'default arg is an expression evaluated per call',
+    dm: `/datum/probe/proc/f(a = list(1, 2))\n\treturn length(a)\n/datum/probe/proc/run()\n\treturn f()`,
+    expected: '2'
   }
 ];
 

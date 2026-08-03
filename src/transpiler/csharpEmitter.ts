@@ -96,8 +96,12 @@ namespace Content.Server.DM
         procNode.args.forEach((arg, idx) => {
           // Args are stored on the datum so body references via
           // comp.GetVar(name) resolve them; this also sidesteps C# keyword
-          // collisions (e.g. an arg named `event` or `object`).
-          member += `            comp.SetVar("${arg.name}", args.Length > ${idx} ? args[${idx}] : DMValue.Null);\n`;
+          // collisions (e.g. an arg named `event` or `object`). Missing args
+          // fall back to the declared default value (item 58: `f(a = 1)`).
+          const fallback = arg.defaultValue
+            ? this.transpileExpression(arg.defaultValue)
+            : 'DMValue.Null';
+          member += `            comp.SetVar("${arg.name}", args.Length > ${idx} ? args[${idx}] : ${fallback});\n`;
         });
 
         this.currentProcName = procName;
@@ -675,6 +679,15 @@ namespace Content.Server.DM
         return `DMListSet(${this.transpileExpression(ia.target)}, ${indexCode}, ${valueCode})`;
       }
       case 'list':
+        // {a = 1, "b" = 2} — brace-form associative keys (item 58).
+        if (node.elements.some((e: any) => e.type === 'assoc_pair')) {
+          const kv = node.elements.map((e: any) =>
+            e.type === 'assoc_pair'
+              ? `${this.transpileExpression(e.key)}, ${this.transpileExpression(e.value)}`
+              : this.transpileExpression(e)
+          ).join(', ');
+          return `DMRuntimeHelpers.MakeListAssoc(${kv})`;
+        }
         return `DMRuntimeHelpers.MakeList(${node.elements.map((e: any) => this.transpileExpression(e)).join(', ')})`;
       case 'range':
         return `DMRuntimeHelpers.MakeRange(${this.transpileExpression(node.start)}, ${this.transpileExpression(node.end)})`;

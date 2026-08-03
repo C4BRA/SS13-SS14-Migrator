@@ -40,7 +40,7 @@ export interface DMVarDeclNode extends ASTNode {
 export interface DMProcDeclNode extends ASTNode {
   type: 'DMProcDecl';
   name: string;
-  args: { name: string; typeHint?: string }[];
+  args: { name: string; typeHint?: string; defaultValue?: ExpressionNode }[];
   statements: DMStatementNode[];
 }
 
@@ -90,6 +90,9 @@ export class DMParser {
   private tokens: Token[];
   private pos: number = 0;
   public readonly diagnostics: DiagnosticCollector;
+  // Depth of list()/alist() argument parsing — inside one, `a = 1` is an
+  // associative key/value pair, not an assignment (item 58).
+  private assocArgDepth: number = 0;
   // Global variable declarations (/global/var/x = v). Not yet materialized in
   // IR output — collected so nothing is silently dropped.
   public globalVars: DMGlobalVarDeclNode[] = [];
@@ -538,8 +541,8 @@ export class DMParser {
    * limitation). Type hints are recorded when they appear as a `/type/name`
    * path segment.
    */
-  private parseProcArgs(): { name: string; typeHint?: string }[] {
-    const args: { name: string; typeHint?: string }[] = [];
+  private parseProcArgs(): { name: string; typeHint?: string; defaultValue?: ExpressionNode }[] {
+    const args: { name: string; typeHint?: string; defaultValue?: ExpressionNode }[] = [];
     if (!this.matchPunctuation('(')) return args;
 
     // Track parenthesis nesting: defaults like `controller in list("A", "B")`
@@ -572,7 +575,7 @@ export class DMParser {
     return args;
   }
 
-  private parseProcArg(): { name: string; typeHint?: string } | null {
+  private parseProcArg(): { name: string; typeHint?: string; defaultValue?: ExpressionNode } | null {
     const tok = this.peek();
     let name = '';
     let typeHint: string | undefined;
@@ -617,9 +620,11 @@ export class DMParser {
         this.advance();
       }
     }
-    // Optional default value: epsilon = (1E-4 * 20) — consumed and dropped.
+    // Optional default value: epsilon = (1E-4 * 20) — kept as an AST so the
+    // emitter applies it when the call site omits the argument (item 58).
+    let defaultValue: ExpressionNode | undefined;
     if (name && this.matchOperator('=')) {
-      this.parseExpression();
+      defaultValue = this.parseExpression();
     }
     // `in`-clause: `target as mob in oview(1)` — the target expression is a
     // visibility/range filter, not a parameter; consume it so it never
@@ -629,7 +634,7 @@ export class DMParser {
       this.parseExpression();
     }
     if (!name) return null;
-    return { name, typeHint };
+    return { name, typeHint, defaultValue };
   }
 
   /**
@@ -1931,7 +1936,12 @@ export class DMParser {
 
       // Handle assignment specially
       if (op === '=') {
-        if (left.type === 'variable') {
+        if (left.type === 'variable' && this.assocArgDepth > 0) {
+          // list(a = 1) — an identifier key is the associative pair "a" = 1
+          // (DM treats the name as text), not an assignment
+          // (item 58: `comp.SetVar("a", ...)` was the old bug).
+          left = { type: 'assoc_pair', key: { type: 'literal', value: left.name, literalType: 'string' }, value: right } as any;
+        } else if (left.type === 'variable') {
           left = { type: 'assignment', target: left.name, value: right } as any;
         } else if (left.type === 'property') {
           left = { type: 'property_assignment', target: left.target, property: left.property, value: right } as any;
@@ -1995,6 +2005,8 @@ export class DMParser {
       this.advance();
       const elements: ExpressionNode[] = [];
       let closed = false;
+      // {a = 1} — brace-form associative keys (item 58).
+      this.assocArgDepth++;
       while (!this.isType(TokenType.EOF) && !this.isType(TokenType.Newline) && !this.isType(TokenType.Dedent)) {
         if (this.isType(TokenType.Punctuation) && this.peek().value === '}') {
           this.advance();
@@ -2007,6 +2019,7 @@ export class DMParser {
         }
         elements.push(this.parseExpression());
       }
+      this.assocArgDepth--;
       if (!closed) {
         this.diagnostics.error("Expected '}' to close list literal", this.peek().line, this.peek().column);
       }
@@ -2215,6 +2228,10 @@ export class DMParser {
         // the format macros itself, WS9-2). The first argument of a bare
         // text(...) call is kept as a raw string literal.
         const isTextFormat = node.type === 'variable' && node.name === 'text';
+        // Inside list()/alist() arguments, `a = 1` is an associative key
+        // pair, not an assignment (item 58).
+        const isListLiteral = node.type === 'variable' && (node.name === 'list' || node.name === 'alist');
+        if (isListLiteral) this.assocArgDepth++;
         let argIndex = 0;
         // Indents introduced by the argument lines; the matching Dedents are
         // drained after the ')' so enclosing scopes still see their own.
@@ -2264,6 +2281,7 @@ export class DMParser {
         } else {
           node = { type: 'call', name: '', target: node, arguments: args };
         }
+        if (isListLiteral) this.assocArgDepth--;
       } else if (this.matchPunctuation('[')) {
         const index = this.parseExpression();
         this.matchPunctuation(']');
