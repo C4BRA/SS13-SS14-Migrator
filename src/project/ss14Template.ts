@@ -114,6 +114,7 @@ EndGlobal
     <ProjectReference Include="..\\SS13.DM.Runtime\\SS13.DM.Runtime.csproj" />
     <ProjectReference Include="..\\Content.Shared\\Content.Shared.csproj" />
     <ProjectReference Include="$(EngineDir)/Robust.Shared/Robust.Shared.csproj" />
+    <ProjectReference Include="$(EngineDir)/Robust.Server/Robust.Server.csproj" />
   </ItemGroup>
 </Project>`;
     fs.writeFileSync(path.join(serverDir, 'Content.Server.csproj'), serverCsproj, 'utf-8');
@@ -155,17 +156,17 @@ namespace Content.Server.DM
 `;
     fs.writeFileSync(path.join(dmServerDir, 'DMRuntimeComponent.cs'), dmComponentCS, 'utf-8');
 
-    const programCS = `using System;
+    // Real Robust.Server boot entry (item 66): RobustServerHost.Run loads the
+    // content assembly, resources and config, then enters the game loop.
+    // Verification: `scripts/setup-engine.sh` then `dotnet run` from the
+    // output directory — the server must reach "Running" (lobby, no rules).
+    const programCS = `using Robust.Server;
 
 namespace Content.Server
 {
-    public class Program
+    internal static class Program
     {
-        public static void Main(string[] args)
-        {
-            Console.WriteLine("SS14 Server Converted from SS13 DM initializing...");
-            Console.WriteLine("Server ready.");
-        }
+        public static void Main(string[] args) => RobustServerHost.Run(args);
     }
 }`;
     fs.writeFileSync(path.join(serverDir, 'Program.cs'), programCS, 'utf-8');
@@ -190,7 +191,11 @@ namespace Content.Server
     fs.writeFileSync(path.join(clientDir, 'Content.Client.csproj'), clientCsproj, 'utf-8');
     fs.writeFileSync(path.join(clientDir, 'Program.cs'), `using System; namespace Content.Client { public class Program { public static void Main(string[] args) { Console.WriteLine("SS14 Client Initialized"); } } }`, 'utf-8');
 
-    // 6. Config files
-    fs.writeFileSync(path.join(outputDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
+    // 6. Config files — placed under Resources/ConfigFiles so the booted
+    //    server (which loads resources from the output directory) finds them.
+    const resourcesDir = path.join(outputDir, 'Resources');
+    const configDir = path.join(resourcesDir, 'ConfigFiles');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
   }
 }

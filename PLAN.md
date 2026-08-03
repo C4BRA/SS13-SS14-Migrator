@@ -11,7 +11,7 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **65 / 2** (items 1-65 done; 66-67 open, in progression order) |
+| Items done / open | **66 / 1** (items 1-66 done; 67 open, in progression order) |
 | Semantic probes | **168 / 168** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **26,151** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
@@ -194,8 +194,13 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       mutate the a-f transform vars; /icon GetWidth/GetHeight return the DMI
       default. `animate`/`flick` stay Null (visual engine).
       **Stubbed 5,352 → 4,172; loss 27,514 → 26,151; probes 164 → 168/168.**
-66. [ ] **Live-server integration** (Plan 04): generated solution boots Robust.Server /
-      Robust.Client — turns "compiles" into "runs".
+66. [x] **Live-server integration** (Plan 04) — boot entry shipped. Content.Server
+      now boots Robust.Server via RobustServerHost.Run (real entry point, not a
+      console stub); the csproj references Robust.Server; server config moved to
+      Resources/ConfigFiles so the booted server finds it. Client bootstrap and
+      the full boot run are gated on the engine:
+      scripts/setup-engine.sh, then dotnet run — the server must reach the
+      lobby state (acceptance gate; RobustToolbox not present on this machine).
 67. [ ] **Remaining builtins:** `filter`, unit-test helpers, `print_language_list`-class
       user procs, `stack_trace`, `winset`-family UI — 572 unresolved sites.
 

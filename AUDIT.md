@@ -21,7 +21,7 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 | Loss sites (honest, post-12.1) | tg **26,151** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **Plan 04, 12.12** (12.1–12.7 + 12.9–12.11 + Plan 02 done — items 55–65 in `PLAN.md`) |
+| Open fix wave | **12.12** (items 1–66 done; 67 open in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
