@@ -60,32 +60,68 @@ export class CSharpEmitter {
    */
   public generateProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[] = []): string {
     const parts: string[] = [];
-    this.emitProcsCS(irMap, globals, (chunk) => parts.push(chunk));
+    this.emitProcsCS(irMap, globals, { head: (c) => parts.push(c), member: (c) => parts.push(c), tail: (c) => parts.push(c) });
     return parts.join('');
   }
 
-  /** Corpus-scale emission streams the proc bodies to the file instead of
-   *  building one giant string (45k+ types / 65k procs exceed the node heap
-   *  when accumulated — item 66 full-corpus boot). Synchronous appends so
-   *  the file is complete when the transpile returns. */
+  /** Corpus-scale emission streams the proc bodies to the FILE SYSTEM instead
+   *  of one giant string. Splits into multiple partial-class files so Roslyn
+   *  never compiles a single 100 MB+ source file (superlinear per-file cost —
+   *  a 118 MB ConvertedDMProcs.cs for tgstation hung the build). Each member
+   *  chunk becomes ConvertedDMProcs_<n>.cs with a partial-class wrapper. */
   public generateProcsCSFile(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[], filePath: string): void {
-    fs.writeFileSync(filePath, '');
+    const dir = path.dirname(filePath);
+    const MEMBER_FILE_PREFIX = `using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using SS13.DM.Runtime;
+using static SS13.DM.Runtime.DMRuntimeHelpers;
+
+namespace Content.Server.DM
+{
+    public static partial class ConvertedDMProcs
+    {
+`;
+    let headOut = '';
+    let tailOut = '';
+    const members: string[] = [];
+    this.emitProcsCS(irMap, globals, {
+      head: (c) => { headOut += c; },
+      member: (c) => { members.push(c); },
+      tail: (c) => { tailOut += c; },
+    });
+
+    // File 1: registrations + RegisterProcs + GlobalVars (the class close is
+    // emitted by the tail; the members live in the partial files below).
+    fs.writeFileSync(filePath, headOut + tailOut);
+
+    // Member partial files, capped at ~4 MB each so Roslyn's per-file cost
+    // stays linear.
+    let part = 1;
     let buffer = '';
     const FLUSH_AT = 4 * 1024 * 1024;
-    this.emitProcsCS(irMap, globals, (chunk) => {
+    for (const chunk of members) {
       buffer += chunk;
       if (buffer.length >= FLUSH_AT) {
-        fs.appendFileSync(filePath, buffer);
+        fs.writeFileSync(`${filePath.replace(/\.cs$/, '')}_${part}.cs`, MEMBER_FILE_PREFIX + buffer + `    }
+}
+`);
         buffer = '';
+        part++;
       }
-    });
-    fs.appendFileSync(filePath, buffer);
+    }
+    if (buffer.length > 0) {
+      fs.writeFileSync(`${filePath.replace(/\.cs$/, '')}_${part}.cs`, MEMBER_FILE_PREFIX + buffer + `    }
+}
+`);
+    }
   }
 
-  private emitProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[], emit: (chunk: string) => void): void {
+  private emitProcsCS(irMap: Map<string, DMIRType>, globals: DMGlobalVarDeclNode[],
+                      sinks: { head: (chunk: string) => void; member: (chunk: string) => void; tail: (chunk: string) => void }): void {
     this.pathClassNameMap.clear();
     this.usedClassNames.clear();
-    emit(`using System;
+    sinks.head(`using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using SS13.DM.Runtime;
@@ -98,7 +134,7 @@ namespace Content.Server.DM
     /// and the ProcRegistry, so it compiles and runs without RobustToolbox.
     /// The engine-facing ConvertedDMSystem calls RegisterProcs() at startup.
     /// </summary>
-    public static class ConvertedDMProcs
+    public static partial class ConvertedDMProcs
     {
         public static void RegisterProcs()
         {
@@ -132,10 +168,10 @@ namespace Content.Server.DM
     }
 
     for (const reg of registrations) {
-      emit(`${reg}\n`);
+      sinks.head(`${reg}\n`);
     }
-    // Closes RegisterProcs(); the class closes after the streamed members.
-    emit(`        }\n`);
+    // Closes RegisterProcs(); the members + class close follow.
+    sinks.head(`        }\n`);
 
     // Pass 2: the proc bodies — streamed to the sink as they are generated.
     // This was the loop that built the 17.9 GB single-file output at corpus
@@ -144,7 +180,7 @@ namespace Content.Server.DM
       if (irType.procs.size === 0) continue;
 
       const className = this.pathToClassName(pathKey);
-      emit(`\n        // Procs for ${pathKey}\n`);
+      sinks.member(`\n        // Procs for ${pathKey}\n`);
       const usedProcMembers = new Set<string>();
       this.currentTypePath = pathKey;
 
@@ -182,11 +218,11 @@ namespace Content.Server.DM
         } else {
           member += `        }\n`;
         }
-        emit(member);
+        sinks.member(member);
       }
     }
-    // Closes the ConvertedDMProcs class; GlobalVars follows.
-    emit(`    }
+    // Closes the ConvertedDMProcs class; GlobalVars follows (tail).
+    sinks.tail(`    }
 
 `);
 
@@ -194,7 +230,7 @@ namespace Content.Server.DM
     // lazily, in declaration order; GLOB.x reads/writes and bare calls in
     // initializers resolve here. Undeclared names read as Null (matching DM
     // before the global is assigned).
-    emit(`    public static class GlobalVars
+    sinks.tail(`    public static class GlobalVars
     {
         private static readonly Dictionary<string, DMValue> Vars = new Dictionary<string, DMValue>();
         private static bool _initialized;
@@ -233,10 +269,10 @@ namespace Content.Server.DM
       if (expr === null && g.initialValue) {
         expr = `DMValue.FromString("${this.escapeString(g.initialValue.replace(/^["']|["']$/g, ''))}")`;
       }
-      emit(`            Vars["${g.name}"] = ${expr ?? 'DMValue.Null'};\n`);
+      sinks.tail(`            Vars["${g.name}"] = ${expr ?? 'DMValue.Null'};\n`);
     }
     this.globalsMode = prevMode;
-    emit(`        }
+    sinks.tail(`        }
     }
 }
 `);

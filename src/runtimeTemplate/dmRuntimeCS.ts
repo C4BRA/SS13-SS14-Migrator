@@ -2598,7 +2598,7 @@ namespace SS13.DM.Runtime
         }
 
         // astype(x): the DM type path of a datum, as a path value.
-        public static DMValue Astype(DMValue value)
+        public static DMValue Astype(DMValue value, DMValue unused = default)
         {
             if (value.Type == DMValueType.DatumRef && value.DatumRef is DMRuntime datum)
                 return DMValue.FromPath(datum.DMTypePath);
@@ -2616,7 +2616,7 @@ namespace SS13.DM.Runtime
 
         // icon_states('x.dmi'): the state names declared in a DMI file,
         // parsed from its PNG text chunks (tEXt/zTXt/iTXt).
-        public static DMValue IconStates(DMValue value)
+        public static DMValue IconStates(DMValue value, DMValue unused = default)
         {
             var list = new DMList();
             var path = value.Type == DMValueType.File || value.Type == DMValueType.Path ? value.ToString() : null;
@@ -2809,7 +2809,7 @@ namespace SS13.DM.Runtime
 
         public static DMValue Floor(DMValue value) => DMValue.FromNumber(Math.Floor(value.ToNumber()));
 
-        public static DMValue Ceil(DMValue value) => DMValue.FromNumber(Math.Ceiling(value.ToNumber()));
+        public static DMValue Ceil(DMValue value, DMValue unused = default) => DMValue.FromNumber(Math.Ceiling(value.ToNumber()));
 
         public static DMValue Sqrt(DMValue value) => DMValue.FromNumber(Math.Sqrt(value.ToNumber()));
 

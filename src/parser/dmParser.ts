@@ -1013,7 +1013,12 @@ export class DMParser {
       if (ctrlToken === 'continue' || ctrlToken === 'break') {
         this.advance();
         let label: string | undefined;
-        if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+        // A DM label is an identifier (or a select keyword). Statement
+        // starters must NOT be grabbed as labels — `if(x) break else y`
+        // would otherwise swallow the `else` (corpus: tgstation CS0159
+        // 'No such label __dmBreak_else').
+        if (this.isType(TokenType.Identifier) ||
+            (this.isType(TokenType.Keyword) && !['var', 'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'spawn', 'sleep', 'try', 'catch', 'continue', 'break', 'set', 'in'].includes(this.peek().value))) {
           label = this.advance().value;
         }
         statements.push({ type: ctrlToken === 'continue' ? 'ContinueStatement' : 'BreakStatement', label });
