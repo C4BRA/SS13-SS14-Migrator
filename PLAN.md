@@ -12,7 +12,7 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 | Gate | Value |
 |---|---|
 | Items done / open (Part A) | **67 / 0** — the conversion pipeline is complete |
-| Items done / open (Part B) | **1 / 8** — playability phases; 68 done |
+| Items done / open (Part B) | **2 / 7** — playability phases; 68, 69 (first increment) done |
 | Semantic probes | **171 / 171** (`npm run audit:semantics`) |
 | Boot gate | **4 / 4 corpora boot clean** — tgstation 45,967 · tgmc 26,853 · paradise 28,849 · beestation 34,803 types: transpile seconds → build 0 errors → server Ready, port 1212 |
 | Perf audit | 427× emission duplication fixed (17.9 GB → 46 MB tgmc); streaming output; COW define maps (parse −28%); split emitted classes (CLR 65,536 method/type cap); full loop-advance hang audit: **no hang paths found** |
@@ -253,11 +253,17 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       flake). Repo gates committed: `npm run audit:parse` (per-corpus parse gate) and
       `npm run boot:smoke` (fixture convert → build → boot → Ready, 0 errors;
       degrades gracefully without the engine).
-69. [ ] **B-1 — Entity integration wave (critical path).** Spawn DM atoms as real SS14
-      entities: DMRuntimeComponent → entity spawn on map load, turf grids as entities,
-      loc chains (item 62's `.loc` remainder), movement, player mob. The 12,872-site
-      `new` hole becomes the spawn path. Files: runtime template, `ConvertedDMSystem.cs`,
-      emitter.
+69. [~] **B-1 — Entity integration wave (critical path).** FIRST INCREMENT DONE: the
+      runtime↔engine spawn bridge — a DM `new` on an atom type (`/obj|/mob|/turf|/area`)
+      now materializes a real SS14 entity (DMRuntimeComponent binding, `EntityId`,
+      datum loc var); `world/New` runs once at startup (EntryPoint.PostInit → StartWorld
+      — EntitySystem.Update never fires at this pin); a default map is created; the map
+      converter's tile/object ids align with the generated prototype ids; atom types
+      get DMRuntime components in the YAML. Verified by `npm run boot:smoke` (spawn
+      bridge assertion). REMAINING: loc chains (item 62's `.loc`), movement
+      (x/y ↔ transform), map-spawned turf/object runtimes, player mob. Files: runtime
+      template, `ConvertedDMSystem.cs`, `ss14Template.ts`, `mapConverter.ts`,
+      `yamlGenerator.ts`.
 70. [ ] **B-2 — World/tick/time layer.** `world.time` live on the engine tick; DM
       `sleep`/`spawn`/timers driven by the tick loop; subsystem cadence (SS13
       subsystem scheduling). Files: runtime template, engine adapter.

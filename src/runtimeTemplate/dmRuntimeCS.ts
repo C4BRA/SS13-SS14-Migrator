@@ -464,6 +464,12 @@ namespace SS13.DM.Runtime
         public string DMTypePath { get; set; } = "/datum";
         public Dictionary<string, DMValue> Variables { get; } = new();
 
+        /// <summary>
+        /// The SS14 entity this datum is materialized on (item 69, B-1):
+        /// 0 = datum-only (no server, or a pure /datum type).
+        /// </summary>
+        public ulong EntityId { get; set; }
+
         public bool MarkedForDeletion { get; private set; }
 
         public DMValue GetVar(string name)
@@ -894,16 +900,31 @@ namespace SS13.DM.Runtime
             // loc from their own first parameter. Pure /datum types have no
             // loc (a stray var write would be harmless, but they must not
             // be split from their New signature).
-            if (args.Length > 0 &&
-                (normalized.StartsWith("/atom") || normalized.StartsWith("/obj") ||
-                 normalized.StartsWith("/mob") || normalized.StartsWith("/turf") ||
-                 normalized.StartsWith("/area")))
+            var isAtom = normalized.StartsWith("/atom") || normalized.StartsWith("/obj") ||
+                         normalized.StartsWith("/mob") || normalized.StartsWith("/turf") ||
+                         normalized.StartsWith("/area");
+            if (args.Length > 0 && isAtom)
             {
                 datum.SetVar("loc", args[0]);
+            }
+            // Entity integration (item 69, B-1): on the server the engine
+            // adapter registers a spawn bridge — new() on an ATOM type then
+            // materializes a real SS14 entity (and binds loc/transform)
+            // instead of a bare datum. Engine-free runs never set the bridge
+            // and keep the datum-only path.
+            if (isAtom && EntitySpawnBridge != null)
+            {
+                EntitySpawnBridge(normalized, args.Length > 0 ? args[0] : DMValue.Null, datum);
             }
             await datum.CallProc("New", args);
             return DMValue.FromDatum(datum);
         }
+
+        /// <summary>
+        /// Server-side hook (set by ConvertedDMSystem at startup): spawns a
+        /// real entity for a DM atom created via new (item 69, B-1).
+        /// </summary>
+        public static Action<string, DMValue, DMRuntime>? EntitySpawnBridge;
 
         public static DMValue DMDelete(params DMValue[] targets)
         {

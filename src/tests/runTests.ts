@@ -287,9 +287,9 @@ state "icon"
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Textures', 'icon.rsi', 'meta.json')), "DMI converted to RSI with meta.json");
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml')), "DMM converted to grid map YAML");
     const dmmMapYaml = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml'), 'utf-8');
-   assert(dmmMapYaml.includes('proto: Sword'), "DMM item mapped to PascalCase prototype id");
+   assert(dmmMapYaml.includes('proto: obj_item_weapon_sword'), "DMM item mapped to generated prototype id (item 69)");
    assert(dmmMapYaml.includes('uid:') && dmmMapYaml.includes('type: MapGrid'), "Map YAML uses uid/type entity schema");
-   assert(dmmMapYaml.includes('tilemap:') && dmmMapYaml.includes('  floor: Floor'), "Map YAML has tilemap with real SS14 turf prototypes");
+   assert(dmmMapYaml.includes('tilemap:') && dmmMapYaml.includes('  turf_simulated_floor: turf_simulated_floor'), "Map YAML tilemap references generated turf prototypes (item 69)");
    assert(dmmMapYaml.includes('    chunks:'), "MapGrid entity has chunked tiles");
    assert(dmmMapYaml.includes('- 1,1: floor') || dmmMapYaml.includes('- 1,1:'), "Chunk tiles are list items under the chunk key");
    assert(dmmMapYaml.includes('pos: 2, 2, 1'), "Entity z coordinate taken from grid z (1)");

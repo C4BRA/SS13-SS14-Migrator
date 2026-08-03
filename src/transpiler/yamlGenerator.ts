@@ -70,8 +70,11 @@ export class YAMLGenerator {
         });
       }
 
-      // Attach DMRuntimeComponent ONLY if entity needs dynamic DM variables or custom procs
-      if (irType.isDynamic) {
+      // Attach DMRuntimeComponent: dynamic types (custom vars/procs) always;
+      // atom types (obj/mob/turf/area) too, so map-spawned tiles and objects
+      // carry a live DM runtime (item 69, B-1). Pure static /datum types
+      // stay lean.
+      if (irType.isDynamic || /^\/(obj|mob|turf|area)(\/|$)/.test(irType.path)) {
         const customVarObj: Record<string, any> = {};
         for (const [k, v] of irType.customVars.entries()) {
           customVarObj[k] = v;

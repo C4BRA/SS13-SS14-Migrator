@@ -87,31 +87,16 @@ export class MapConverter {
   }
 
   private turfToTileId(typePath: string): string {
-    const parts = typePath.split('/').filter(Boolean);
-    const base = parts[parts.length - 1].toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    return base || 'floor';
+    // The map key per DMM letter; must be unique per turf path.
+    return typePath.replace(/^\//, '').replace(/\//g, '_').toLowerCase();
   }
 
   private tileIdToPrototype(tileId: string): string {
-    // SS14 turf prototypes are PascalCase real content prototypes (Floor,
-    // Plating, Wall, Space...). Invented "TurfFloor" names would fail
-    // prototype resolution on load (WS11-2).
-    const known: Record<string, string> = {
-      floor: 'Floor',
-      plating: 'Plating',
-      wall: 'Wall',
-      space: 'Space',
-      lava: 'Lava',
-      water: 'Water',
-      sand: 'Sand',
-      grass: 'Grass',
-      snow: 'Snow',
-      rock: 'Rock',
-      catwalk: 'Catwalk',
-      metal: 'Metal'
-    };
-    if (known[tileId]) return known[tileId];
-    return 'Turf' + tileId.charAt(0).toUpperCase() + tileId.slice(1);
+    // The generated prototype id (same scheme as YAMLGenerator.pathToId:
+    // /turf/open/floor -> turf_open_floor). The generated prototypes are
+    // self-contained — no dependency on SS14 content names (item 69, B-1:
+    // map tiles must resolve to the converted prototypes on load).
+    return tileId;
   }
 
   private addTile(chunks: Map<string, Map<string, string>>, worldX: number, worldY: number, tileId: string, warnings: string[]): void {
@@ -140,13 +125,10 @@ export class MapConverter {
   }
 
   private typePathToPrototypeId(typePath: string): string {
-    // Best-effort mapping to SS14 content prototype names: the last path
-    // segment PascalCased (obj/structure/table -> Table). Invented
-    // underscore-joined ids do not exist in content (WS11-2).
-    const parts = typePath.split('/').filter(Boolean);
-    const last = parts[parts.length - 1].replace(/[^a-zA-Z0-9_]/g, '_');
-    if (!last) return typePath.replace(/\//g, '_').toLowerCase();
-    return last.charAt(0).toUpperCase() + last.slice(1);
+    // The generated prototype id (same scheme as YAMLGenerator.pathToId:
+    // /obj/item/table -> obj_item_table). The generated prototypes are
+    // self-contained — no dependency on SS14 content names (item 69, B-1).
+    return typePath.replace(/^\//, '').replace(/\//g, '_').toLowerCase();
   }
 
   private serializeToYAML(entities: any[], tilemap: Map<string, string>): string {

@@ -169,6 +169,14 @@ namespace Content.Server
             IoCManager.Resolve<IComponentFactory>().DoAutoRegistrations();
             IoCManager.Resolve<IComponentFactory>().GenerateNetIds();
         }
+
+        public override void PostInit()
+        {
+            base.PostInit();
+            // After the entity manager is up: bootstrap the DM world (default
+            // map + world/New) — item 69, B-1.
+            IoCManager.Resolve<IEntitySystemManager>().GetEntitySystem<Content.Server.DM.ConvertedDMSystem>().StartWorld();
+        }
     }
 }`;
     fs.writeFileSync(path.join(serverDir, 'EntryPoint.cs'), entryPointCS, 'utf-8');

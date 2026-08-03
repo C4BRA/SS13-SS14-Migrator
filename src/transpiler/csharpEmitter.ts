@@ -320,27 +320,97 @@ namespace Content.Server.DM
    * Verified against RobustToolbox commit 9cefa1167c9ac45f7258094129daf46b6c3516d3.
    */
   public generateSystemCS(): string {
-    return `using Robust.Shared.GameObjects;
+    return `using System;
+using System.Numerics;
+using Robust.Shared.GameObjects;
+using Robust.Shared.Log;
+using Robust.Shared.Map;
 using SS13.DM.Runtime;
 
 namespace Content.Server.DM
 {
     /// <summary>
     /// Engine-facing wrapper: wires the transpiled DM proc registry into an
-    /// SS14 EntitySystem and drives New() dispatch on component init.
+    /// SS14 EntitySystem, drives New() dispatch on component init, and
+    /// materializes DM atoms (new /obj|/mob|/turf|/area) as real entities
+    /// via the runtime spawn bridge (item 69, B-1).
     /// </summary>
     public sealed class ConvertedDMSystem : EntitySystem
     {
+        private EntityUid _defaultMap;
+        private bool _worldInitialized;
+
         public override void Initialize()
         {
             base.Initialize();
             ConvertedDMProcs.RegisterProcs();
             SubscribeLocalEvent<DMRuntimeComponent, ComponentInit>(OnDMComponentInit);
+
+            // Runtime -> engine bridge: a DM new() on an atom type spawns a
+            // real entity carrying a DMRuntimeComponent (the datum itself was
+            // already created by the runtime and bound to this entity).
+            DMRuntimeHelpers.EntitySpawnBridge = (typePath, loc, datum) =>
+            {
+                try
+                {
+                    var protoId = ProtoIdFor(typePath);
+                    var coords = LocCoords(loc);
+                    var uid = EntityManager.SpawnEntity(protoId, coords);
+                    datum.EntityId = (ulong)uid.Id;
+                    datum.SetVar("loc", loc);
+                    Logger.InfoS("dm", "Spawned {Proto} as entity {Uid} (loc {Loc})", protoId, uid, loc.ToString());
+                }
+                catch (Exception ex)
+                {
+                    Logger.ErrorS("dm", "Entity spawn failed for {Type}: {Ex}", typePath, ex.Message);
+                }
+            };
+        }
+
+        /// <summary>
+        /// World bootstrap, called once by the content EntryPoint after the
+        /// entity manager is up (PostInit): creates a default map for atom
+        /// spawns and runs DM world/New() (item 69, B-1).
+        /// </summary>
+        public void StartWorld()
+        {
+            if (_worldInitialized) return;
+            _worldInitialized = true;
+
+            _defaultMap = EntityManager.System<SharedMapSystem>().CreateMap(out _);
+            Logger.InfoS("dm", "World init: map {Map} created", _defaultMap);
+            if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum)
+            {
+                _ = worldDatum.CallProc("New");
+            }
+            Logger.InfoS("dm", "World init: DM world/New() complete");
+        }
+
+        /// <summary>
+        /// DM type path -> generated prototype id (pathToId scheme:
+        /// /obj/item/x -> obj_item_x).
+        /// </summary>
+        public static string ProtoIdFor(string typePath)
+        {
+            return typePath.Trim('/').Replace("/", "_").ToLowerInvariant();
+        }
+
+        private EntityCoordinates LocCoords(DMValue loc)
+        {
+            if (loc.Type == DMValueType.DatumRef && loc.DatumRef is DMRuntime datum && datum.EntityId != 0)
+            {
+                var locUid = new EntityUid((int)datum.EntityId);
+                return EntityManager.GetComponent<TransformComponent>(locUid).Coordinates;
+            }
+            // The default map created in Initialize; a loc-less spawn lands
+            // at its origin.
+            return new EntityCoordinates(_defaultMap, Vector2.Zero);
         }
 
         private void OnDMComponentInit(EntityUid uid, DMRuntimeComponent comp, ref ComponentInit args)
         {
             comp.Runtime.DMTypePath = comp.DMTypePath;
+            comp.Runtime.EntityId = (ulong)uid.Id;
             foreach (var (k, v) in comp.InitialVars)
             {
                 comp.Runtime.SetVar(k, DMValue.FromString(v));
