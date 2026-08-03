@@ -11,7 +11,7 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **63 / 4** (items 1-63 done; 64-67 open, in progression order) |
+| Items done / open | **64 / 3** (items 1-64 done; 65-67 open, in progression order) |
 | Semantic probes | **164 / 164** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
 | Loss sites (honest, post-12.1) | tg **27,514** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
@@ -182,9 +182,12 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       integration remains pending. **Probes 161 → 164/164** (atom loc var,
       datum New arg passthrough, New(loc, ...) first-param). Files: runtime
       template, fidelityAudit.ts, probes.
-64. [ ] **Symbol resolution pass in production** (Plan 02): audit-only `SymbolTable`
-      today; make the emitter resolve proc targets + warn on unknown (runtime registry
-      remains the fallback).
+64. [x] **Symbol resolution pass in production** (Plan 02). The corpus-wide
+      `SymbolTable` now feeds the emitter: bare/method call targets are resolved at
+      emit time against declared procs (case-insensitive), unknown names warn once
+      per name, and the transpile run reports the unresolved count. The runtime
+      registry stays the fallback. Files: `index.ts`, `csharpEmitter.ts`,
+      `symbolTable.ts`.
 65. [ ] **12.11 — Appearance stubs** (Plan 05): `animate`, `image`, `flick`, `sound`,
       `matrix`, `icon`, `overlays` — 5,352 stubbed sites → real SS14 components.
 66. [ ] **Live-server integration** (Plan 04): generated solution boots Robust.Server /

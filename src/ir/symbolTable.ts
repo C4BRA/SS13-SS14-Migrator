@@ -31,16 +31,16 @@ export class SymbolTable {
         };
         this.types.set(path, sym);
       }
-      for (const proc of decl.procs || []) sym.procNames.add(proc.name);
-      for (const v of decl.vars || []) sym.varNames.set(v.name, v);
+      for (const proc of decl.procs || []) sym.procNames.add(proc.name.toLowerCase()); // DM names are case-insensitive
+      for (const v of decl.vars || []) sym.varNames.set(v.name.toLowerCase(), v);
       if (path === '/proc' || path.startsWith('/proc/')) {
-        for (const proc of decl.procs || []) this.globalProcs.add(proc.name);
+        for (const proc of decl.procs || []) this.globalProcs.add(proc.name.toLowerCase());
       }
     }
   }
 
   hasGlobalProc(name: string): boolean {
-    return this.globalProcs.has(name);
+    return this.globalProcs.has(name.toLowerCase());
   }
 
   /** Proc reachable from a bare call inside a proc of `typePath`: the type's
@@ -56,7 +56,7 @@ export class SymbolTable {
     let current: string | null = normalizeTypePath(typePath);
     while (current) {
       const sym = this.types.get(current);
-      if (sym && sym.procNames.has(name)) return true;
+      if (sym && sym.procNames.has(name.toLowerCase())) return true;
       current = sym ? sym.parentPath : computeParentPath(current);
     }
     return false;

@@ -4,6 +4,7 @@ import { DMLexer } from './parser/dmLexer.js';
 import { DMParser } from './parser/dmParser.js';
 import { DMPreprocessor } from './preprocessor.js';
 import { DMIRGenerator } from './ir/dmIRGenerator.js';
+import { SymbolTable } from './ir/symbolTable.js';
 import { RSIWriter } from './dmi/rsiWriter.js';
 import { MapConverter } from './dmm/mapConverter.js';
 import { YAMLGenerator } from './transpiler/yamlGenerator.js';
@@ -79,13 +80,29 @@ export class DM2SS14Transpiler {
       console.log(`      Collected ${globals.length} /global/var/ declarations.`);
     }
 
+    // Corpus-wide symbol table for emit-time call-target resolution (item 64).
+    const symbols = new SymbolTable();
+    for (const node of allASTNodes) symbols.addTypeDecls([node]);
+    let unresolvedCallNames = 0;
+    const emitterWarn = console.warn.bind(console);
+    console.warn = (msg: string) => {
+      if (String(msg).includes('[dm2ss14] symbol:')) unresolvedCallNames++;
+      emitterWarn(msg);
+    };
+
     // 3. Emit SS14 Entity YAML Prototypes and C# Systems
     console.log(`[3/5] Emitting SS14 YAML Prototypes and C# ECS Systems...`);
     const protoDir = path.join(options.outputDir, 'Resources', 'Prototypes');
     this.yamlGenerator.generateYAMLPrototypes(irMap, protoDir);
 
     const serverDMDir = path.join(options.outputDir, 'Content.Server', 'DM');
-    this.csharpEmitter.emitCSharpSystems(irMap, serverDMDir, globals);
+    this.csharpEmitter.emitCSharpSystems(irMap, serverDMDir, globals, symbols);
+    console.warn = emitterWarn;
+    if (unresolvedCallNames > 0) {
+      console.log(`      Symbol pass: ${unresolvedCallNames} unresolved call names (runtime fallback — see warnings above).`);
+    } else {
+      console.log(`      Symbol pass: all bare/method call targets resolved against declared procs.`);
+    }
 
     // 4. Convert DMI icons to RSI
     console.log(`[4/5] Converting DMI icon assets to RSI...`);

@@ -3,10 +3,17 @@ import * as path from 'path';
 import { DMIRType } from '../ir/dmIRGenerator.js';
 import { DMGlobalVarDeclNode, ExpressionNode } from '../parser/dmParser.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
+import { SymbolTable } from '../ir/symbolTable.js';
 
 export class CSharpEmitter {
   private tempCounter = 0;
   private currentProcName = '';
+  /** Corpus-wide symbol table (item 64): bare/method calls are resolved
+   *  against declared procs and unknowns warn once. Runtime registry stays
+   *  the fallback. */
+  private symbols: SymbolTable | null = null;
+  private warnedCalls = new Set<string>();
+  private currentTypePath = '';
   private loopDepth = 0;
   private switchDepth = 0;
   private lambdaDepth = 0;
@@ -24,10 +31,12 @@ export class CSharpEmitter {
   private nextTemp(): string {
     return `__dm_t${this.tempCounter++}`;
   }
-  public emitCSharpSystems(irMap: Map<string, DMIRType>, outputServerDir: string, globals: DMGlobalVarDeclNode[] = []): void {
+  public emitCSharpSystems(irMap: Map<string, DMIRType>, outputServerDir: string, globals: DMGlobalVarDeclNode[] = [], symbols?: SymbolTable): void {
     if (!fs.existsSync(outputServerDir)) {
       fs.mkdirSync(outputServerDir, { recursive: true });
     }
+    this.symbols = symbols ?? null;
+    this.warnedCalls.clear();
 
     // ConvertedDMProcs.cs — engine-free: transpiled DM procs + proc registry
     // registration. Compiles against SS13.DM.Runtime alone (used by the
@@ -79,6 +88,7 @@ namespace Content.Server.DM
       const className = this.pathToClassName(pathKey);
       procMembers.push(`\n        // Procs for ${pathKey}\n`);
       const usedProcMembers = new Set<string>();
+      this.currentTypePath = pathKey;
 
       for (const [procName, procNode] of irType.procs.entries()) {
         // C# member names must be unique and identifier-safe: sanitize the
@@ -905,7 +915,10 @@ namespace Content.Server.DM
       return `(await comp.CallParentProc("${this.currentProcName}", ${args}))`;
     }
     // User-defined proc - call through runtime. In a global initializer there
-    // is no current datum, so route through the GlobalVars bridge.
+    // is no current datum, so route through the GlobalVars bridge. The
+    // corpus symbol table (item 64) resolves the target at emit time and
+    // warns once per unknown name — the runtime registry stays the fallback.
+    this.resolveAndWarn(node.name, !!node.target);
     if (this.globalsMode) {
       if (!args) {
         return `(await GlobalVars.CallGlobal("${node.name}"))`;
@@ -985,6 +998,22 @@ namespace Content.Server.DM
   private sanitizeIdentifier(name: string): string {
     const cleaned = name.replace(/[^A-Za-z0-9_]/g, '');
     return cleaned.length > 0 ? cleaned : 'X';
+  }
+
+  /** Item 64: resolve a call target against the corpus symbol table and warn
+   *  once per unknown name. The runtime registry remains the fallback, so a
+   *  missed declaration is a diagnostic, not a crash. */
+  private resolveAndWarn(name: string, isMethodCall: boolean): void {
+    if (!this.symbols || name === '' || name === '..') return;
+    const lname = name.toLowerCase();
+    if (this.warnedCalls.has(lname)) return;
+    const known = isMethodCall
+      ? this.symbols.resolveTypeProc(this.currentTypePath, name)
+      : this.symbols.resolveBareProc(this.currentTypePath, name);
+    if (!known) {
+      this.warnedCalls.add(lname);
+      console.warn(`[dm2ss14] symbol: unresolved ${isMethodCall ? 'method' : 'proc'} call '${name}' (runtime fallback) — declared on no reachable type`);
+    }
   }
 
   private capitalize(str: string): string {
