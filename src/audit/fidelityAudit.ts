@@ -58,7 +58,7 @@ interface LossCounters {
   numWorldRef: number;
   numPathConstPropRead: number; // /path.foo (e.g. GLOB.x) -> absorbed into a dead string literal
   numBrokenPropRead: number;
-  numRuntimeResolvedProps: number; // .len/.x/.y/.z — handled by the runtime (WS13-1)
+  numRuntimeResolvedProps: number; // .len/.x/.y/.z/.type/.dir/.contents/.overlays — runtime-handled (WS13-1, item 62)
   numUnknownBuiltin: number;
   numBareGlobalProcCalls: number; // target-less calls resolved via /proc globals (verified)
   numTypeResolvedBareCalls: number; // target-less calls resolved via the calling type's hierarchy
@@ -75,11 +75,11 @@ interface LossCounters {
   typeCount: number;
 }
 
-// Truly broken builtin property reads (the runtime returns Null): loc, type,
-// dir, overlays, contents. len/x/y/z are runtime-handled (DMGetProperty
-// special-cases them) and counted separately — WS13-1.
-const BROKEN_PROP_NAMES = ['loc', 'type', 'dir', 'overlays', 'contents'];
-const RUNTIME_RESOLVED_PROP_NAMES = ['len', 'x', 'y', 'z'];
+// Builtin property reads the runtime resolves via DMGetProperty: type/dir/
+// contents/overlays get DM's implicit defaults (item 62 — WS13-1), plus
+// len/x/y/z. `.loc` stays broken: it needs the containment model (item 63).
+const BROKEN_PROP_NAMES = ['loc'];
+const RUNTIME_RESOLVED_PROP_NAMES = ['len', 'x', 'y', 'z', 'type', 'dir', 'contents', 'overlays'];
 
 function emptyCounters(): LossCounters {
   return {

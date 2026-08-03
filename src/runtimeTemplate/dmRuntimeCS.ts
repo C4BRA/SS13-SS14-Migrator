@@ -792,8 +792,8 @@ namespace SS13.DM.Runtime
         {
             // Datum type paths are canonicalized to lowercase (DM type paths
             // are case-insensitive) so IsType/registry lookups match the
-            // emitted registrations (WS4-1).
-            var datum = new DMRuntime { DMTypePath = typePath.ToLowerInvariant() };
+            // emitted registrations (WS4-1). A bare new is /datum (item 62).
+            var datum = new DMRuntime { DMTypePath = (typePath.Length == 0 ? "/datum" : typePath).ToLowerInvariant() };
             LiveDatums.Add(datum);
             await datum.CallProc("New", args);
             return DMValue.FromDatum(datum);
@@ -909,6 +909,30 @@ namespace SS13.DM.Runtime
             }
             if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime datum)
             {
+                // Builtin atom/datum properties (item 62): a datum that does
+                // NOT declare the var gets DM's implicit defaults — .type is
+                // the datum's type path, .dir defaults to SOUTH (2),
+                // .contents/.overlays to empty lists. Declared vars win.
+                switch (name)
+                {
+                    case "type":
+                        return DMValue.FromPath(datum.DMTypePath);
+                    case "dir":
+                        {
+                            var dir = datum.GetVar("dir");
+                            return dir.Type == DMValueType.Null ? DMValue.FromNumber(2) : dir;
+                        }
+                    case "contents":
+                        {
+                            var contents = datum.GetVar("contents");
+                            return contents.Type == DMValueType.Null ? DMValue.FromList(new DMList()) : contents;
+                        }
+                    case "overlays":
+                        {
+                            var overlays = datum.GetVar("overlays");
+                            return overlays.Type == DMValueType.Null ? DMValue.FromList(new DMList()) : overlays;
+                        }
+                }
                 // world.* statics: timeofday is wall-clock at access time
                 // (world.time stays the static startup value — there is no
                 // tick loop to advance it, and the probe locks it at 0).

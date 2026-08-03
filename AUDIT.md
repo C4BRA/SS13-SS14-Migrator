@@ -16,12 +16,12 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 |---|---|
 | `npm run build` | clean (tsc strict) |
 | `npm test` | green; generated solution builds vs real RobustToolbox |
-| Semantic probes | **157 / 157** (`npm run audit:semantics`) |
+| Semantic probes | **161 / 161** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
-| Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
+| Loss sites (honest, post-12.1) | tg **27,514** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **Plan 12.6–12.7, 12.11** (12.1–12.5 + 12.9 + 12.10 done — items 55–61 in `PLAN.md`) |
+| Open fix wave | **Plan 12.7, 12.11** (12.1–12.6 + 12.9 + 12.10 done — items 55–62 in `PLAN.md`) |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
@@ -93,7 +93,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 | Class | tgstation | Notes |
 |---|---:|---|
 | Partial `new /type` | 12,872 | fresh datum; New()/loc/entity incomplete |
-| Broken prop reads | 6,251 | `.loc` 3070 · `.type` 2021 · `.dir` 589 · `.contents` 449 · `.overlays` 122 |
+| Broken prop reads | 3,229 | `.loc` only — type/dir/contents/overlays now runtime-resolved (item 62) |
 | Stubbed builtins | 5,352 | animate/sound/image/winset/… → Null (honest) |
 | Unresolved bare calls | 407 | span_*, unit_test helpers, filter, winget, oviewers, stack_trace… (was 572 — item 57 case-fold resolved 165) |
 | `as` casts | 247 | dynamic no-op (often OK) |
@@ -158,7 +158,7 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 | **12.3** | Default args + assoc identifier keys | **done** (item 58) — missing args bind declared defaults; `list(a = 1)` / `{a = 1}` emit `MakeListAssoc` pairs; probes → 155/155 |
 | **12.4** | operator registry keys, `escapeString` `\0`, label break | dispatch + safety |
 | **12.5** | Lexer `.5` / brace-lists / `1...5` | **done** (item 60) — leading-dot floats; `{"a", "b"}` lists vs templates |
-| **12.6** | Props `.loc/.type/.dir` (Plan 07) | −6k sites |
+| **12.6** | Props `.loc/.type/.dir` (Plan 07) | **done** (item 62) — type/dir/contents/overlays runtime-resolved; tg 6,251 → 3,229 (loc stays — item 63) |
 | **12.7** | `new`/New()/entity (Plan 08) | −12k semantic hole |
 | **12.8** | PLAN status rows consistency | **done** — folded into the universal linear plan (`PLAN.md`) |
 | **12.9** | Parse-error class triage (3746) | **done** (item 56) — tg 197 files → 0; all four corpora parse clean (tg/tgmc/paradise/bee 0 files) |
@@ -206,7 +206,7 @@ item-58 (default args omitted/overridden/expression, assoc identifier keys) and 
 totalLossSites (12.1: false counters removed)    30,020
   heavy real buckets:
     new (partial)                 12,872
-    broken props                   6,251
+    broken props (loc only)          3,229
     stubs                          5,352
     unresolved bare                  407
     as / set / client / verb / …    rest

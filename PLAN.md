@@ -11,10 +11,10 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 
 | Gate | Value |
 |---|---|
-| Items done / open | **61 / 6** (items 1-61 done; 62-67 open, in progression order) |
-| Semantic probes | **157 / 157** (`npm run audit:semantics`) |
+| Items done / open | **62 / 5** (items 1-62 done; 63-67 open, in progression order) |
+| Semantic probes | **161 / 161** (`npm run audit:semantics`) |
 | Compile-proof (real engine) | **45,183 procs → 0 C# errors** |
-| Loss sites (honest, post-12.1) | tg **30,020** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
+| Loss sites (honest, post-12.1) | tg **27,514** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **407** (item 57 — case-fold resolved 165) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
 
@@ -169,9 +169,12 @@ Work the lowest-numbered open item. Each is dependency-ordered: builtin case-fol
       rejected — the CLI now routes through the GUI's `validateOutputPath` (`~`
       expansion, ` ` rejection, realpath of the deepest existing ancestor so
       symlinks pointing outside `$HOME` are refused). File: `src/cli.ts`.
-62. [ ] **12.6 — Builtin property reads** (Plan 07): `.loc` 3,070 · `.type` 2,021 ·
-      `.dir` 589 · `.contents` 449 · `.overlays` 122 → 6,251 sites. Files: runtime +
-      emitter.
+62. [x] **12.6 — Builtin property reads** (Plan 07). `DMGetProperty` now resolves
+      `.type` (the datum type path), `.dir` (SOUTH=2 default), `.contents` /
+      `.overlays` (empty-list defaults) — declared vars win; bare `new` defaults
+      to `/datum`. `.loc` stays a loss (needs the containment model — item 63).
+      **tg 6,251 → 3,229 sites; loss 30,020 → 27,514; probes 157 → 161/161.**
+      Files: runtime template, fidelityAudit.ts, probes.
 63. [ ] **12.7 — `new` / New() / loc / entity semantics** (Plan 08): 12,872 sites —
       fresh datum today; complete `New()` arg propagation, `loc`, entity integration.
       Files: runtime + emitter.

@@ -828,6 +828,26 @@ const PROBES: Probe[] = [
     name: 'labeled break exits the labeled block',
     dm: `/datum/probe/proc/run()\n\tvar/count = 0\n\touter:\n\t\twhile(count < 100)\n\t\t\tcount += 1\n\t\t\tif(count == 3)\n\t\t\t\tbreak outer\n\treturn count`,
     expected: '3'
+  },
+  {
+    name: '.type reads the datum type path',
+    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn d.type`,
+    expected: '/datum' // bare new is /datum; item 62: DMGetProperty resolves type
+  },
+  {
+    name: '.dir defaults to SOUTH (2)',
+    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn d.dir`,
+    expected: '2' // implicit atom var default
+  },
+  {
+    name: '.contents defaults to an empty list',
+    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn length(d.contents)`,
+    expected: '0'
+  },
+  {
+    name: '.overlays defaults to an empty list',
+    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn length(d.overlays)`,
+    expected: '0'
   }
 ];
 
