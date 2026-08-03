@@ -457,7 +457,7 @@ namespace Content.Server.DM
         return `${pad}comp.SetVar("${stmt.varName}", DMValue.Null);\n`;
 
       case 'IfStatement':
-        let ifCode = `${pad}if (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}{\n`;
+        let ifCode = `${pad}if ((${this.transpileExpression(stmt.condition)}).IsTrue())\n${pad}{\n`;
         for (const s of stmt.thenBranch || []) {
           ifCode += this.transpileStatement(s, indent + 4);
         }
@@ -514,7 +514,7 @@ namespace Content.Server.DM
       case 'WhileStatement':
         {
           const contLabel = `__dmWhileCont${this.tempCounter++}`;
-          let whileCode = `${pad}while (${this.transpileExpression(stmt.condition)}.IsTrue())\n${pad}{\n`;
+          let whileCode = `${pad}while ((${this.transpileExpression(stmt.condition)}).IsTrue())\n${pad}{\n`;
           whileCode += `${pad}    {\n`;
           this.loopDepth++;
           this.continueLabels.push(contLabel);
@@ -545,7 +545,7 @@ namespace Content.Server.DM
           this.loopDepth--;
           doCode += `${pad}    }\n`;
           doCode += `${pad}    ${contLabel}: ;\n`;
-          doCode += `${pad}} while (${stmt.condition ? this.transpileExpression(stmt.condition) : 'DMValue.FromNumber(1)'}.IsTrue());\n`;
+          doCode += `${pad}} while ((${stmt.condition ? this.transpileExpression(stmt.condition) : 'DMValue.FromNumber(1)'}).IsTrue());\n`;
           return doCode;
         }
 

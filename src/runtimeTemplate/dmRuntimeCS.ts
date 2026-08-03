@@ -2300,8 +2300,11 @@ namespace SS13.DM.Runtime
             return DMValue.FromList(list);
         }
 
-        public static DMValue Length(DMValue value)
+        public static DMValue Length(DMValue value = default)
         {
+            // A zero-argument length() (macro-expanded calls — corpus:
+            // beestation) returns 0: nothing to measure.
+            if (value.Type == DMValueType.Null && value.NumberValue == 0) return DMValue.FromNumber(0);
             if (value.Type == DMValueType.List) return DMValue.FromNumber(value.ListValue.Count);
             if (value.Type == DMValueType.File)
             {
@@ -2583,7 +2586,7 @@ namespace SS13.DM.Runtime
         }
 
         // roll("2d6"): sum of N rolls of a dM die; roll("d6") = 1d6.
-        public static DMValue Roll(DMValue value)
+        public static DMValue Roll(DMValue value, DMValue unused = default)
         {
             var s = value.ToString().Trim().ToLowerInvariant();
             var m = Regex.Match(s, @"^(\\d*)d(\\d+)$");
