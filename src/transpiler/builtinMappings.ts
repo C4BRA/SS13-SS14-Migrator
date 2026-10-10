@@ -32,7 +32,15 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
   'findtextex_char', 'replacetext_char',
   'nonspantext', 'spantext', 'url_encode', 'url_decode', 'ckeyex',
   'sorttextex', 'text2ascii_char', 'lerp', 'trunc', 'tan', 'arcsin',
-  'ohearers', 'bounds_dist', 'generator'
+  'ohearers', 'bounds_dist', 'generator',
+  // Fidelity wave-2 (docs/plans/25): locate + movement + misc real builtins
+  'step_to', 'step_rand', 'walk', 'walk_to', 'walk_towards', 'walk_away',
+  'walk_rand', 'assert', 'exception', 'fract', 'sha1', 'num2hex',
+  'values_cut_under', 'values_cut_over', 'spantext_char',
+  'replacetextex_char', 'shutdown', 'mapcolors', 'blend', 'swapcolor',
+  'shift', 'setintensity', 'multiply',
+  // Wave-2 honest stubs (UI/OS surface — recognized, deliberately Null)
+  'winexists', 'winshow', 'winclone', 'shell'
 ];
 
 // NOTE: every entry above is LOWERCASE. DM proc names are case-insensitive —
@@ -45,10 +53,15 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
 // values (vars read back; rendering needs the engine — item 65).
 // animate/flick removed in B-3 (item 71): real datum-side animation stepped
 // by the DM tick scheduler, published through the appearance bridge.
+// Wave-2 (docs/plans/25): locate (real turf/type/tag/ref resolution),
+// __detect_rust_g (0 is the TRUE answer — no native lib in converted code),
+// gradient/vector (real datums) all left the stub bucket. winexists/winshow/
+// winclone/shell joined it as recognized-but-stubbed UI/OS surface.
 export const STUBBED_BUILTINS = [
   'browse', 'call_ext',
-  '__detect_rust_g', 'alert', 'input', 'locate', 'refcount',
-  'winset', 'winget', 'link', 'gradient', 'vector', 'openToolTip', 'closeToolTip',
+  'alert', 'input', 'refcount',
+  'winset', 'winget', 'winexists', 'winshow', 'winclone', 'shell', 'link',
+  'openToolTip', 'closeToolTip',
   'browse_rsc', 'ftp'
 ];
 
@@ -65,7 +78,7 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
     case 'qdel':
       return `DMDelete(${args})`;
     case 'locate':
-      return `DMLocate(${args})`;
+      return `DMRuntimeHelpers.Locate(${args})`;
     case 'istype':
       return `DMIsType(${args})`;
     case 'ispath':
@@ -319,6 +332,69 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.GetStepTo(${args})`;
     case 'splicetext':
       return `DMRuntimeHelpers.Splicetext(${args})`;
+    // ==== Fidelity wave-2 builtins (docs/plans/25) ====
+    case 'step_to':
+      return `DMRuntimeHelpers.StepTo(${args})`;
+    case 'step_rand':
+      return `DMRuntimeHelpers.StepRand(${args})`;
+    case 'walk':
+      return `DMRuntimeHelpers.Walk(${args})`;
+    case 'walk_to':
+      return `DMRuntimeHelpers.WalkTo(${args})`;
+    case 'walk_towards':
+      return `DMRuntimeHelpers.WalkTowards(${args})`;
+    case 'walk_away':
+      return `DMRuntimeHelpers.WalkAway(${args})`;
+    case 'walk_rand':
+      return `DMRuntimeHelpers.WalkRand(${args})`;
+    case 'assert':
+      return `DMRuntimeHelpers.DMAssert(${args})`;
+    case 'exception':
+      return `DMRuntimeHelpers.Exception(${args})`;
+    case 'fract':
+      return `DMRuntimeHelpers.Fract(${args})`;
+    case 'sha1':
+      return `DMRuntimeHelpers.Sha1(${args})`;
+    case 'num2hex':
+      return `DMRuntimeHelpers.Num2Hex(${args})`;
+    case 'values_cut_under':
+      return `DMRuntimeHelpers.ValuesCutUnder(${args})`;
+    case 'values_cut_over':
+      return `DMRuntimeHelpers.ValuesCutOver(${args})`;
+    case 'spantext_char':
+      return `DMRuntimeHelpers.SpanTextChar(${args})`;
+    case 'replacetextex_char':
+      return `DMRuntimeHelpers.ReplaceTextExChar(${args})`;
+    case 'shutdown':
+      return `DMRuntimeHelpers.Shutdown(${args})`;
+    case 'gradient':
+      return `DMRuntimeHelpers.Gradient(${args})`;
+    case 'vector':
+      return `DMRuntimeHelpers.Vector(${args})`;
+    // Icon/matrix member ops called BARE inside their own procs
+    // (/icon/proc/X calls MapColors() = src.MapColors()). `comp` is the
+    // receiver parameter in every generated proc — that IS DM's src
+    // (wrapped: comp is DMRuntime, helpers take DMValue).
+    case 'mapcolors':
+      return `DMRuntimeHelpers.IconMapColors(DMValue.FromDatum(comp), ${args})`;
+    case 'blend':
+      return `DMRuntimeHelpers.IconBlend(DMValue.FromDatum(comp), ${args})`;
+    case 'swapcolor':
+      return `DMRuntimeHelpers.IconSwapColor(${args})`;
+    case 'shift':
+      return `DMRuntimeHelpers.IconShift(DMValue.FromDatum(comp), ${args})`;
+    case 'setintensity':
+      return `DMRuntimeHelpers.IconSetIntensity(DMValue.FromDatum(comp), ${args})`;
+    case 'multiply':
+      return `DMRuntimeHelpers.MatrixMultiply(DMValue.FromDatum(comp), ${args})`;
+    case 'winexists':
+      return `DMRuntimeHelpers.Winexists(${args})`;
+    case 'winshow':
+      return `DMRuntimeHelpers.Winshow(${args})`;
+    case 'winclone':
+      return `DMRuntimeHelpers.Winclone(${args})`;
+    case 'shell':
+      return `DMRuntimeHelpers.Shell(${args})`;
     case 'filter':
       return `DMRuntimeHelpers.Filter(${args})`;
     case 'stack_trace':

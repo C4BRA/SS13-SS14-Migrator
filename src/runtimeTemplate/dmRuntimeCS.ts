@@ -4973,6 +4973,429 @@ namespace SS13.DM.Runtime
                 datum.SetVar("pixel_y", DMValue.FromNumber(0));
             return DMValue.FromDatum(datum);
         }
+
+        // ==== W-D builtins (fidelity wave 2; docs/plans/25) ====
+
+        /// <summary>
+        /// DM locate(): three real forms — locate(x,y,z) turf coords,
+        /// locate(X, container) recursive contents search, locate(X) global
+        /// (path → first live datum of that type; string → tag match then
+        /// ref-format match; datum → passthrough if still live). Uses the
+        /// atom registry (TurfAt/ContentsOf) — no engine surface needed.
+        /// </summary>
+        public static DMValue Locate(DMValue target = default, DMValue arg2 = default, DMValue arg3 = default)
+        {
+            if (target.Type == DMValueType.Null) return DMValue.Null;
+            // locate(x, y, z): all-numeric → turf at coords.
+            if (arg2.Type == DMValueType.Number && arg3.Type == DMValueType.Number)
+            {
+                var t = TurfAt((int)target.ToNumber(), (int)arg2.ToNumber(), (int)arg3.ToNumber());
+                return t != null ? DMValue.FromDatum(t) : DMValue.Null;
+            }
+            if (arg2.Type != DMValueType.Null)
+            {
+                // locate(X, container): datum container → recursive contents;
+                // list → direct membership.
+                return LocateIn(target, arg2, true);
+            }
+            // locate(X): global form.
+            if (target.Type == DMValueType.DatumRef)
+            {
+                var d = AsRuntime(target);
+                if (d != null && !d.MarkedForDeletion) return target;
+                return DMValue.Null;
+            }
+            if (target.Type == DMValueType.Path ||
+                (target.Type == DMValueType.String && target.ToString().StartsWith("/")))
+            {
+                var path = target.ToString();
+                foreach (var d in LiveDatums)
+                    if (!d.MarkedForDeletion && d.IsType(path))
+                        return DMValue.FromDatum(d);
+                return DMValue.Null;
+            }
+            if (target.Type == DMValueType.String)
+            {
+                var key = target.ToString();
+                // tag match first: datums carry a 'tag' var.
+                foreach (var d in LiveDatums)
+                {
+                    if (d.MarkedForDeletion) continue;
+                    var tag = d.GetVar("tag");
+                    if (tag.Type == DMValueType.String && tag.ToString() == key)
+                        return DMValue.FromDatum(d);
+                }
+                // ref-format string ("[0x...]" or "REF[0x...]").
+                if (key.Contains("0x"))
+                {
+                    foreach (var kv in RefIds)
+                        if (kv.Key is DMRuntime rd && !rd.MarkedForDeletion &&
+                            (kv.Value.Contains(key) || key.Contains(kv.Value)))
+                            return DMValue.FromDatum(rd);
+                }
+            }
+            return DMValue.Null;
+        }
+
+        private static DMRuntime? AsRuntime(DMValue v)
+            => v.Type == DMValueType.DatumRef && v.DatumRef is DMRuntime d ? d : null;
+
+        private static DMValue LocateIn(DMValue target, DMValue container, bool recurse)
+        {
+            if (container.Type == DMValueType.List)
+            {
+                for (int i = 1; i <= container.ListValue.Count; i++)
+                {
+                    var v = container.ListValue.Get(i);
+                    if (MatchesLocateTarget(v, target)) return v;
+                }
+                return DMValue.Null;
+            }
+            var cd = AsRuntime(container);
+            if (cd == null) return DMValue.Null;
+            var contents = ContentsOf(cd);
+            for (int i = 1; i <= contents.Count; i++)
+            {
+                var v = contents.Get(i);
+                if (MatchesLocateTarget(v, target)) return v;
+                if (recurse && v.Type == DMValueType.DatumRef)
+                {
+                    var r = LocateIn(target, v, true);
+                    if (r.Type != DMValueType.Null) return r;
+                }
+            }
+            return DMValue.Null;
+        }
+
+        private static bool MatchesLocateTarget(DMValue candidate, DMValue target)
+        {
+            if (candidate.Type != DMValueType.DatumRef || candidate.DatumRef is not DMRuntime d || d.MarkedForDeletion)
+                return false;
+            if (target.Type == DMValueType.DatumRef)
+                return ReferenceEquals(candidate.DatumRef, target.DatumRef);
+            if (target.Type == DMValueType.Path ||
+                (target.Type == DMValueType.String && target.ToString().StartsWith("/")))
+                return d.IsType(target.ToString());
+            if (target.Type == DMValueType.String)
+            {
+                var tag = d.GetVar("tag");
+                return tag.Type == DMValueType.String && tag.ToString() == target.ToString();
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// DM step_to(Ref, Trg, Trange=0, Speed=0): one step toward Trg when
+        /// Ref is farther than Trange; returns 1 if it moved (or is already
+        /// in range — BYOND returns 1 without moving), 0 on a blocked move.
+        /// </summary>
+        public static DMValue StepTo(DMValue atom, DMValue trg, DMValue trange = default, DMValue speed = default)
+        {
+            var a = AsRuntime(atom); var t = AsRuntime(trg);
+            if (a == null || t == null) return DMValue.FromNumber(0);
+            var range = trange.Type == DMValueType.Number ? (int)trange.ToNumber() : 0;
+            if (range < 0) range = 0;
+            var spd = speed.Type == DMValueType.Number ? (int)speed.ToNumber() : 1;
+            if (spd <= 0) spd = 1;
+            if (GetDist(atom, trg).ToNumber() <= range) return DMValue.FromNumber(1);
+            return StepTowards(atom, trg, spd);
+        }
+
+        /// <summary>DM step_rand(Ref): one step in a random cardinal-or-diagonal dir.</summary>
+        public static DMValue StepRand(DMValue atom, DMValue speed = default)
+        {
+            if (AsRuntime(atom) == null) return DMValue.FromNumber(0);
+            var spd = speed.Type == DMValueType.Number ? (int)speed.ToNumber() : 1;
+            if (spd <= 0) spd = 1;
+            var dir = ClockwiseDirs[Random.Shared.Next(ClockwiseDirs.Length)];
+            return Step(atom, DMValue.FromNumber(dir), spd);
+        }
+
+        // --- walk() family: continuous movement driven by the tick scheduler ---
+        private sealed class WalkSpec
+        {
+            public DMRuntime Atom = null!;
+            public string Kind = "dir"; // dir | to | towards | away | rand
+            public DMValue Trg = DMValue.Null;
+            public int Dir; public double Trange; public double PeriodTicks; public long LastTick;
+        }
+
+        private static readonly List<WalkSpec> ActiveWalks = new();
+        private static bool WalkDriverStarted;
+
+        private static DMValue StartWalk(DMValue atom, string kind, DMValue dirOrTrg, DMValue arg3, DMValue arg4)
+        {
+            var a = AsRuntime(atom);
+            if (a == null) return DMValue.Null;
+            var spec = new WalkSpec { Atom = a, Kind = kind, LastTick = DMTickScheduler.TicksElapsed };
+            if (kind == "dir")
+            {
+                spec.Dir = dirOrTrg.Type == DMValueType.Number ? (int)dirOrTrg.ToNumber() : 0;
+                spec.PeriodTicks = arg3.Type == DMValueType.Number ? arg3.ToNumber() : 0;
+                if (spec.Dir == 0) { StopWalk(a); return DMValue.Null; } // walk(Ref,0) stops
+            }
+            else
+            {
+                spec.Trg = dirOrTrg;
+                spec.Trange = kind == "away" || kind == "to"
+                    ? (arg3.Type == DMValueType.Number ? arg3.ToNumber() : 0)
+                    : 0;
+                var lag = kind == "to" || kind == "away" ? arg4 : arg3;
+                spec.PeriodTicks = lag.Type == DMValueType.Number ? lag.ToNumber() : 0;
+            }
+            if (spec.PeriodTicks <= 0) spec.PeriodTicks = 1;
+            if (spec.PeriodTicks < 1) spec.PeriodTicks = 1;
+            StopWalk(a);
+            ActiveWalks.Add(spec);
+            EnsureWalkDriver();
+            return DMValue.Null;
+        }
+
+        private static void StopWalk(DMRuntime a) => ActiveWalks.RemoveAll(w => ReferenceEquals(w.Atom, a));
+
+        private static void EnsureWalkDriver()
+        {
+            if (WalkDriverStarted) return;
+            WalkDriverStarted = true;
+            DMTickScheduler.RegisterTickCallback(async () => { WalkTick(); await Task.CompletedTask; });
+        }
+
+        private static void WalkTick()
+        {
+            for (int i = ActiveWalks.Count - 1; i >= 0; i--)
+            {
+                var w = ActiveWalks[i];
+                if (w.Atom.MarkedForDeletion || w.Trg.DatumRef is DMRuntime td && td.MarkedForDeletion)
+                { ActiveWalks.RemoveAt(i); continue; }
+                if (DMTickScheduler.TicksElapsed - w.LastTick < w.PeriodTicks) continue;
+                w.LastTick = DMTickScheduler.TicksElapsed;
+                switch (w.Kind)
+                {
+                    case "dir": Step(DMValue.FromDatum(w.Atom), DMValue.FromNumber(w.Dir), 1); break;
+                    case "rand": StepRand(DMValue.FromDatum(w.Atom)); break;
+                    case "to":
+                        if (GetDist(DMValue.FromDatum(w.Atom), w.Trg).ToNumber() > w.Trange)
+                            StepTowards(DMValue.FromDatum(w.Atom), w.Trg, 1);
+                        break;
+                    case "towards": StepTowards(DMValue.FromDatum(w.Atom), w.Trg, 1); break;
+                    case "away":
+                        if (GetDist(DMValue.FromDatum(w.Atom), w.Trg).ToNumber() < w.Trange)
+                            StepAway(DMValue.FromDatum(w.Atom), w.Trg, (int)w.Trange, 1);
+                        break;
+                }
+            }
+        }
+
+        public static DMValue Walk(DMValue atom, DMValue dir = default, DMValue lag = default, DMValue speed = default)
+            => StartWalk(atom, "dir", dir, lag, speed);
+        public static DMValue WalkTo(DMValue atom, DMValue trg = default, DMValue trange = default, DMValue lag = default)
+            => StartWalk(atom, "to", trg, trange, lag);
+        public static DMValue WalkTowards(DMValue atom, DMValue trg = default, DMValue lag = default, DMValue speed = default)
+            => StartWalk(atom, "towards", trg, lag, speed);
+        public static DMValue WalkAway(DMValue atom, DMValue trg = default, DMValue trange = default, DMValue lag = default)
+            => StartWalk(atom, "away", trg, trange, lag);
+        public static DMValue WalkRand(DMValue atom, DMValue lag = default, DMValue speed = default)
+            => StartWalk(atom, "rand", DMValue.Null, lag, speed);
+
+        /// <summary>DM ASSERT(C): BYOND crashes the proc on a falsy condition.</summary>
+        public static DMValue DMAssert(DMValue cond = default)
+        {
+            if (!cond.IsTrue()) DMCRASH(DMValue.FromString("Assertion failed"));
+            return DMValue.Null;
+        }
+
+        /// <summary>
+        /// DM EXCEPTION(text): BYOND throws a /exception datum value —
+        /// catch(exception/E) binds it. Vars: name, desc, file, line.
+        /// </summary>
+        public static DMValue Exception(params DMValue[] args)
+        {
+            var msg = args.Length > 0 ? args[0].ToString() : "";
+            var e = new DMRuntime { DMTypePath = "/exception" };
+            e.SetVar("name", DMValue.FromString(msg));
+            e.SetVar("desc", DMValue.FromString(msg));
+            e.SetVar("file", DMValue.FromString(""));
+            e.SetVar("line", DMValue.FromNumber(0));
+            return DMValue.FromDatum(e);
+        }
+
+        /// <summary>DM fract(X): fractional part of X.</summary>
+        public static DMValue Fract(DMValue n = default)
+        {
+            var v = n.Type == DMValueType.Number ? n.ToNumber() : 0;
+            return DMValue.FromNumber(v - Math.Truncate(v), true);
+        }
+
+        /// <summary>DM sha1(T): SHA-1 hex of the text (or file bytes).</summary>
+        public static DMValue Sha1(DMValue v = default)
+        {
+            byte[] data;
+            if (v.Type == DMValueType.File) data = System.Text.Encoding.UTF8.GetBytes(v.FileValue ?? "");
+            else data = System.Text.Encoding.UTF8.GetBytes(v.ToString() ?? "");
+            var hash = System.Security.Cryptography.SHA1.HashData(data);
+            return DMValue.FromString(Convert.ToHexString(hash).ToLowerInvariant());
+        }
+
+        /// <summary>DM num2hex(N, len): lowercase hex, zero-padded to len digits.</summary>
+        public static DMValue Num2Hex(DMValue n = default, DMValue len = default)
+        {
+            var v = n.Type == DMValueType.Number ? (long)Math.Round(n.ToNumber()) : 0;
+            var s = v.ToString("x");
+            var l = len.Type == DMValueType.Number ? (int)len.ToNumber() : 0;
+            if (l > s.Length) s = s.PadLeft(l, '0');
+            return DMValue.FromString(s);
+        }
+
+        /// <summary>
+        /// DM values_cut_under(List, Cmp): sum of the amounts each value is
+        /// under Cmp; values_cut_over mirrors it. BYOND operates on list
+        /// values (assoc entries use their keys here).
+        /// </summary>
+        public static DMValue ValuesCutUnder(DMValue list = default, DMValue cmp = default)
+        {
+            return ValuesCut(list, cmp, under: true);
+        }
+        public static DMValue ValuesCutOver(DMValue list = default, DMValue cmp = default)
+        {
+            return ValuesCut(list, cmp, under: false);
+        }
+        private static DMValue ValuesCut(DMValue list, DMValue cmp, bool under)
+        {
+            if (list.Type != DMValueType.List) return DMValue.FromNumber(0);
+            var c = cmp.Type == DMValueType.Number ? cmp.ToNumber() : 0;
+            double total = 0;
+            for (int i = 1; i <= list.ListValue.Count; i++)
+            {
+                var v = list.ListValue.Get(i);
+                var n = v.Type == DMValueType.Number ? v.ToNumber() : 0;
+                var diff = under ? c - n : n - c;
+                if (diff > 0) total += diff;
+            }
+            return DMValue.FromNumber(total, true);
+        }
+
+        /// <summary>DM spantext_char — _char delegates (same rules, byte positions).</summary>
+        public static DMValue SpanTextChar(DMValue haystack, DMValue needles, DMValue start = default)
+            => SpanText(haystack, needles, start);
+        public static DMValue ReplaceTextExChar(DMValue haystack, DMValue needles, DMValue rep, DMValue start = default, DMValue end = default)
+            => ReplaceTextEx(haystack, needles, rep, start, end);
+
+        /// <summary>
+        /// DM shutdown(): world teardown. We raise the WorldShutdown hook so
+        /// the engine adapter can map it onto a real server stop; the DM
+        /// observable result is the same whether or not a hook is attached.
+        /// </summary>
+        public static Action? WorldShutdown;
+        public static DMValue Shutdown(params DMValue[] args)
+        {
+            try { WorldShutdown?.Invoke(); } catch { /* DM shutdown must not throw */ }
+            return DMValue.Null;
+        }
+
+        /// <summary>DM gradient(...): real /gradient datum; vars readable.</summary>
+        public static DMValue Gradient(params DMValue[] args)
+        {
+            var g = new DMRuntime { DMTypePath = "/gradient" };
+            var names = new[] { "index", "gradient", "color", "loop", "step", "angle", "space" };
+            int i = 0;
+            foreach (var a in args)
+            {
+                if (TryUnwrapNamedArg(a, out var name, out var value) && name != null) g.SetVar(name, value);
+                else if (i < names.Length) g.SetVar(names[i], a);
+                i++;
+            }
+            return DMValue.FromDatum(g);
+        }
+
+        /// <summary>DM vector(x,y,z): real /vector datum.</summary>
+        public static DMValue Vector(params DMValue[] args)
+        {
+            var v = new DMRuntime { DMTypePath = "/vector" };
+            var axes = new[] { "x", "y", "z" };
+            for (int i = 0; i < args.Length && i < 3; i++)
+            {
+                if (TryUnwrapNamedArg(args[i], out var name, out var value) && name != null) v.SetVar(name, value);
+                else v.SetVar(axes[i], args[i]);
+            }
+            return DMValue.FromDatum(v);
+        }
+
+        // --- icon/matrix member ops called bare inside their /icon /matrix
+        // procs: src is implicit, which for a direct call IS CurrentUsr ---
+        private static void RecordIconOp(DMRuntime? icon, string op, params DMValue[] args)
+        {
+            if (icon == null) return;
+            var ops = icon.GetVar("_iconops");
+            var l = ops.Type == DMValueType.List ? ops.ListValue : new DMList();
+            var sb = new StringBuilder(op + "(");
+            for (int i = 0; i < args.Length; i++) { if (i > 0) sb.Append(','); sb.Append(args[i].ToString()); }
+            l.Add(DMValue.FromString(sb.ToString() + ")"));
+            icon.SetVar("_iconops", DMValue.FromList(l));
+        }
+
+        /// <summary>/icon/MapColors(...) — pixel op recorded; icon stays usable.</summary>
+        public static DMValue IconMapColors(DMValue src, params DMValue[] args)
+        {
+            RecordIconOp(AsRuntime(src), "MapColors", args);
+            return DMValue.Null;
+        }
+        /// <summary>/icon/Blend(icon_or_fn, mode) — recorded op; returns src icon.</summary>
+        public static DMValue IconBlend(DMValue src, params DMValue[] args)
+        {
+            RecordIconOp(AsRuntime(src), "Blend", args);
+            return src;
+        }
+        /// <summary>/icon/SwapColor(from,to) — value form returns a blend spec.</summary>
+        public static DMValue IconSwapColor(params DMValue[] args)
+        {
+            var l = new DMList();
+            l.Add(DMValue.FromString("swapcolor"));
+            foreach (var a in args) l.Add(a);
+            return DMValue.FromList(l);
+        }
+        /// <summary>/icon/Shift(dir, offset, wrap) — moves pixels on the icon.</summary>
+        public static DMValue IconShift(DMValue src, params DMValue[] args)
+        {
+            RecordIconOp(AsRuntime(src), "Shift", args);
+            return DMValue.Null;
+        }
+        /// <summary>/icon/SetIntensity(...) — recorded op.</summary>
+        public static DMValue IconSetIntensity(DMValue src, params DMValue[] args)
+        {
+            RecordIconOp(AsRuntime(src), "SetIntensity", args);
+            return DMValue.Null;
+        }
+
+        /// <summary>
+        /// /matrix.Multiply(M): real affine composition — src *= M using the
+        /// 2D 3x3 form BYOND stores in vars a..f.
+        /// </summary>
+        public static DMValue MatrixMultiply(DMValue src, params DMValue[] args)
+        {
+            var m1 = AsRuntime(src); var m2 = args.Length > 0 ? AsRuntime(args[0]) : null;
+            if (m1 == null || m2 == null) return DMValue.Null;
+            double a = m1.GetVar("a").ToNumber(), b = m1.GetVar("b").ToNumber(), c = m1.GetVar("c").ToNumber();
+            double d = m1.GetVar("d").ToNumber(), e = m1.GetVar("e").ToNumber(), f = m1.GetVar("f").ToNumber();
+            double Ma = m2.GetVar("a").ToNumber(), Mb = m2.GetVar("b").ToNumber(), Mc = m2.GetVar("c").ToNumber();
+            double Md = m2.GetVar("d").ToNumber(), Me = m2.GetVar("e").ToNumber(), Mf = m2.GetVar("f").ToNumber();
+            m1.SetVar("a", DMValue.FromNumber(a * Ma + b * Md, true));
+            m1.SetVar("b", DMValue.FromNumber(a * Mb + b * Me, true));
+            m1.SetVar("c", DMValue.FromNumber(a * Mc + b * Mf + c, true));
+            m1.SetVar("d", DMValue.FromNumber(d * Ma + e * Md, true));
+            m1.SetVar("e", DMValue.FromNumber(d * Mb + e * Me, true));
+            m1.SetVar("f", DMValue.FromNumber(d * Mc + e * Mf + f, true));
+            return DMValue.Null;
+        }
+
+        // --- Wave-2 honest stubs: UI/OS surface has no DM-side equivalent ---
+        /// <summary>DM winexists — skin layer stub (honest Null).</summary>
+        public static DMValue Winexists(params DMValue[] args) => DMValue.Null;
+        /// <summary>DM winshow — skin layer stub (honest Null).</summary>
+        public static DMValue Winshow(params DMValue[] args) => DMValue.Null;
+        /// <summary>DM winclone — skin layer stub (honest Null).</summary>
+        public static DMValue Winclone(params DMValue[] args) => DMValue.Null;
+        /// <summary>DM shell — host-OS surface stub (honest Null).</summary>
+        public static DMValue Shell(params DMValue[] args) => DMValue.Null;
     }
 
     // NOTE (item 71): DMAppearanceKey (the AppearanceComponent.SetData keys)

@@ -212,7 +212,7 @@ async function runCSharpEmitterTests() {
         x = locate(x)
 `);
   assertContains(istype, `DMIsType(comp.GetVar("x"), DMValue.FromPath("/turf"))`, 'istype() keyword call');
-  assertContains(istype, `DMLocate(comp.GetVar("x"))`, 'locate() keyword call');
+  assertContains(istype, `DMRuntimeHelpers.Locate(comp.GetVar("x"))`, 'locate() keyword call');
 
   // Test 25: null-conditional ?. property access parses
   const ncl = transpileProc(`/obj/foo/proc/run()
