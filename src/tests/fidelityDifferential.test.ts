@@ -1003,6 +1003,144 @@ const PROBES: Probe[] = [
     name: 'x write crossing a turf boundary updates loc',
     dm: `/turf/floor_t\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/turf/floor_t/t1 = new /turf/floor_t\n\tt1.x = 5\n\tt1.y = 5\n\tt1.z = 1\n\tvar/turf/floor_t/t2 = new /turf/floor_t\n\tt2.x = 6\n\tt2.y = 5\n\tt2.z = 1\n\tvar/obj/item/thing/i = new /obj/item/thing\n\ti.x = 5\n\ti.y = 5\n\ti.z = 1\n\ti.loc = t1\n\ti.x = 6\n\treturn i.loc == t2`,
     expected: '1'
+  },
+
+  // --- Tier-4 builtins (docs/plans/17-remaining-builtins.md) ---
+  {
+    name: 'file2text() reads a seeded file',
+    dm: `/datum/probe/proc/run()\n\treturn file2text("probe_f2t.txt")`,
+    expected: 'file body',
+    files: { 'probe_f2t.txt': 'file body' }
+  },
+  {
+    name: 'file2text() of a missing file is null',
+    dm: `/datum/probe/proc/run()\n\treturn file2text("probe_f2t_missing.txt")`,
+    expected: 'null'
+  },
+  {
+    name: 'text2file() writes then file2text() reads back',
+    dm: `/datum/probe/proc/run()\n\ttext2file("hi", "probe_t2f.txt")\n\treturn file2text("probe_t2f.txt")`,
+    expected: 'hi'
+  },
+  {
+    name: 'md5() returns lowercase hex',
+    dm: `/datum/probe/proc/run()\n\treturn md5("abc")`,
+    expected: '900150983cd24fb0d6963f7d28e17f72'
+  },
+  {
+    name: 'addtext() concatenates the text form of every arg',
+    dm: `/datum/probe/proc/run()\n\treturn addtext("a", 1, "b")`,
+    expected: 'a1b'
+  },
+  {
+    name: 'trimtext() strips surrounding whitespace',
+    dm: `/datum/probe/proc/run()\n\treturn trimtext("  x  ")`,
+    expected: 'x'
+  },
+  {
+    name: 'cmptext() compares case-insensitively',
+    dm: `/datum/probe/proc/run()\n\treturn cmptext("abc", "ABC")`,
+    expected: '1'
+  },
+  {
+    name: 'cmptextEx() compares case-sensitively',
+    dm: `/datum/probe/proc/run()\n\treturn cmptextEx("abc", "ABC")`,
+    expected: '0'
+  },
+  {
+    name: 'findtext_char() is char-based (code points)',
+    dm: `/datum/probe/proc/run()\n\treturn findtext_char("a😀b", "😀")`,
+    expected: '2'
+  },
+  {
+    name: 'findlasttext_char() finds the last match',
+    dm: `/datum/probe/proc/run()\n\treturn findlasttext_char("abcabc", "b")`,
+    expected: '5'
+  },
+  {
+    name: 'splittext_char() splits into a list',
+    dm: `/datum/probe/proc/run()\n\tvar/L = splittext_char("a,b,c", ",")\n\treturn L.len`,
+    expected: '3'
+  },
+  {
+    name: 'nonspantext() returns offset to first needle char',
+    dm: `/datum/probe/proc/run()\n\treturn nonspantext("abc1", "0123456789")`,
+    expected: '3'
+  },
+  {
+    name: 'spantext() counts the leading needle-char run',
+    dm: `/datum/probe/proc/run()\n\treturn spantext("112a", "0123456789")`,
+    expected: '3'
+  },
+  {
+    name: 'url_encode() percent-encodes',
+    dm: `/datum/probe/proc/run()\n\treturn url_encode("a b&c")`,
+    expected: 'a%20b%26c'
+  },
+  {
+    name: 'url_decode() reverses url_encode',
+    dm: `/datum/probe/proc/run()\n\treturn url_decode("a%20b%26c")`,
+    expected: 'a b&c'
+  },
+  {
+    name: 'ckeyEx() preserves case and -_ punctuation',
+    dm: `/datum/probe/proc/run()\n\treturn ckeyEx("OhSoWe'ReKeeping!MyCapitalLetters?Now")`,
+    expected: 'OhSoWeReKeepingMyCapitalLettersNow' // BYOND ref example
+  },
+  {
+    name: 'sorttextEx() compares case-sensitively',
+    dm: `/datum/probe/proc/run()\n\treturn sorttextEx("b", "A")`,
+    expected: '1' // case-sensitive ordinal: "b" sorts after "A"
+  },
+  {
+    name: 'text2ascii_char() returns char code',
+    dm: `/datum/probe/proc/run()\n\treturn text2ascii_char("ABC", 2)`,
+    expected: '66'
+  },
+  {
+    name: 'lerp() interpolates linearly',
+    dm: `/datum/probe/proc/run()\n\treturn lerp(0, 10, 0.5)`,
+    expected: '5'
+  },
+  {
+    name: 'trunc() truncates toward zero',
+    dm: `/datum/probe/proc/run()\n\treturn trunc(-3.7)`,
+    expected: '-3'
+  },
+  {
+    name: 'tan() takes degrees (tan 45 = 1)',
+    dm: `/datum/probe/proc/run()\n\treturn round(tan(45) * 100)`,
+    expected: '100'
+  },
+  {
+    name: 'arcsin() returns degrees (asin 0.5 = 30)',
+    dm: `/datum/probe/proc/run()\n\treturn round(arcsin(0.5) * 10)`,
+    expected: '300'
+  },
+  {
+    name: 'ohearers() excludes the center mob',
+    dm: `/mob/dummy\n/datum/probe/proc/run()\n\tvar/a = new /mob/dummy()\n\tvar/b = new /mob/dummy()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 5\n\treturn ohearers(7, a).len`,
+    expected: '1' // hearers would report 2; ohearers drops the center
+  },
+  {
+    name: 'bounds_dist() is 0 between adjacent atoms',
+    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 4\n\tb.y = 3\n\treturn bounds_dist(a, b)`,
+    expected: '0' // neighbouring 32px boxes touch
+  },
+  {
+    name: 'generator("num") returns a value in [A,B]',
+    dm: `/datum/probe/proc/run()\n\tvar/g = generator("num", 5, 5)\n\treturn g.Rand()`,
+    expected: '5' // degenerate bounds return the constant
+  },
+  {
+    name: 'findtextEx_char() is case-sensitive and char-based',
+    dm: `/datum/probe/proc/run()\n\treturn findtextEx_char("aBc", "c")`,
+    expected: '3'
+  },
+  {
+    name: 'replacetext_char() replaces literally',
+    dm: `/datum/probe/proc/run()\n\treturn replacetext_char("one two", "two", "2")`,
+    expected: 'one 2'
   }
 ];
 

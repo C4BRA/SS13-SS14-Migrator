@@ -3695,6 +3695,421 @@ namespace SS13.DM.Runtime
         public static DMValue Alert(params DMValue[] args) => DMValue.Null;
 
         public static DMValue Input(params DMValue[] args) => DMValue.Null;
+
+        // ==== Tier-4 builtins (remaining corpus backlog; docs/plans/17) ====
+        // Append-only region — real BYOND semantics, verified against the DM
+        // reference and OpenDream's native implementations.
+
+        /// <summary>
+        /// DM file2text(file): the file's contents as text; Null when the
+        /// path is missing or unreadable ("contents of the file, or null on
+        /// invalid files" — DM ref).
+        /// </summary>
+        public static DMValue File2Text(DMValue path)
+        {
+            try
+            {
+                var p = PathOf(path);
+                if (string.IsNullOrEmpty(p) || !System.IO.File.Exists(p)) return DMValue.Null;
+                return DMValue.FromString(System.IO.File.ReadAllText(p));
+            }
+            catch
+            {
+                return DMValue.Null;
+            }
+        }
+
+        /// <summary>
+        /// DM text2file(text, file): appends text to the file, creating it
+        /// when it does not exist. 1 on success, 0 on failure.
+        /// </summary>
+        public static DMValue Text2File(DMValue text, DMValue path)
+        {
+            try
+            {
+                System.IO.File.AppendAllText(PathOf(path), text.ToString());
+                return DMValue.FromNumber(1);
+            }
+            catch
+            {
+                return DMValue.FromNumber(0);
+            }
+        }
+
+        /// <summary>
+        /// DM md5(T): lowercase hex MD5. Text values hash their UTF-8 bytes;
+        /// file values hash the file's raw bytes; unreadable input -> Null.
+        /// </summary>
+        public static DMValue Md5(DMValue value)
+        {
+            try
+            {
+                byte[] bytes;
+                if (value.Type == DMValueType.File)
+                {
+                    var p = value.FileValue;
+                    if (string.IsNullOrEmpty(p) || !System.IO.File.Exists(p)) return DMValue.Null;
+                    bytes = System.IO.File.ReadAllBytes(p);
+                }
+                else
+                {
+                    bytes = Encoding.UTF8.GetBytes(value.ToString());
+                }
+                using var md5 = System.Security.Cryptography.MD5.Create();
+                return DMValue.FromString(Convert.ToHexString(md5.ComputeHash(bytes)).ToLowerInvariant());
+            }
+            catch
+            {
+                return DMValue.Null;
+            }
+        }
+
+        /// <summary>
+        /// DM addtext(args...): concatenates the text form of every argument
+        /// (deprecated BYOND proc, still common in corpus code). Null
+        /// contributes the empty string, matching DM text interpolation.
+        /// </summary>
+        public static DMValue AddText(params DMValue[] args)
+        {
+            var sb = new StringBuilder();
+            foreach (var a in args)
+                if (a.Type != DMValueType.Null) sb.Append(a.ToString());
+            return DMValue.FromString(sb.ToString());
+        }
+
+        /// <summary>
+        /// DM trimtext(text): the text with leading and trailing whitespace
+        /// removed; Null in -> Null out.
+        /// </summary>
+        public static DMValue TrimText(DMValue value)
+        {
+            if (value.Type == DMValueType.Null) return DMValue.Null;
+            return DMValue.FromString(value.ToString().Trim());
+        }
+
+        /// <summary>
+        /// DM cmptext(T1, T2, ...): 1 when every argument is the same text,
+        /// case-INSENSITIVE; 0 otherwise (DM ref).
+        /// </summary>
+        public static DMValue CmpText(params DMValue[] args)
+        {
+            for (var i = 1; i < args.Length; i++)
+                if (!string.Equals(args[0].ToString(), args[i].ToString(), StringComparison.OrdinalIgnoreCase))
+                    return DMValue.FromNumber(0);
+            return DMValue.FromNumber(1);
+        }
+
+        /// <summary>
+        /// DM cmptextEx(T1, T2, ...): the case-SENSITIVE cmptext.
+        /// </summary>
+        public static DMValue CmpTextEx(params DMValue[] args)
+        {
+            for (var i = 1; i < args.Length; i++)
+                if (!string.Equals(args[0].ToString(), args[i].ToString(), StringComparison.Ordinal))
+                    return DMValue.FromNumber(0);
+            return DMValue.FromNumber(1);
+        }
+
+        // BYOND's *_char variants measure positions in characters rather than
+        // bytes — the runtime's text helpers already index by Unicode code
+        // points, so they delegate directly.
+        public static DMValue FindTextChar(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)
+            => FindText(text, needle, start, end);
+
+        public static DMValue FindLastTextChar(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)
+            => FindLastText(text, needle, start, end);
+
+        public static DMValue SplitTextChar(DMValue text, DMValue separator, DMValue start = default, DMValue end = default, DMValue includeDelimiters = default)
+            => SplitText(text, separator, start, end, includeDelimiters);
+
+        public static DMValue Text2AsciiChar(DMValue text, DMValue pos = default)
+            => Text2Ascii(text, pos);
+
+        /// <summary>
+        /// DM findtextEx_char: char-based findtextEx. The runtime's text
+        /// helpers already index by code points, so this delegates.
+        /// </summary>
+        public static DMValue FindTextExChar(DMValue text, DMValue needle, DMValue start = default, DMValue end = default)
+            => FindTextEx(text, needle, start, end);
+
+        /// <summary>
+        /// DM replacetext_char: char-based replacetext (case-insensitive
+        /// literal replace). The runtime is code-point indexed; delegates.
+        /// </summary>
+        public static DMValue ReplaceTextChar(DMValue haystack, DMValue needle, DMValue replacement, DMValue start = default, DMValue end = default)
+            => ReplaceText(haystack, needle, replacement, start, end);
+
+        /// <summary>
+        /// DM nonspantext(haystack, needles, start): the offset, relative to
+        /// start, of the first character contained in the needles set; when
+        /// no needle character occurs, the number of characters from start
+        /// to the end of the text (OpenDream parity).
+        /// </summary>
+        public static DMValue NonSpanText(DMValue haystack, DMValue needles, DMValue start = default)
+        {
+            var text = haystack.ToString();
+            var needleSet = needles.ToString();
+            var startIdx = (int)(start.Type == DMValueType.Null ? 1 : start.ToNumber());
+            if (startIdx == 0 || startIdx > text.Length) return DMValue.FromNumber(0);
+            if (startIdx < 0) startIdx += text.Length + 1;
+            var idx = text.Substring(startIdx - 1).IndexOfAny(needleSet.ToCharArray());
+            if (idx < 0) idx = text.Length - startIdx + 1;
+            return DMValue.FromNumber(idx);
+        }
+
+        /// <summary>
+        /// DM spantext(haystack, needles, start): the length of the
+        /// consecutive run of needle-set characters beginning at start
+        /// (OpenDream parity: start 0 or non-text -> 0).
+        /// </summary>
+        public static DMValue SpanText(DMValue haystack, DMValue needles, DMValue start = default)
+        {
+            var text = haystack.ToString();
+            var needleSet = needles.ToString().ToCharArray();
+            var startIdx = (int)(start.Type == DMValueType.Null ? 1 : start.ToNumber());
+            if (startIdx == 0) return DMValue.FromNumber(0);
+            if (startIdx < 0) startIdx = Math.Max(startIdx + text.Length + 1, 1);
+            var count = 0;
+            for (var i = startIdx - 1; i < text.Length; i++)
+            {
+                if (needleSet.Length > 0 && text.IndexOfAny(needleSet, i, 1) > -1) count++;
+                else break;
+            }
+            return DMValue.FromNumber(count);
+        }
+
+        /// <summary>
+        /// DM url_encode(text): percent-encode text for URLs (format 0 —
+        /// the only documented form).
+        /// </summary>
+        public static DMValue UrlEncode(DMValue value) => DMValue.FromString(DmUrlEncode(value.ToString()));
+
+        /// <summary>
+        /// DM url_decode(text): decode %XX escapes; '+' decodes as a space
+        /// (DM's URL convention, matching params2list).
+        /// </summary>
+        public static DMValue UrlDecode(DMValue value) => DMValue.FromString(UrlDecode(value.ToString()));
+
+        /// <summary>
+        /// DM ckeyEx(text): canonical-key form that PRESERVES letter case and
+        /// the @, - and _ characters; all other punctuation is removed
+        /// (DM ref example: ckeyEx("OhSoWe'ReKeeping!MyCapitalLetters?Now")
+        /// -> "OhSoWeReKeepingMyCapitalLettersNow").
+        /// </summary>
+        public static DMValue CKeyEx(DMValue value)
+        {
+            if (value.Type == DMValueType.Null) return DMValue.Null;
+            var s = value.ToString();
+            var sb = new StringBuilder(s.Length);
+            foreach (var ch in s)
+            {
+                // Mirror BYOND/OpenDream's [^A-z0-9@_-] strip plus an explicit
+                // '^' removal: the A-z range keeps A-Z, a-z and a few
+                // stragglers, while '@' and '-' are whitelisted separately.
+                if (ch == '^') continue;
+                if ((ch >= 'A' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '@' || ch == '-') sb.Append(ch);
+            }
+            return DMValue.FromString(sb.ToString());
+        }
+
+        /// <summary>
+        /// DM sorttextEx(A, B): the case-SENSITIVE sorttext — 1 when A sorts
+        /// before B, -1 when after, 0 when equal.
+        /// </summary>
+        public static DMValue SortTextEx(DMValue a, DMValue b)
+        {
+            var c = string.Compare(a.ToString(), b.ToString(), StringComparison.Ordinal);
+            return DMValue.FromNumber(c > 0 ? 1 : (c < 0 ? -1 : 0));
+        }
+
+        /// <summary>
+        /// DM lerp(A, B, factor): linear interpolation A + (B - A) * factor.
+        /// </summary>
+        public static DMValue Lerp(DMValue a, DMValue b, DMValue factor)
+        {
+            return DMValue.FromNumber(a.ToNumber() + (b.ToNumber() - a.ToNumber()) * factor.ToNumber(), true);
+        }
+
+        /// <summary>
+        /// DM trunc(n): truncate toward zero (never rounds — distinct from
+        /// floor for negative values).
+        /// </summary>
+        public static DMValue Trunc(DMValue value) => DMValue.FromNumber(Math.Truncate(value.ToNumber()));
+
+        // BYOND trig is degree-based (same convention as sin/cos/arctan).
+        public static DMValue Tan(DMValue value) => DMValue.FromNumber(Math.Tan(value.ToNumber() * Math.PI / 180.0), true);
+
+        public static DMValue ArcSin(DMValue value) => DMValue.FromNumber(Math.Asin(value.ToNumber()) * 180.0 / Math.PI, true);
+
+        /// <summary>
+        /// DM ohearers(dist, center): mobs that can hear the center EXCLUDING
+        /// the center itself — the o-prefixed variant of hearers (default
+        /// range 7, matching hearers).
+        /// </summary>
+        public static DMValue OHearers(params DMValue[] args)
+        {
+            var (center, dist) = CenterDist(7, args);
+            return MobScan(center, dist, false);
+        }
+
+        /// <summary>
+        /// DM bounds_dist(ref, target): pixel distance between the atoms'
+        /// bounding boxes; different z-levels or non-atoms -> +inf.
+        /// Engine-free approximation: bound_width/bound_height vars default
+        /// to a full 32px tile (OpenDream parity).
+        /// </summary>
+        public static DMValue BoundsDist(DMValue reference, DMValue target)
+        {
+            if (reference.AsDatum() is not DMRuntime a || target.AsDatum() is not DMRuntime b)
+                return DMValue.FromNumber(double.PositiveInfinity);
+            if (Coord(a, "z") != Coord(b, "z")) return DMValue.FromNumber(double.PositiveInfinity);
+            const double iconSize = 32.0;
+            var aw = a.GetVar("bound_width").ToNumber(); if (aw <= 0) aw = iconSize;
+            var ah = a.GetVar("bound_height").ToNumber(); if (ah <= 0) ah = iconSize;
+            var bw = b.GetVar("bound_width").ToNumber(); if (bw <= 0) bw = iconSize;
+            var bh = b.GetVar("bound_height").ToNumber(); if (bh <= 0) bh = iconSize;
+            return DMValue.FromNumber(Math.Max(
+                Math.Abs(Coord(b, "x") - Coord(a, "x")) * iconSize - Math.Abs(aw + bw) / 2,
+                Math.Abs(Coord(b, "y") - Coord(a, "y")) * iconSize - Math.Abs(ah + bh) / 2), true);
+        }
+
+        private static bool _generatorProcsRegistered;
+
+        /// <summary>
+        /// DM generator(type, A, B, rand): creates a /generator datum. The
+        /// constructor args are stored as vars (type/a/b/rand plus a
+        /// gen_args list tail); the registered Rand() proc draws from the
+        /// stored distribution. Supported: "num" (uniform; rand flag 1 =
+        /// NORMAL_RAND approximates a midpoint gaussian), "normal"/"gauss",
+        /// "binomial", "poisson", "geometric", "choice", "sequential",
+        /// "vector"/"square"/"cube"/"box" (per-component uniforms into a
+        /// list) and "circle"/"sphere" (radius in [A,B]).
+        /// </summary>
+        public static DMValue Generator(params DMValue[] args)
+        {
+            EnsureGeneratorProcs();
+            var datum = new DMRuntime { DMTypePath = "/generator" };
+            LiveDatums.Add(datum);
+            datum.SetVar("type", args.Length > 0 ? args[0] : DMValue.Null);
+            datum.SetVar("a", args.Length > 1 ? args[1] : DMValue.Null);
+            datum.SetVar("b", args.Length > 2 ? args[2] : DMValue.Null);
+            datum.SetVar("rand", args.Length > 3 ? args[3] : DMValue.FromNumber(0));
+            var tail = new DMList();
+            for (var i = 1; i < args.Length; i++) tail.Add(args[i]);
+            datum.SetVar("gen_args", DMValue.FromList(tail));
+            return DMValue.FromDatum(datum);
+        }
+
+        private static void EnsureGeneratorProcs()
+        {
+            if (_generatorProcsRegistered) return;
+            _generatorProcsRegistered = true;
+            ProcRegistry.Register("/generator", "rand", (comp, a) => Task.FromResult(GeneratorRand(comp)));
+            ProcRegistry.Register("/generator", "randnum", (comp, a) => Task.FromResult(GeneratorRand(comp)));
+        }
+
+        private static DMValue GeneratorRand(DMRuntime comp)
+        {
+            var type = comp.GetVar("type").ToString().ToLowerInvariant();
+            var a = comp.GetVar("a");
+            var b = comp.GetVar("b");
+            var rand = comp.GetVar("rand").ToNumber();
+            var rng = System.Random.Shared;
+            double NextUniform() => a.ToNumber() + (b.ToNumber() - a.ToNumber()) * rng.NextDouble();
+            switch (type)
+            {
+                case "num":
+                    if (rand == 1) // NORMAL_RAND: midpoint gaussian clamped to [A,B]
+                    {
+                        var u1 = Math.Max(rng.NextDouble(), 1e-12);
+                        var u2 = rng.NextDouble();
+                        var z = Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2);
+                        var lo = Math.Min(a.ToNumber(), b.ToNumber());
+                        var hi = Math.Max(a.ToNumber(), b.ToNumber());
+                        return DMValue.FromNumber(Math.Clamp((lo + hi) / 2.0 + z * (hi - lo) / 6.0, lo, hi), true);
+                    }
+                    return DMValue.FromNumber(NextUniform(), true);
+                case "normal":
+                case "gauss":
+                {
+                    var u1 = Math.Max(rng.NextDouble(), 1e-12);
+                    var u2 = rng.NextDouble();
+                    var z = Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2);
+                    return DMValue.FromNumber(a.ToNumber() + z * b.ToNumber(), true);
+                }
+                case "binomial":
+                {
+                    var n = Math.Max(0, (int)a.ToNumber());
+                    var p = Math.Clamp(b.ToNumber(), 0, 1);
+                    var successes = 0;
+                    for (var i = 0; i < n; i++) if (rng.NextDouble() < p) successes++;
+                    return DMValue.FromNumber(successes);
+                }
+                case "poisson":
+                {
+                    var l = Math.Exp(-Math.Max(0, a.ToNumber()));
+                    var k = 0;
+                    var p = 1.0;
+                    do { k++; p *= rng.NextDouble(); } while (p > l);
+                    return DMValue.FromNumber(k - 1);
+                }
+                case "geometric":
+                {
+                    var p = Math.Clamp(a.ToNumber(), 1e-9, 1);
+                    return DMValue.FromNumber(Math.Ceiling(Math.Log(1 - rng.NextDouble()) / Math.Log(1 - p)));
+                }
+                case "choice":
+                {
+                    var opts = comp.GetVar("gen_args").AsList();
+                    if (opts == null || opts.PositionalCount == 0) return DMValue.Null;
+                    return opts.Get((int)(rng.NextDouble() * opts.PositionalCount) + 1);
+                }
+                case "sequential":
+                {
+                    var cur = comp.GetVar("gen_seq").Type == DMValueType.Null ? a.ToNumber() : comp.GetVar("gen_seq").ToNumber() + 1;
+                    if (cur > b.ToNumber()) cur = a.ToNumber();
+                    comp.SetVar("gen_seq", DMValue.FromNumber(cur));
+                    return DMValue.FromNumber(cur);
+                }
+                case "vector":
+                case "square":
+                case "cube":
+                case "box":
+                {
+                    var av = a.AsList();
+                    var bv = b.AsList();
+                    var list = new DMList();
+                    if (av != null && bv != null)
+                    {
+                        for (var i = 1; i <= Math.Min(av.PositionalCount, bv.PositionalCount); i++)
+                            list.Add(DMValue.FromNumber(av.Get(i).ToNumber() + (bv.Get(i).ToNumber() - av.Get(i).ToNumber()) * rng.NextDouble(), true));
+                    }
+                    else
+                    {
+                        var dims = type == "cube" || type == "box" ? 3 : 2;
+                        for (var i = 0; i < dims; i++) list.Add(DMValue.FromNumber(NextUniform(), true));
+                    }
+                    return DMValue.FromList(list);
+                }
+                case "circle":
+                case "sphere":
+                {
+                    var r = NextUniform();
+                    var angle = rng.NextDouble() * 2 * Math.PI;
+                    var list = new DMList();
+                    list.Add(DMValue.FromNumber(r * Math.Cos(angle), true));
+                    list.Add(DMValue.FromNumber(r * Math.Sin(angle), true));
+                    if (type == "sphere") list.Add(DMValue.FromNumber(r * (rng.NextDouble() * 2 - 1), true));
+                    return DMValue.FromList(list);
+                }
+                case "color":
+                    return DMValue.FromString(b.ToString());
+                case "flat":
+                    return a;
+                default:
+                    return a.Type == DMValueType.Null ? DMValue.Null : a;
+            }
+        }
     }
 }
 `      },
