@@ -685,17 +685,46 @@ namespace Content.Server.DM
         {
             var worldDatum = DMRuntimeHelpers.WorldValue.DatumRef as DMRuntime;
             if (worldDatum == null) return;
-            foreach (var typePath in ProcRegistry.RegisteredPaths)
+            // ==== W-E subsystem thread-safety ====
+            // The whole registration runs on the CALLING thread. StartWorld
+            // is invoked by the content EntryPoint on the server's main
+            // (IoC) thread — where the engine's RobustSynchronizationContext
+            // is installed — so every await inside RegisterSubsystemsAsync
+            // (DMNew, the subsystem's own New(), any sleep/spawn inside it)
+            // resumes on the main thread too, and the cadence callback's
+            // fire/process CallProc later fires inside Pump from Update on
+            // that same thread. The old Task.Run pushed DMNew + New() onto
+            // a thread-pool thread: EntityManager's ThreadCheck and
+            // IoCManager.Resolve's context assert threw ("IoC has no context
+            // on this thread"), faulting the task — unobserved-exception
+            // spam — BEFORE the tick callback was ever registered, so
+            // subsystems went silently dead while shared datum state was
+            // mutated off the IoC thread.
+            _ = RegisterSubsystemsAsync(worldDatum);
+        }
+
+        /// <summary>
+        /// Sequential subsystem construction (W-E): each /datum/controller
+        /// type is DMNew'd one at a time on the IoC thread — matching
+        /// BYOND's in-order boot — and a failing New() is logged and
+        /// skipped instead of silently faulting a fire-and-forget task.
+        /// </summary>
+        private async Task RegisterSubsystemsAsync(DMRuntime worldDatum)
+        {
+            foreach (var typePath in new List<string>(ProcRegistry.RegisteredPaths))
             {
                 if (!typePath.StartsWith("/datum/controller", StringComparison.OrdinalIgnoreCase)) continue;
                 string procName;
-                if (ProcRegistry.TryGetInherited(typePath, "fire", out _)) procName = "fire";
-                else if (ProcRegistry.TryGetInherited(typePath, "process", out _)) procName = "process";
+                // TryGet first: a fire/process declared on the leaf type wins;
+                // TryGetInherited only walks ancestors (the SS13
+                // /datum/controller/subsystem shape) and missed leaf decls.
+                if (ProcRegistry.TryGet(typePath, "fire", out _) || ProcRegistry.TryGetInherited(typePath, "fire", out _)) procName = "fire";
+                else if (ProcRegistry.TryGet(typePath, "process", out _) || ProcRegistry.TryGetInherited(typePath, "process", out _)) procName = "process";
                 else continue;
-                _ = Task.Run(async () =>
+                try
                 {
                     var datum = await DMRuntimeHelpers.DMNew(worldDatum, typePath);
-                    if (datum.DatumRef is not DMRuntime subsystem) return;
+                    if (datum.DatumRef is not DMRuntime subsystem) continue;
                     double nextFireDs = 0;
                     DMTickScheduler.RegisterTickCallback(async () =>
                     {
@@ -709,7 +738,11 @@ namespace Content.Server.DM
                         await subsystem.CallProc(procName, DMValue.FromNumber(DMTickScheduler.TickLag));
                     });
                     Logger.InfoS("dm", "DM subsystem {Type} on the tick loop ({Proc})", typePath, procName);
-                });
+                }
+                catch (Exception ex)
+                {
+                    Logger.ErrorS("dm", "DM subsystem {Type} init failed: {Ex}", typePath, ex.Message);
+                }
             }
         }
 

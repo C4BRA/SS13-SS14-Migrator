@@ -57,4 +57,12 @@ for (const sig of OVERLOAD_SIGNATURES) {
   assert(helpersContent.includes(sig), `DMRuntimeHelpers overload exists: ${sig}`);
 }
 
+// W-E subsystem thread-safety: Pump bodies serialize through PumpGate so a
+// fallback-driver pump and an external (engine Update) pump can never run
+// concurrently during the ExternalDriver handoff — DM state is only ever
+// mutated on one thread at a time.
+const schedulerContent = files.find(f => f.filename === 'DMTickScheduler.cs')!.content;
+assert(schedulerContent.includes('private static readonly object PumpGate'), 'DMTickScheduler declares PumpGate');
+assert(schedulerContent.includes('lock (PumpGate)'), 'DMTickScheduler.Pump serializes through PumpGate');
+
 console.log("\n✅ ALL RUNTIME TEMPLATE INTEGRITY TESTS PASSED!");
