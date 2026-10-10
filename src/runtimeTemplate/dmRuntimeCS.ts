@@ -1112,6 +1112,38 @@ namespace SS13.DM.Runtime
         private static long _seq;
         private static long _tickCallbackSeq;
         private static bool _externalDriver;
+
+        // W-I corpus: pump-time DM errors must be observable — a fire() or
+        // spawn body throwing every tick previously vanished silently behind
+        // catch {}, so converted-world boot logs under-reported real DM
+        // faults. Report each distinct failure (deduped by type+message,
+        // first 3 plus every 100th with a running count) to stderr.
+        private static readonly Dictionary<string, int> PumpErrorCounts = new();
+        // W-I corpus: a discarded async DM Task still has to be observed —
+        // a bare discard leaves faults to the finalizer thread, which logs
+        // them as unhandled unobserved noise instead of [DM-PUMP] lines.
+        private static void ObservePumpTask(Task t)
+        {
+            if (t == null) return;
+            t.ContinueWith(x =>
+            {
+                var agg = x.Exception;
+                if (agg == null) return;
+                var inners = agg.Flatten().InnerExceptions;
+                if (inners.Count == 0) { ReportPumpError(agg); return; }
+                foreach (var inner in inners) ReportPumpError(inner);
+            }, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+        }
+        public static void ReportPumpError(Exception ex)
+        {
+            var key = ex.GetType().Name + "|" + ex.Message;
+            int n;
+            lock (Sync) { PumpErrorCounts.TryGetValue(key, out n); PumpErrorCounts[key] = n + 1; }
+            if (n < 3 || n % 100 == 0)
+            {
+                try { Console.Error.WriteLine($"[DM-PUMP] {ex.GetType().Name}: {ex.Message} (x{n + 1})"); } catch { }
+            }
+        }
         private static Thread _driverThread;
         private static readonly object DriverSync = new();
         private static long _driverLastTicks;
@@ -1217,8 +1249,9 @@ namespace SS13.DM.Runtime
                     if (due == null) break;
                     foreach (var e in due)
                     {
-                        try { _ = e.Callback(); }
-                        catch { /* callback threw synchronously; keep scheduling */ }
+                        try { ObservePumpTask(e.Callback()); }
+                        // W-I corpus: surface the error, keep scheduling.
+                        catch (Exception ex) { ReportPumpError(ex); }
                     }
                 }
 
@@ -1236,11 +1269,12 @@ namespace SS13.DM.Runtime
                 {
                     foreach (var cb in cbs)
                     {
-                        try { _ = cb(); } catch { }
+                        // W-I corpus: subsystem fire() exceptions logged.
+                        try { ObservePumpTask(cb()); } catch (Exception ex) { ReportPumpError(ex); }
                     }
                     if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime w && w.CanCallProc("tick"))
                     {
-                        try { _ = w.CallProc("tick"); } catch { }
+                        try { ObservePumpTask(w.CallProc("tick")); } catch (Exception ex) { ReportPumpError(ex); }
                     }
                 }
             }
@@ -1304,7 +1338,8 @@ namespace SS13.DM.Runtime
                 // half is not modeled; the body starting synchronously is the
                 // observable half). The hot task's sync prefix runs inline now.
                 EnsureFallbackDriver();
-                try { _ = action(); } catch { }
+                // W-I corpus: spawn(-1) immediate-run errors logged.
+                try { ObservePumpTask(action()); } catch (Exception ex) { ReportPumpError(ex); }
                 return;
             }
             EnsureFallbackDriver();
@@ -5457,6 +5492,17 @@ namespace SS13.DM.Runtime
             return ValuesCut(list, cmp, under: true);
         }
         public static DMValue ValuesCutOver(DMValue list = default, DMValue cmp = default)
+        {
+            return ValuesCut(list, cmp, under: false);
+        }
+        // W-I corpus: tg calls values_cut_under/over with BYOND's third
+        // (sorted-hint) argument, e.g. values_cut_under(moles, MOLAR_ACCURACY, TRUE).
+        // The hint changes nothing observable — accept and ignore it.
+        public static DMValue ValuesCutUnder(DMValue list, DMValue cmp, DMValue sorted)
+        {
+            return ValuesCut(list, cmp, under: true);
+        }
+        public static DMValue ValuesCutOver(DMValue list, DMValue cmp, DMValue sorted)
         {
             return ValuesCut(list, cmp, under: false);
         }

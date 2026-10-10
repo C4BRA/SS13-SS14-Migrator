@@ -1014,6 +1014,21 @@ export class DMParser {
         continue;
       }
 
+      // `throw <expr>` — DM raise (corpus: paradise zlevel_manager,
+      // space_transition, map_template `throw e`). Lexed as an identifier;
+      // without a dedicated statement it parses as a bare `throw` var-read
+      // plus the expression as a separate statement — the exception is
+      // evaluated and discarded and the proc silently continues. Parse it
+      // as a real node so emission can wire it (emitter case pending — it
+      // surfaces as `// Unknown statement: ThrowStatement` until then).
+      const throwNext = this.peekNext();
+      if (this.isType(TokenType.Identifier) && this.peek().value === 'throw'
+          && throwNext && !['(', '.', ':', '[', ';', ',', '}'].includes(throwNext.value)) {
+        this.advance();
+        statements.push({ type: 'ThrowStatement', value: this.parseExpression() } as any);
+        continue;
+      }
+
       // continue / break statements (optionally with a label: break set_adj_in_dir)
       const ctrlToken = this.peek().value;
       if (ctrlToken === 'continue' || ctrlToken === 'break') {
@@ -1742,6 +1757,13 @@ export class DMParser {
     if (token.value === 'switch') {
       return this.parseSwitchStatement();
     }
+    // `throw <expr>` inline (if(x) throw e) — same as the block-level rule.
+    const throwNext = this.peekNext();
+    if (token.value === 'throw'
+        && throwNext && !['(', '.', ':', '[', ';', ',', '}'].includes(throwNext.value)) {
+      this.advance();
+      return { type: 'ThrowStatement', value: this.parseExpression() } as any;
+    }
     return { type: 'ExpressionStatement', expression: this.parseExpression() };
   }
 
@@ -1836,10 +1858,20 @@ export class DMParser {
           const right: ExpressionNode = { type: 'variable', name: segment };
           left = { type: 'binary', operator: '/', left, right };
         }
-        // The division chain may itself carry postfix operators — a call in
-        // divisor position (`x / b(...)`) must consume its argument list
-        // (WS2-2), otherwise the `(...)` leaks as a ghost statement.
-        left = this.parsePostfix(left);
+        // W-I corpus: `x / b(...)` divides by the CALL's result — the `(` is
+        // a proc invocation on the last path segment (BYOND resolves /ident(
+        // as a call, not a path), so postfix must bind to the divisor, not
+        // to the whole quotient. Binding to `left` miscompiled
+        // `20/length(cards)` into `(20/length)(cards)` — an InvokeProcRef on
+        // a number that then throws "Division by zero" at runtime.
+        if (this.isType(TokenType.Punctuation) && this.peek().value === '('
+            && left.type === 'binary' && (left as any).right?.type === 'variable') {
+          const chain = left as any;
+          chain.right = this.parsePostfix(chain.right);
+        } else {
+          // Other postfix operators on the chain (property/index tails).
+          left = this.parsePostfix(left);
+        }
         continue;
       }
 

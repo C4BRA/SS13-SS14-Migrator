@@ -282,7 +282,24 @@ export class DMPreprocessor {
     // region stays undefined) and #define/#undef update the macro maps in
     // order. In the production pipeline the collected-define seed usually
     // covers this; the simulation makes single-file processing match BYOND.
+    //
+    // Simulated #define/#undef mutations must NOT leak into the real pass:
+    // a file-level `#undef EQUIPMENT` would delete the corpus-seeded macro
+    // before the main loop expands *earlier* uses that BYOND still expands
+    // (paradise machine_vending.dm — ~140 sites). Clone the maps lazily on
+    // the first simulated mutation and restore the originals afterwards.
     const fileFrames: CondFrame[] = [];
+    let simSavedDefines: Map<string, string> | null = null;
+    let simSavedFunctions: Map<string, FunctionMacro> | null = null;
+    const simSavedShared = this.definesShared;
+    const simMutate = (): void => {
+      if (simSavedDefines !== null) return;
+      simSavedDefines = this.defines;
+      simSavedFunctions = this.functionDefines;
+      this.defines = new Map(this.defines);
+      this.functionDefines = new Map(this.functionDefines);
+      this.definesShared = false;
+    };
     const fileActive = (): boolean => fileFrames.length === 0 || fileFrames[fileFrames.length - 1].active;
     let simInBlockComment = false;
     for (let i = 0; i < lines.length; i++) {
@@ -348,7 +365,7 @@ export class DMPreprocessor {
               body += '\n' + lines[k++];
             }
             const bodyClean = DMPreprocessor.stripInlineComment(body).trim();
-            this.ensureOwnDefines();
+            simMutate();
             if (dd[2] !== undefined) {
               const params = this.splitArgs(dd[2]).map(p => p.trim()).filter(p => p.length > 0);
               let variadic = false;
@@ -371,7 +388,7 @@ export class DMPreprocessor {
           }
           case 'undef': {
             if (!fileActive()) break;
-            this.ensureOwnDefines();
+            simMutate();
             this.defines.delete(arg);
             this.functionDefines.delete(arg);
             break;
@@ -432,6 +449,13 @@ export class DMPreprocessor {
     }
     if (condFrames.length > 0) {
       this.collector.error('Unterminated #if/#ifdef inside line continuation', 1, 1);
+    }
+    if (simSavedDefines !== null) {
+      // Discard the simulation's #define/#undef mutations — the real pass
+      // below replays them in order so ordering is BYOND-exact.
+      this.defines = simSavedDefines;
+      this.functionDefines = simSavedFunctions!;
+      this.definesShared = simSavedShared;
     }
     return out;
   }
@@ -622,6 +646,18 @@ export class DMPreprocessor {
       } else if (!inString && !inIcon) {
         if (ch === '/' && line[i + 1] === '/') break;
         if (ch === '@' && line[i + 1] === '{') {
+          if (line[i + 2] === '"') {
+            // @{"..."} is a template string (the lexer consumes the @ and
+            // reads {" as a template opener) which may span lines — engage
+            // inTemplate like the bare {" branch below. Falling into the
+            // @{...} verbatim skip instead walks to EOL without setting
+            // inTemplate, letting template content (JS parens/quotes)
+            // corrupt the balance and merge the rest of the file into one
+            // line (paradise SStickets.dm — the whole file tail folded).
+            blockComment.inTemplate = true;
+            i += 2;
+            continue;
+          }
           // DM braced verbatim string @{...}: skip to the matching '}'.
           let depth = 1;
           i += 2;
@@ -859,6 +895,7 @@ export class DMPreprocessor {
     let i = 0;
     let inString = false;
     let inIcon = false;
+    let inTemplate = false;
     while (i < line.length) {
       const ch = line[i];
       if (cmt.inBlockComment) {
@@ -915,6 +952,23 @@ export class DMPreprocessor {
         continue;
       }
       if (ch === '"' && !inIcon) {
+        if (inString && inTemplate) {
+          // Inside a {"..."} template: only `"` followed by `}` (spaces
+          // allowed) closes the string; any other `"` is literal content
+          // (the JS/HTML paradise templates are full of them).
+          let k = i + 1;
+          while (k < line.length && (line[k] === ' ' || line[k] === '\t')) k++;
+          if (line[k] === '}') {
+            inString = false;
+            inTemplate = false;
+            result += '"';
+            i++;
+            continue;
+          }
+          result += ch;
+          i++;
+          continue;
+        }
         inString = !inString;
         result += ch;
         i++;
@@ -997,22 +1051,15 @@ export class DMPreprocessor {
         continue;
       }
       if (ch === '{' && line[i + 1] === '"') {
-        // DM template string {"..."}: copy verbatim to the closing '"}' —
-        // quotes, brackets and // inside the content are not macro-relevant.
-        let j = i + 2;
-        while (j < line.length) {
-          if (line[j] === '"') {
-            let k = j + 1;
-            while (k < line.length && (line[k] === ' ' || line[k] === '\t')) k++;
-            if (line[k] === '}') {
-              j = k;
-              break;
-            }
-          }
-          j++;
-        }
-        result += line.slice(i, j + 1);
-        i = j + 1;
+        // DM template string {"..."}: enter string mode with inTemplate so
+        // only `"}` closes it. [expr] interpolation inside a template is
+        // still code — macros there must expand (corpus: paradise
+        // depot_consoles.dm `[SPAN_USERDANGER("Welcome, Agent.")]` inside
+        // {"..."} emitted as an unresolved SPAN_USERDANGER proc call).
+        result += '{"';
+        i += 2;
+        inString = true;
+        inTemplate = true;
         continue;
       }
       if (ch === '@' && line[i + 1] === '{') {
