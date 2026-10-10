@@ -1532,6 +1532,170 @@ public static class ConvertedDMProcs
     dm: `/datum/probe/proc/run()
 	return ..() == null`,
     expected: '1'
+  },
+
+  // ==== W-F new (item 27): `new` semantics probes ====
+  {
+    // A (k = v) argument inside new() is a NAMED argument bound to the
+    // resolved New()'s parameter names — it must not write the caller's `k`.
+    name: 'new T(k = v) named arg binds on New, not the caller',
+    dm: `/obj/probe/proc/New(loc, tag)
+	src.got = tag
+/datum/probe/proc/run()
+	var/tag = "caller"
+	var/obj/probe/o = new /obj/probe(null, tag = "named")
+	return o.got + "|" + tag`,
+    expected: 'named|caller'
+  },
+  {
+    // Positional + named mix: the positional arg lands loc; the named arg
+    // binds by name on the resolved New().
+    name: 'new Atom(loc, name = v) splits loc and binds the name',
+    dm: `/obj/probe/proc/New(loc, tag)
+	src.a = loc
+	src.b = tag
+/datum/probe/proc/run()
+	var/datum/d = new
+	var/obj/probe/o = new /obj/probe(d, tag = 7)
+	return (o.a == d) + o.b + (o.loc == d)`,
+    expected: '9' // 1 + 7 + 1: loc moved AND bound on New, tag bound by name
+  },
+  {
+    // `new <var>` reads the var's typepath — the corpus idiom
+    // `new spawn_type(loc)`.
+    name: 'new <var> uses the var-held typepath',
+    dm: `/datum/probe2
+/datum/probe/proc/run()
+	var/path = /datum/probe2
+	var/d = new path()
+	return istype(d, /datum/probe2)`,
+    expected: '1'
+  },
+  {
+    // A string var that is path-shaped also resolves dynamically.
+    name: 'new <var> resolves a string-held typepath',
+    dm: `/datum/probe2
+/datum/probe/proc/run()
+	var/p = "/datum/probe2"
+	var/d = new p()
+	return istype(d, /datum/probe2)`,
+    expected: '1'
+  },
+  {
+    // No var in scope (or a non-path value): the literal one-segment path
+    // stands.
+    name: 'new <word> falls back to the literal path',
+    dm: `/datum/probe/proc/run()
+	var/d = new nothing()
+	return istype(d, /nothing)`,
+    expected: '1'
+  },
+  {
+    // BYOND New() chains: each body gets an implicit ..() — ancestors run
+    // derived-first even with no explicit call.
+    name: 'New() implicit ..() chain runs all ancestors',
+    dm: `/datum/probe/a
+	proc/New()
+		src.order += "a"
+/datum/probe/a/b
+	proc/New()
+		src.order += "b"
+/datum/probe/a/b/c
+	proc/New()
+		src.order += "c"
+/datum/probe/proc/run()
+	var/datum/probe/a/b/c/d = new /datum/probe/a/b/c()
+	return d.order`,
+    expected: 'cba' // derived -> parent -> grandparent
+  },
+  {
+    // An explicit ..() inside a New body continues the same chain — the
+    // ancestors below it must not run a second time.
+    name: 'explicit ..() in New continues the chain once',
+    dm: `/datum/probe2/a
+	proc/New()
+		src.n += 1
+/datum/probe2/a/b
+	proc/New()
+		src.n += 10
+		..()
+/datum/probe/proc/run()
+	var/datum/probe2/a/b/d = new /datum/probe2/a/b()
+	return d.n`,
+    expected: '11' // 10 + 1 — not 12
+  },
+  {
+    // Undeclared leaf under a declared parent: the partial-parent path
+    // mints a datum of the leaf type but inherits the parent's New.
+    name: 'new /declared_parent/leaf inherits the parent New',
+    dm: `/obj/parent
+	proc/New(loc)
+		src.mark = 5
+/datum/probe/proc/run()
+	var/datum/d = new
+	var/o = new /obj/parent/leaf(d)
+	return o.mark + (o.loc == d)`,
+    expected: '6' // 5 + 1
+  },
+  {
+    // `new` nested inside other expressions evaluates where it appears.
+    name: 'new inside list() and call args evaluates in place',
+    dm: `/datum/probe2
+/datum/probe/proc/run()
+	var/L = list(new /datum/probe2(), new /datum/probe2())
+	return L.len + istype(pick(L), /datum/probe2)`,
+    expected: '3'
+  },
+  {
+    // new /list produces a DM list, not a datum.
+    name: 'new /list creates a list',
+    dm: `/datum/probe/proc/run()
+	var/L = new /list()
+	L += 3
+	return L.len`,
+    expected: '1'
+  },
+  {
+    // arglist() inside new args spreads the list elements.
+    name: 'new T(arglist(L)) spreads the args',
+    dm: `/datum/probe/proc/New(a, b)
+	src.s = a + b
+/datum/probe/proc/run()
+	var/L = list(3, 4)
+	var/datum/probe/p = new /datum/probe(arglist(L))
+	return p.s`,
+    expected: '7'
+  },
+  {
+    // A type-level `var/x = new /path` field initializer seeds a real datum
+    // before New() runs.
+    name: 'field var = new /path seeds a datum on construction',
+    dm: `/datum/inner
+/datum/holder
+	var/datum/inner/ref = new /datum/inner
+/datum/probe/proc/run()
+	var/datum/holder/h = new /datum/holder()
+	return istype(h.ref, /datum/inner)`,
+    expected: '1'
+  },
+  {
+    // A `new` nested inside a New body runs its own independent chain and
+    // must not disturb the outer chain's progress.
+    name: 'new nested inside a New body keeps the outer chain',
+    dm: `/datum/probe2
+	proc/New()
+		src.made = 1
+/datum/probe/a
+	proc/New()
+		var/datum/probe2/p = new /datum/probe2()
+		src.inner = p.made
+/datum/probe/a/b
+	proc/New()
+		src.outer = 2
+/datum/probe/proc/run()
+	var/datum/probe/a/b/d = new /datum/probe/a/b()
+	return d.outer + d.inner`,
+    expected: '3' // b.New sets 2; implicit chain runs a.New which sets 1 via nested new
   }
 ];
 
