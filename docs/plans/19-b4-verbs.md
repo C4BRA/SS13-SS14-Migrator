@@ -118,6 +118,16 @@ Robust.Client integration needs:
 their console/chat. Server-side dispatch, usr/src binding, output routing,
 and the permission shim are all proven compile-clean and probe-tested here.
 
+**Live-server verification (E2E, headless console):** a converted fixture
+world was built against the pinned engine and the dm* bridge exercised via
+the server console — all 8 commands dispatch (unregistered commands are
+rejected as unknown), `dmverbon`/`dmclick` resolve `@uid`, `/type/path` and
+`x,y,z` targets, positional and `k=v` named args bind, `Click()` and
+`world.Topic` fire, `world <<`/`usr <<` land in the server log via sawmill
+`dm.out`, and session-less commands report `no DM mob attached` honestly.
+Fix from that run: `world.log` is now bound to the world datum so
+`world.log << x` routes through the output bridge (was a silent shift).
+
 ## Known limits
 
 - `/verb` metadata (`set src in view()`, `set category`, `set hidden`) is

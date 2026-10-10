@@ -1228,6 +1228,11 @@ namespace SS13.DM.Runtime
             // these (WS9-5 — previously never set, so step() walked off-map).
             world.SetVar("xmax", DMValue.FromNumber(100));
             world.SetVar("ymax", DMValue.FromNumber(100));
+            // B-4 (item 72): world.log is BYOND's log output object — bind it
+            // to the world datum so 'world.log << x' routes through the
+            // output bridge (server log / session consoles) instead of
+            // silently shifting on Null.
+            world.SetVar("log", DMValue.FromDatum(world));
             // world.* statics: tick_lag (deciseconds, default 1 — the DMWorld
             // link also records fps = 10), view (BYOND default 5), system_type
             // (1=MS_WINDOWS, 2=UNIX — this host), byond_version, host, cpu
