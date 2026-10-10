@@ -23,6 +23,26 @@ export class CSharpEmitter {
    *  while(true) wrapper or land on a C-for increment. */
   private continueLabels: string[] = [];
 
+  /** Per-method DM label scope (item 59): the same DM label name can repeat
+   *  in one proc body — each labeled block gets a unique C# label pair and
+   *  gotos resolve to the innermost enclosing block with that DM name
+   *  (corpus: baystation CS0140 on repeated `mymob:`). */
+  private labelStack: { dm: string; enter: string; exit: string }[] = [];
+  private labelNameCounts = new Map<string, number>();
+
+  private findLabelScope(dmLabel: string): { enter: string; exit: string } {
+    for (let i = this.labelStack.length - 1; i >= 0; i--) {
+      if (this.labelStack[i].dm === dmLabel) return this.labelStack[i];
+    }
+    // Label not in scope (unusual DM): fall back to the first-use name.
+    return { enter: `__dmLabel_${dmLabel}`, exit: `__dmBreak_${dmLabel}` };
+  }
+
+  /** Datum vars with move/containment semantics — bare writes route through
+   *  DMSetProperty so loc moves fire Enter/Exit hooks and x/y/z sync the
+   *  bound entity's transform (item 69, B-1). */
+  private static readonly MOVE_VARS = new Set(['loc', 'x', 'y', 'z']);
+
   /** While true, expressions are emitted in the GlobalVars initializer
    *  context (no `comp`, no current datum): src is Null, bare calls go
    *  through GlobalVars.CallGlobal, and new() uses a null datum. */
@@ -231,6 +251,8 @@ namespace Content.Server.DM
         });
 
         this.currentProcName = procName;
+        this.labelNameCounts.clear();
+        this.labelStack.length = 0;
 
         if (this.referencesIdentifier(procNode, 'args')) {
           member += `            var __dmArgs = DMList.FromArray(args);\n`;
@@ -518,6 +540,8 @@ namespace Content.Server.DM
         }
 
       case 'AssignmentStatement':
+        if (CSharpEmitter.MOVE_VARS.has(stmt.assignmentTarget))
+          return `${pad}await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
         return `${pad}comp.SetVar("${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
 
       case 'VarDeclStatement':
@@ -545,7 +569,7 @@ namespace Content.Server.DM
         // Labeled break: DM `break name` exits the labeled block — jump to
         // the post-body label emitted by LabeledBlockStatement (item 59).
         if (stmt.label) {
-          return `${pad}goto __dmBreak_${stmt.label};\n`;
+          return `${pad}goto ${this.findLabelScope(stmt.label).exit};\n`;
         }
         // DM break exits the innermost loop, or the switch when not in a loop;
         // the switch's while(true) wrapper makes plain `break` correct in both.
@@ -560,7 +584,7 @@ namespace Content.Server.DM
         // Labeled continue: DM `continue name` jumps back to the labeled
         // statement — the pre-body label from LabeledBlockStatement (item 59).
         if (stmt.label) {
-          return `${pad}goto __dmLabel_${stmt.label};\n`;
+          return `${pad}goto ${this.findLabelScope(stmt.label).enter};\n`;
         }
         // DM continue: next iteration of the innermost loop. Needs a goto
         // when (a) inside a switch — a plain `continue` would iterate the
@@ -807,14 +831,19 @@ namespace Content.Server.DM
 
       case 'LabeledBlockStatement': {
         // DM label: { ... } — emit a REAL C# label so labeled break/continue
-        // can goto it (item 59: `// label:` comments were untargetable).
-        // `continue name` jumps to the pre-body label (re-enters the block);
-        // `break name` jumps to the post-body label (exits it).
-        let labelCode = `${pad}__dmLabel_${stmt.label}:\n`;
+        // can goto it (item 59). A repeated DM label name in one method gets
+        // a numeric suffix — C# labels must be unique per method (CS0140).
+        const n = (this.labelNameCounts.get(stmt.label) ?? 0) + 1;
+        this.labelNameCounts.set(stmt.label, n);
+        const suffix = n === 1 ? '' : `_${n}`;
+        const scope = { dm: stmt.label, enter: `__dmLabel_${stmt.label}${suffix}`, exit: `__dmBreak_${stmt.label}${suffix}` };
+        this.labelStack.push(scope);
+        let labelCode = `${pad}${scope.enter}:\n`;
         for (const s of stmt.body || []) {
           labelCode += this.transpileStatement(s, indent);
         }
-        labelCode += `${pad}__dmBreak_${stmt.label}: ;\n`;
+        labelCode += `${pad}${scope.exit}: ;\n`;
+        this.labelStack.pop();
         return labelCode;
       }
 
@@ -853,6 +882,8 @@ namespace Content.Server.DM
         if (this.globalsMode) {
           return `(await GlobalVars.Set("${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
         }
+        if (CSharpEmitter.MOVE_VARS.has((node as any).target))
+          return `(await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
         return `comp.SetVar("${(node as any).target}", ${this.transpileExpression((node as any).value)})`;
       case 'property_assignment': {
         // GLOB.x = v writes through the generated GlobalVars registry.
@@ -860,7 +891,7 @@ namespace Content.Server.DM
         if (paTarget?.type === 'variable' && paTarget.name === 'GLOB') {
           return `(await GlobalVars.Set("${(node as any).property}", ${this.transpileExpression((node as any).value)}))`;
         }
-        return `(${this.transpileExpression(paTarget)}).AsDatum()?.SetVar("${(node as any).property}", ${this.transpileExpression((node as any).value)}) ?? DMValue.Null`;
+        return `(await DMRuntimeHelpers.DMSetProperty(${this.transpileExpression(paTarget)}, "${(node as any).property}", ${this.transpileExpression((node as any).value)}))`;
       }
       case 'index_assignment': {
         // DM list writes are copy-on-write when the list is shared; the
@@ -939,6 +970,11 @@ namespace Content.Server.DM
     // Global initializers have no proc scope: a bare identifier references
     // another global (there is no comp to read from).
     if (this.globalsMode) return `await GlobalVars.Get("${node.name}")`;
+    // Containment vars are computed on atoms: bare loc/contents reads go
+    // through the property path so .loc resolves the container datum and
+    // .contents yields live membership (item 69, B-1).
+    if (node.name === 'loc' || node.name === 'contents')
+      return `DMRuntimeHelpers.DMGetProperty(DMValue.FromDatum(comp), "${node.name}")`;
     return `comp.GetVar("${node.name}")`;
   }
 

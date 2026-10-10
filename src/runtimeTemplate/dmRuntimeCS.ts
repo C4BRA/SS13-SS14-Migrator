@@ -900,12 +900,14 @@ namespace SS13.DM.Runtime
             // loc from their own first parameter. Pure /datum types have no
             // loc (a stray var write would be harmless, but they must not
             // be split from their New signature).
-            var isAtom = normalized.StartsWith("/atom") || normalized.StartsWith("/obj") ||
-                         normalized.StartsWith("/mob") || normalized.StartsWith("/turf") ||
-                         normalized.StartsWith("/area");
+            var isAtom = IsAtomPath(normalized);
             if (args.Length > 0 && isAtom)
             {
-                datum.SetVar("loc", args[0]);
+                // Containment (item 69, B-1): placing the atom in a loc goes
+                // through the real move path — container contents membership
+                // derives from loc, and Enter/Entered hooks fire when the
+                // registry defines them.
+                await MoveAtomTo(datum, args[0]);
             }
             // Entity integration (item 69, B-1): on the server the engine
             // adapter registers a spawn bridge — new() on an ATOM type then
@@ -925,6 +927,219 @@ namespace SS13.DM.Runtime
         /// real entity for a DM atom created via new (item 69, B-1).
         /// </summary>
         public static Action<string, DMValue, DMRuntime>? EntitySpawnBridge;
+
+        /// <summary>
+        /// Server-side hook (item 69, B-1): an atom's x/y/z vars were written
+        /// — move the bound entity to match.
+        /// </summary>
+        public static Action<DMRuntime, double, double, double>? EntityMoveBridge;
+
+        /// <summary>
+        /// Server-side hook (item 69, B-1): read a bound entity's live
+        /// coordinate as a DM tile coordinate (axis "x"/"y"/"z"). Returning
+        /// null falls the read back to the datum var.
+        /// </summary>
+        public static Func<DMRuntime, string, double?>? EntityCoordBridge;
+
+        /// <summary>
+        /// Server-side hook (item 69, B-1): an atom's loc changed — reparent
+        /// the bound entity (container datum, or null = detach to grid/map).
+        /// </summary>
+        public static Action<DMRuntime, DMValue>? EntityAttachBridge;
+
+        // ==== Containment (item 69, B-1) ====
+
+        private static bool IsAtomPath(string typePath)
+        {
+            return typePath == "/atom" || typePath.StartsWith("/atom/") ||
+                   typePath == "/obj" || typePath.StartsWith("/obj/") ||
+                   typePath == "/mob" || typePath.StartsWith("/mob/") ||
+                   typePath == "/turf" || typePath.StartsWith("/turf/") ||
+                   typePath == "/area" || typePath.StartsWith("/area/");
+        }
+
+        /// <summary>
+        /// The live /turf datum at (x, y, z), or null. loc resolution and
+        /// get_turf share this scan so the two agree.
+        /// </summary>
+        private static DMRuntime? TurfAt(double x, double y, double z)
+        {
+            if (x < 1 || y < 1) return null;
+            foreach (var d in LiveDatums)
+            {
+                if (!d.MarkedForDeletion && d.IsType("/turf") && At(d, x, y, z))
+                    return d;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// DM atom.loc: the containing datum. An explicit container stored in
+        /// the loc var wins; otherwise a positioned atom resolves to the /turf
+        /// datum sharing its x/y/z (map-spawned atoms never write the var).
+        /// </summary>
+        public static DMValue ResolveLoc(DMRuntime datum)
+        {
+            var hasStored = datum.Variables.TryGetValue("loc", out var stored);
+            if (hasStored && stored.Type == DMValueType.DatumRef)
+                return stored;
+            if (!IsAtomPath(datum.DMTypePath))
+                return hasStored ? stored : DMValue.Null;
+            // Atoms: a stored null/non-datum loc does not block positional
+            // resolution — a New(loc)-arg default can write null into the var
+            // before the datum is placed (approximation: BYOND treats an
+            // explicitly nulled loc as nullspace even while positioned).
+            var turf = TurfAt(Coord(datum, "x"), Coord(datum, "y"), Coord(datum, "z"));
+            if (turf != null) return DMValue.FromDatum(turf);
+            return hasStored ? stored : DMValue.Null;
+        }
+
+        /// <summary>
+        /// DM atom.contents: live atoms whose loc resolves to this datum —
+        /// computed, not stored. Members are atoms holding an explicit loc var
+        /// naming this container, plus (for turfs) positioned atoms whose loc
+        /// is unset or non-datum.
+        /// </summary>
+        public static DMList ContentsOf(DMRuntime datum)
+        {
+            var list = new DMList();
+            var isTurf = datum.IsType("/turf");
+            var x = Coord(datum, "x");
+            var y = Coord(datum, "y");
+            var z = Coord(datum, "z");
+            foreach (var d in LiveDatums)
+            {
+                if (ReferenceEquals(d, datum) || d.MarkedForDeletion) continue;
+                var hasContainer = d.Variables.TryGetValue("loc", out var stored)
+                    && stored.Type == DMValueType.DatumRef;
+                if (hasContainer)
+                {
+                    if (ReferenceEquals(stored.DatumRef, datum))
+                        list.Add(DMValue.FromDatum(d));
+                    continue;
+                }
+                if (isTurf && IsAtomPath(d.DMTypePath) && x >= 1 && y >= 1 && At(d, x, y, z))
+                    list.Add(DMValue.FromDatum(d));
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// DM loc assignment (item 69, B-1): Exit on the old container then
+        /// Enter on the new can veto (falsy return cancels the move);
+        /// Exited/Entered fire after the write. Membership in both contents
+        /// lists derives from loc, so no lists are mutated by hand.
+        /// </summary>
+        public static async Task<DMValue> MoveAtomTo(DMRuntime atom, DMValue newLoc)
+        {
+            if (!IsAtomPath(atom.DMTypePath))
+            {
+                atom.SetVar("loc", newLoc);
+                return newLoc;
+            }
+            var oldValue = ResolveLoc(atom);
+            var oldDatum = oldValue.Type == DMValueType.DatumRef ? oldValue.DatumRef as DMRuntime : null;
+            var newDatum = newLoc.Type == DMValueType.DatumRef ? newLoc.DatumRef as DMRuntime : null;
+            if (!ReferenceEquals(oldDatum, newDatum))
+            {
+                if (oldDatum != null && oldDatum.CanCallProc("Exit"))
+                {
+                    var ok = await oldDatum.CallProc("Exit", DMValue.FromDatum(atom), newLoc);
+                    if (!ok.IsTrue()) return newLoc;
+                }
+                if (newDatum != null && newDatum.CanCallProc("Enter"))
+                {
+                    var ok = await newDatum.CallProc("Enter", DMValue.FromDatum(atom), oldValue);
+                    if (!ok.IsTrue()) return newLoc;
+                }
+            }
+            atom.SetVar("loc", newLoc);
+            if (newDatum != null)
+            {
+                // BYOND: a contained atom takes its loc's coordinates.
+                atom.SetVar("x", DMValue.FromNumber(Coord(newDatum, "x")));
+                atom.SetVar("y", DMValue.FromNumber(Coord(newDatum, "y")));
+                atom.SetVar("z", DMValue.FromNumber(Coord(newDatum, "z")));
+            }
+            if (!ReferenceEquals(oldDatum, newDatum))
+            {
+                if (oldDatum != null && oldDatum.CanCallProc("Exited"))
+                    _ = oldDatum.CallProc("Exited", DMValue.FromDatum(atom), newLoc);
+                if (newDatum != null && newDatum.CanCallProc("Entered"))
+                    _ = newDatum.CallProc("Entered", DMValue.FromDatum(atom), oldValue);
+            }
+            if (atom.EntityId != 0)
+            {
+                if (EntityAttachBridge != null) EntityAttachBridge(atom, newLoc);
+                if (newDatum != null && EntityMoveBridge != null)
+                    EntityMoveBridge(atom, Coord(atom, "x"), Coord(atom, "y"), Coord(atom, "z"));
+            }
+            return newLoc;
+        }
+
+        /// <summary>
+        /// Datum-property write with DM semantics (item 69): loc routes
+        /// through <see cref="MoveAtomTo"/> (containment + hooks); x/y/z sync
+        /// the datum var AND the bound entity's transform; everything else is
+        /// a plain var write. Returns the assigned value (a DM assignment
+        /// expression evaluates to it).
+        /// </summary>
+        public static async Task<DMValue> DMSetProperty(DMValue target, string name, DMValue value)
+        {
+            if (target.Type != DMValueType.DatumRef || target.DatumRef is not DMRuntime datum)
+                return DMValue.Null;
+            switch (name)
+            {
+                case "loc":
+                    return await MoveAtomTo(datum, value);
+                case "x":
+                case "y":
+                case "z":
+                    SetAtomPosition(datum,
+                        name == "x" ? value.ToNumber() : Coord(datum, "x"),
+                        name == "y" ? value.ToNumber() : Coord(datum, "y"),
+                        name == "z" ? value.ToNumber() : Coord(datum, "z"));
+                    return value;
+                default:
+                    return datum.SetVar(name, value);
+            }
+        }
+
+        /// <summary>
+        /// Writes an atom's position vars and mirrors the move onto the bound
+        /// entity (if any), then repairs a stale turf loc when the write
+        /// crossed a tile boundary.
+        /// </summary>
+        private static void SetAtomPosition(DMRuntime a, double nx, double ny, double nz)
+        {
+            a.SetVar("x", DMValue.FromNumber(nx));
+            a.SetVar("y", DMValue.FromNumber(ny));
+            a.SetVar("z", DMValue.FromNumber(nz));
+            if (a.EntityId != 0 && EntityMoveBridge != null)
+                EntityMoveBridge(a, nx, ny, nz);
+            RefreshTurfLoc(a);
+        }
+
+        /// <summary>
+        /// After a coordinate write: a stored loc naming a /turf the atom no
+        /// longer shares coordinates with is moved to the turf at the new
+        /// position (steps cross tile boundaries; item 69). Unset locs resolve
+        /// positionally on read — nothing to repair.
+        /// </summary>
+        private static void RefreshTurfLoc(DMRuntime a)
+        {
+            if (!IsAtomPath(a.DMTypePath)) return;
+            if (!a.Variables.TryGetValue("loc", out var stored)
+                || stored.Type != DMValueType.DatumRef || stored.DatumRef is not DMRuntime locDatum
+                || !locDatum.IsType("/turf"))
+                return;
+            var x = Coord(a, "x");
+            var y = Coord(a, "y");
+            var z = Coord(a, "z");
+            if (At(locDatum, x, y, z)) return;
+            var target = TurfAt(x, y, z);
+            _ = MoveAtomTo(a, target != null ? DMValue.FromDatum(target) : DMValue.Null);
+        }
 
         public static DMValue DMDelete(params DMValue[] targets)
         {
@@ -1052,10 +1267,33 @@ namespace SS13.DM.Runtime
                             var dir = datum.GetVar("dir");
                             return dir.Type == DMValueType.Null ? DMValue.FromNumber(2) : dir;
                         }
+                    case "loc":
+                        return ResolveLoc(datum);
+                    case "x":
+                    case "y":
+                    case "z":
+                        {
+                            // Bound entities resolve the live transform (item
+                            // 69); atom coord vars read as numbers (0 = off
+                            // map). A stored var always wins over defaults.
+                            if (datum.EntityId != 0 && EntityCoordBridge != null)
+                            {
+                                var live = EntityCoordBridge(datum, name);
+                                if (live.HasValue) return DMValue.FromNumber(live.Value);
+                            }
+                            var coord = datum.GetVar(name);
+                            if (coord.Type == DMValueType.Null)
+                                return IsAtomPath(datum.DMTypePath) ? DMValue.FromNumber(0) : DMValue.Null;
+                            return coord;
+                        }
                     case "contents":
                         {
                             var contents = datum.GetVar("contents");
-                            return contents.Type == DMValueType.Null ? DMValue.FromList(new DMList()) : contents;
+                            // A stored list (declared/assigned) wins; atoms
+                            // get the live computed membership (item 69).
+                            if (contents.Type == DMValueType.List) return contents;
+                            if (contents.Type != DMValueType.Null) return contents;
+                            return DMValue.FromList(ContentsOf(datum));
                         }
                     case "overlays":
                         {
@@ -1512,8 +1750,7 @@ namespace SS13.DM.Runtime
             var ymax = WorldCoord("ymax");
             if (xmax > 0 && (nx < 1 || nx > xmax)) return DMValue.FromNumber(0);
             if (ymax > 0 && (ny < 1 || ny > ymax)) return DMValue.FromNumber(0);
-            a.SetVar("x", DMValue.FromNumber(nx));
-            a.SetVar("y", DMValue.FromNumber(ny));
+            SetAtomPosition(a, nx, ny, Coord(a, "z"));
             return DMValue.FromNumber(1);
         }
 
@@ -1608,9 +1845,11 @@ namespace SS13.DM.Runtime
 
         /// <summary>
         /// DM get_step_towards(atom, trg): the turf one step toward trg
-        /// (no movement; first live datum at that position, or Null).
+        /// (no movement; first live datum at that position, or Null). BYOND
+        /// takes an optional Speed arg — accepted and ignored (straight-line
+        /// approximation, item 69).
         /// </summary>
-        public static DMValue GetStepTowards(DMValue atom, DMValue trg)
+        public static DMValue GetStepTowards(DMValue atom, DMValue trg, DMValue speed = default)
         {
             var dir = GetDir(atom, trg);
             if (dir.ToNumber() == 0) return DMValue.Null;
@@ -1676,16 +1915,18 @@ namespace SS13.DM.Runtime
         /// DM get_step_rand(atom): one step in a random direction
         /// (item 67 — previously an unresolved bare call).
         /// </summary>
-        public static DMValue GetStepRand(DMValue atom)
+        public static DMValue GetStepRand(DMValue atom, DMValue speed = default)
         {
             return GetStep(atom, DMValue.FromNumber(System.Random.Shared.Next(8) + 1));
         }
 
         /// <summary>
-        /// DM get_step_to(atom, target): one step toward the target
-        /// (straight-line approximation of BYOND's pathfinding — item 67).
+        /// DM get_step_to(atom, target, speed, min): one step toward the
+        /// target (straight-line approximation of BYOND's pathfinding —
+        /// item 67). The optional Speed/Min args are accepted and ignored
+        /// (corpus: baystation passes speed — CS1501 fix).
         /// </summary>
-        public static DMValue GetStepTo(DMValue atom, DMValue target)
+        public static DMValue GetStepTo(DMValue atom, DMValue target, DMValue speed = default, DMValue min = default)
         {
             return GetStepTowards(atom, target);
         }
@@ -2238,6 +2479,15 @@ namespace SS13.DM.Runtime
                     // not UTF-16 units (astral chars iterate once, WS8-12).
                     for (var i = 0; i < value.StringValue.Length; i += char.IsSurrogatePair(value.StringValue, i) ? 2 : 1)
                         yield return DMValue.FromString(value.StringValue.Substring(i, char.IsSurrogatePair(value.StringValue, i) ? 2 : 1));
+                    break;
+                case DMValueType.DatumRef:
+                    // DM: iterating an atom iterates its contents (item 69).
+                    if (value.DatumRef is DMRuntime container)
+                    {
+                        var members = ContentsOf(container);
+                        for (var i = 1; i <= members.PositionalCount; i++)
+                            yield return members.Get(i);
+                    }
                     break;
                 default:
                     yield return value;

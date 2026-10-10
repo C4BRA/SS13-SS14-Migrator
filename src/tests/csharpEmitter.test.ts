@@ -366,8 +366,10 @@ async function runCSharpEmitterTests() {
 `);
   assertContains(oneLine, `if ((comp.GetVar("x")).IsTrue())\n            {\n                return DMValue.FromNumber(5);`, 'single-line if body');
   assertContains(oneLine, `else\n            {\n                return DMValue.FromNumber(7);`, 'single-line else body');
-  assertContains(oneLine, `while ((comp.GetVar("x")).IsTrue())\n            {\n                {\n                    comp.SetVar("x", DMValue.Add(comp.GetVar("x"), DMValue.FromNumber(1)));`, 'single-line while body');
-  assertContains(oneLine, `comp.SetVar("z", DMValue.Add(comp.GetVar("z"), DMValue.FromNumber(1)));`, 'single-line for-in body');
+  // x/y/z are move vars: bare writes route through DMSetProperty so datum
+  // writes also move the bound entity (item 69, B-1).
+  assertContains(oneLine, `while ((comp.GetVar("x")).IsTrue())\n            {\n                {\n                    await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "x", DMValue.Add(comp.GetVar("x"), DMValue.FromNumber(1)));`, 'single-line while body');
+  assertContains(oneLine, `await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "z", DMValue.Add(comp.GetVar("z"), DMValue.FromNumber(1)));`, 'single-line for-in body');
 
   // Test 37: Plan 09 B1 — associative list literals list("a" = 1)
   const assoc = transpileProc(`/obj/foo/proc/run()
