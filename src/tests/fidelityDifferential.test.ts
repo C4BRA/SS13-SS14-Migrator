@@ -898,6 +898,62 @@ const PROBES: Probe[] = [
     name: 'stack_trace returns null',
     dm: `/datum/probe/proc/run()\n\treturn stack_trace("x")`,
     expected: 'null' // debug aid; Null in the engine-free runtime
+  },
+  // ==== Item 69 (B-1): containment / loc / position probes ====
+  {
+    name: 'new /obj inside a container lands in its contents',
+    dm: `/obj/box\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/obj/box/b = new /obj/box\n\tvar/obj/item/thing/i = new /obj/item/thing(b)\n\treturn b.contents.len`,
+    expected: '1' // BYOND: contents membership derives from loc
+  },
+  {
+    name: 'x.loc reads back the container datum',
+    dm: `/obj/box\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/obj/box/b = new /obj/box\n\tvar/obj/item/thing/i = new /obj/item/thing(b)\n\treturn i.loc == b`,
+    expected: '1'
+  },
+  {
+    name: 'loc setter moves between containers',
+    dm: `/obj/box\n/obj/box/second\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/obj/box/a = new /obj/box\n\tvar/obj/box/second/b = new /obj/box/second\n\tvar/obj/item/thing/i = new /obj/item/thing(a)\n\ti.loc = b\n\treturn a.contents.len * 10 + b.contents.len`,
+    expected: '1' // a loses the item (0*10) and b gains it (+1)
+  },
+  {
+    name: 'loc = null empties the old container',
+    dm: `/obj/box\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/obj/box/b = new /obj/box\n\tvar/obj/item/thing/i = new /obj/item/thing(b)\n\ti.loc = null\n\treturn b.contents.len`,
+    expected: '0'
+  },
+  {
+    name: 'x/y/z vars read and write as numbers',
+    dm: `/obj/probe2\n/datum/probe/proc/run()\n\tvar/obj/probe2/o = new /obj/probe2\n\to.x = 4\n\to.y = 6\n\to.z = 2\n\treturn o.x + o.y * 10 + o.z * 100`,
+    expected: '264'
+  },
+  {
+    name: 'turf contents finds a positioned atom',
+    dm: `/turf/floor_t\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/turf/floor_t/t = new /turf/floor_t\n\tt.x = 5\n\tt.y = 5\n\tt.z = 1\n\tvar/obj/item/thing/i = new /obj/item/thing\n\ti.x = 5\n\ti.y = 5\n\ti.z = 1\n\treturn t.contents.len`,
+    expected: '1' // no explicit loc — positional turf membership (item 69)
+  },
+  {
+    name: 'atom .loc resolves to the turf at its position',
+    dm: `/turf/floor_t\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/turf/floor_t/t = new /turf/floor_t\n\tt.x = 5\n\tt.y = 5\n\tt.z = 1\n\tvar/obj/item/thing/i = new /obj/item/thing\n\ti.x = 5\n\ti.y = 5\n\ti.z = 1\n\treturn i.loc == t`,
+    expected: '1'
+  },
+  {
+    name: 'Enter/Entered hooks fire on loc set',
+    dm: `/obj/box\n\tvar/entered_count = 0\n\tproc/Entered(m)\n\t\tentered_count++\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/obj/box/b = new /obj/box\n\tvar/obj/item/thing/i = new /obj/item/thing\n\ti.loc = b\n\treturn b.entered_count`,
+    expected: '1'
+  },
+  {
+    name: 'Exit/Exited hooks fire on loc clear',
+    dm: `/obj/box\n\tvar/exited_count = 0\n\tproc/Exited(m)\n\t\texited_count++\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/obj/box/b = new /obj/box\n\tvar/obj/item/thing/i = new /obj/item/thing(b)\n\ti.loc = null\n\treturn b.exited_count`,
+    expected: '1'
+  },
+  {
+    name: 'iterating an atom iterates its contents',
+    dm: `/obj/box\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/obj/box/b = new /obj/box\n\tvar/obj/item/thing/i = new /obj/item/thing(b)\n\tvar/count = 0\n\tfor (var/o in b)\n\t\tcount++\n\treturn count`,
+    expected: '1'
+  },
+  {
+    name: 'x write crossing a turf boundary updates loc',
+    dm: `/turf/floor_t\n/obj/item/thing\n/datum/probe/proc/run()\n\tvar/turf/floor_t/t1 = new /turf/floor_t\n\tt1.x = 5\n\tt1.y = 5\n\tt1.z = 1\n\tvar/turf/floor_t/t2 = new /turf/floor_t\n\tt2.x = 6\n\tt2.y = 5\n\tt2.z = 1\n\tvar/obj/item/thing/i = new /obj/item/thing\n\ti.x = 5\n\ti.y = 5\n\ti.z = 1\n\ti.loc = t1\n\ti.x = 6\n\treturn i.loc == t2`,
+    expected: '1'
   }
 ];
 
