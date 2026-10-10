@@ -1,5 +1,6 @@
-import { DMTypeDeclNode, DMVarDeclNode, DMProcDeclNode } from '../parser/dmParser.js';
+import { DMTypeDeclNode, DMVarDeclNode, DMProcDeclNode, DMParser, ExpressionNode } from '../parser/dmParser.js';
 import { computeParentPath as computePathParent } from './symbolTable.js';
+import { DiagnosticCollector } from '../diagnostics.js';
 
 export interface DMIRType {
   path: string;
@@ -13,6 +14,11 @@ export interface DMIRType {
   opacity: boolean;
   customVars: Map<string, any>;
   procs: Map<string, DMProcDeclNode>;
+  /** Every proc definition on this type in compile order — a proc defined
+   *  twice keeps both (the later overrides; its `..()` reaches the earlier). */
+  procDefs: { name: string; node: DMProcDeclNode; index: number }[];
+  /** Vars declared or overridden on THIS type (not inherited), in order. */
+  ownVars: { name: string; raw: any; expr: ExpressionNode | null; varType?: string }[];
   isDynamic: boolean; // Needs DMRuntimeComponent
 }
 
@@ -91,6 +97,8 @@ export class DMIRGenerator {
         // proc for every descendant (~427x duplication at corpus scale —
         // tgmc emitted 10,039,587 members for 23,519 declared procs).
         procs: new Map(),
+        procDefs: [],
+        ownVars: [],
         isDynamic: parentIR ? parentIR.isDynamic : false
       };
 
@@ -98,6 +106,14 @@ export class DMIRGenerator {
         // Process variables
         for (const varDecl of node.vars) {
           const val = this.normalizeValue(varDecl.initialValue);
+          if (varDecl.name !== 'parent_type') {
+            irType.ownVars.push({
+              name: varDecl.name,
+              raw: varDecl.initialValue,
+              expr: varDecl.initialValueExpr ?? this.parseInitializer(varDecl.initialValue),
+              varType: varDecl.varType
+            });
+          }
           switch (varDecl.name) {
             case 'name':
               irType.name = String(val);
@@ -130,6 +146,8 @@ export class DMIRGenerator {
         // Process procs
         for (const procDecl of node.procs) {
           irType.procs.set(procDecl.name, procDecl);
+          const index = irType.procDefs.filter(d => d.name.toLowerCase() === procDecl.name.toLowerCase()).length;
+          irType.procDefs.push({ name: procDecl.name, node: procDecl, index });
           irType.isDynamic = true; // Has custom DM proc
         }
 
@@ -147,6 +165,17 @@ export class DMIRGenerator {
     }
 
     return irMap;
+  }
+
+  private initParser = new DMParser([], new DiagnosticCollector());
+
+  /** Type-level initializers arrive as captured source text; re-parse to an expression. */
+  private parseInitializer(raw: any): ExpressionNode | null {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw === 'number') return { type: 'literal', value: String(raw), literalType: 'number' };
+    const text = String(raw).trim();
+    if (text === '' || text === 'null') return text === 'null' ? { type: 'literal', value: null, literalType: 'null' } : null;
+    return this.initParser.parseInitializerTextToExpr(text, new DiagnosticCollector());
   }
 
   private normalizePath(path: string): string {

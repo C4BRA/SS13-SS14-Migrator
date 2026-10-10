@@ -12,7 +12,7 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
   'text2path', 'rgb', 'fexists', 'isnan', 'isinf', 'json_decode', 'animate',
   'image', 'flick', 'sound', 'matrix', 'browse', 'call_ext', '__detect_rust_g',
   'floor', 'ceil', 'sqrt', 'sin', 'cos', 'arccos', 'log', 'sign',
-  'copytext_char', 'length_char', 'text2ascii', 'ascii2text', 'ckey', 'sorttext',
+  'copytext_char', 'length_char', 'text2ascii', 'ascii2text', 'ckey', 'sorttext', 'cmptext', 'cmptextex', 'ckeyex', 'subtypesof',
   'replacetextex', 'html_encode', 'html_decode', 'rgb2num', 'json_encode',
   'time2text', 'list2params', 'arglist', 'alist', 'spacemandmm_unlint', 'file',
   'isfile', 'fdel', 'fcopy', 'fcopy_rsc', 'flist', 'ref', 'refcount',
@@ -116,26 +116,26 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
     case 'istext':
       return `DMRuntimeHelpers.DMIsText(${args})`;
     case 'isturf':
-      return `DMIsType(${args}, DMValue.FromString("/turf"))`;
+      return `DMIsType(${args}, DMValue.FromPath("/turf"))`;
     case 'isobj':
-      return `DMIsType(${args}, DMValue.FromString("/obj"))`;
+      return `DMIsType(${args}, DMValue.FromPath("/obj"))`;
     case 'ismob':
-      return `DMIsType(${args}, DMValue.FromString("/mob"))`;
+      return `DMIsType(${args}, DMValue.FromPath("/mob"))`;
     case 'isarea':
-      return `DMIsType(${args}, DMValue.FromString("/area"))`;
+      return `DMIsType(${args}, DMValue.FromPath("/area"))`;
     case 'ismovable':
       // BYOND ismovable = isobj || ismob (movable atoms); a single
       // "/atom/movable" base never matches real datum paths (WS7-7).
-      return `(DMIsType(${args}, DMValue.FromString("/obj")).IsTrue() || DMIsType(${args}, DMValue.FromString("/mob")).IsTrue() ? DMValue.FromNumber(1) : DMValue.FromNumber(0))`;
+      return `DMIsType(${args}, DMValue.FromPath("/atom/movable"))`;
     case 'isloc':
       // BYOND isloc = isturf || isarea || isobj || ismob (WS7-7).
-      return `(DMIsType(${args}, DMValue.FromString("/turf")).IsTrue() || DMIsType(${args}, DMValue.FromString("/area")).IsTrue() || DMIsType(${args}, DMValue.FromString("/obj")).IsTrue() || DMIsType(${args}, DMValue.FromString("/mob")).IsTrue() ? DMValue.FromNumber(1) : DMValue.FromNumber(0))`;
+      return `(DMIsType(${args}, DMValue.FromPath("/turf")).IsTrue() || DMIsType(${args}, DMValue.FromPath("/area")).IsTrue() || DMIsType(${args}, DMValue.FromPath("/obj")).IsTrue() || DMIsType(${args}, DMValue.FromPath("/mob")).IsTrue() ? DMValue.FromNumber(1) : DMValue.FromNumber(0))`;
     case 'isitem':
-      return `DMIsType(${args}, DMValue.FromString("/obj/item"))`;
+      return `DMIsType(${args}, DMValue.FromPath("/obj/item"))`;
     case 'iscarbon':
-      return `DMIsType(${args}, DMValue.FromString("/mob/living/carbon"))`;
+      return `DMIsType(${args}, DMValue.FromPath("/mob/living/carbon"))`;
     case 'isliving':
-      return `DMIsType(${args}, DMValue.FromString("/mob/living"))`;
+      return `DMIsType(${args}, DMValue.FromPath("/mob/living"))`;
     case 'crash':
       return `DMRuntimeHelpers.DMCRASH(${args})`;
     case 'nameof':
@@ -246,6 +246,14 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.Text2Ascii(${args})`;
     case 'ascii2text':
       return `DMRuntimeHelpers.Ascii2Text(${args})`;
+    case 'cmptext':
+      return `DMRuntimeHelpers.CmpText(${args})`;
+    case 'cmptextex':
+      return `DMRuntimeHelpers.CmpTextEx(${args})`;
+    case 'ckeyex':
+      return `DMRuntimeHelpers.CKeyEx(${args})`;
+    case 'subtypesof':
+      return `DMRuntimeHelpers.SubtypesOf(${args})`;
     case 'ckey':
       return `DMRuntimeHelpers.CKey(${args})`;
     case 'sorttext':

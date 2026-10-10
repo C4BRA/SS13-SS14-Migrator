@@ -10,8 +10,8 @@ import { DMRuntimeCS } from '../runtimeTemplate/dmRuntimeCS.js';
  *     `RobustToolbox` checkout next to the generated output dir)
  *   - override:  `dotnet build Content.sln -p:EngineDir=/path/to/RobustToolbox`
  *
- * Engine pin: see `engine.pin` in this repo. Verified against commit
- * 9cefa1167c9ac45f7258094129daf46b6c3516d3 (net10.0, LangVersion 14).
+ * Engine pin: see `engine.pin` in this repo (RobustToolbox v289.0.0,
+ * edf061e7, net10.0).
  *
  * SS13.DM.Runtime is engine-free by design (pure C# datum runtime); the only
  * engine-dependent surface is Content.Server/DM/DMRuntimeComponent.cs and
@@ -145,7 +145,7 @@ EndGlobal
 </Project>`;
     fs.writeFileSync(path.join(serverDir, 'Content.Server.csproj'), serverCsproj, 'utf-8');
     // server_config.toml is copied to the output by the csproj above.
-    fs.writeFileSync(path.join(serverDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
+    fs.writeFileSync(path.join(serverDir, 'server_config.toml'), `[net]\nport = 1212\ntickrate = 30\n[game]\n# The engine auto-pauses the simulation when no client is connected\n# (GameLoop skips Tick while Paused); the DM world must tick anyway.\nauto_pause_empty = false\n`, 'utf-8');
 
     // The mod loader bootstraps every GameShared subclass in the content
     // assembly as an entry point. Without one, the component factory never
@@ -209,10 +209,12 @@ namespace Content.Server.DM
         [DataField("dmTypePath")]
         public string DMTypePath { get; set; } = "/datum";
 
+        /// <summary>Per-instance var overrides (map edits), as DM source literals.</summary>
         [DataField("initialVars")]
         public Dictionary<string, string> InitialVars { get; set; } = new();
 
-        public DMRuntime Runtime { get; } = new();
+        /// <summary>The bound DM datum (set at ComponentInit by ConvertedDMSystem).</summary>
+        public DMRuntime? Runtime { get; set; }
     }
 }
 `;
@@ -259,7 +261,7 @@ namespace Content.Server
     const resourcesDir = path.join(outputDir, 'Resources');
     const configDir = path.join(resourcesDir, 'ConfigFiles');
     fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(path.join(configDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
+    fs.writeFileSync(path.join(configDir, 'server_config.toml'), `[net]\nport = 1212\ntickrate = 30\n[game]\nauto_pause_empty = false\n`, 'utf-8');
 
     // The engine's content mounts resolve <solution>/RobustToolbox relative
     // to the binary (StartType.Content) — symlink the checkout there when it

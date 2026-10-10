@@ -21,9 +21,15 @@ fi
 COMMIT="$(grep -m1 '^commit:' "$PIN_FILE" | awk '{print $2}')"
 REPO_URL="$(grep -m1 '^repo:' "$PIN_FILE" | awk '{print $2}')"
 
-if [ ! -d "$ENGINE_DIR/.git" ]; then
+if [ ! -e "$ENGINE_DIR/.git" ]; then
   echo "[setup-engine] Cloning $REPO_URL -> $ENGINE_DIR"
   git clone --depth 1 "$REPO_URL" "$ENGINE_DIR"
+fi
+
+if [ "$(git -C "$ENGINE_DIR" rev-parse HEAD)" != "$COMMIT" ]; then
+  echo "[setup-engine] Checking out pinned commit $COMMIT"
+  git -C "$ENGINE_DIR" fetch --depth 1 origin "$COMMIT"
+  git -C "$ENGINE_DIR" checkout -q "$COMMIT"
 fi
 
 echo "[setup-engine] Fetching submodules (shallow)"

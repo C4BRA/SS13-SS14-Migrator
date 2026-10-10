@@ -41,28 +41,61 @@ export class DM2SS14Transpiler {
 
     // 2. Discover and parse DM source files
     console.log(`[2/5] Parsing DM source code and building AST/DM-IR...`);
-    const dmFiles = this.findFiles(options.inputDir, '.dm');
     const allASTNodes: any[] = [];
     const diagnostics = new DiagnosticCollector();
-
-    // Pre-pass: collect object-like AND function-like #defines across the
-    // whole input tree so macros defined in one file (e.g. __DEFINES/*.dm)
-    // are visible in all files, matching how BYOND compiles a codebase as a
-    // single unit.
-    const collected = DMPreprocessor.collectDefinesFromFiles(dmFiles);
-    if (collected.object.size + collected.function.size > 0) {
-      console.log(`      Seeded ${collected.object.size} object-like and ${collected.function.size} function-like global #defines from ${dmFiles.length} source files.`);
-    }
-
     const globals: any[] = [];
 
-    for (const dmFile of dmFiles) {
-      const code = fs.readFileSync(dmFile, 'utf-8');
+    // BYOND compiles the .dme environment as ONE translation unit: files are
+    // pulled in by #include in listed order and #defines persist through the
+    // rest of the unit. When a .dme is present we do the same — a single
+    // preprocessor pass over the environment file, with file-boundary
+    // markers so diagnostics stay attributed. Without a .dme we fall back to
+    // the legacy every-.dm-in-sorted-order walk with pre-seeded defines.
+    const dmeFile = this.findDmeFile(options.inputDir);
+    const segments: { file: string; text: string }[] = [];
+
+    if (dmeFile) {
+      console.log(`      Environment: ${path.relative(options.inputDir, dmeFile) || path.basename(dmeFile)} (single .dme-ordered pass)`);
+      const unitCollector = new DiagnosticCollector();
+      unitCollector.file = path.relative(options.inputDir, dmeFile);
+      const preprocessor = new DMPreprocessor(unitCollector);
+      preprocessor.emitFileMarkers = true;
+      const fileStack: string[] = [];
+      preprocessor.onIncludeBoundary = (kind, f) => {
+        if (kind === 'start') {
+          fileStack.push(unitCollector.file ?? '');
+          unitCollector.file = path.relative(options.inputDir, f);
+        } else {
+          unitCollector.file = fileStack.pop() ?? unitCollector.file;
+        }
+      };
+      const processed = preprocessor.processFile(dmeFile);
+      diagnostics.merge(unitCollector);
+      segments.push(...DMPreprocessor.splitFileMarkers(processed, path.resolve(dmeFile)));
+    } else {
+      const dmFiles = this.findFiles(options.inputDir, '.dm');
+      // Pre-pass: collect object-like AND function-like #defines across the
+      // whole input tree so macros defined in one file (e.g. __DEFINES/*.dm)
+      // are visible in all files, matching how BYOND compiles a codebase as a
+      // single unit.
+      const collected = DMPreprocessor.collectDefinesFromFiles(dmFiles);
+      if (collected.object.size + collected.function.size > 0) {
+        console.log(`      Seeded ${collected.object.size} object-like and ${collected.function.size} function-like global #defines from ${dmFiles.length} source files.`);
+      }
+      for (const dmFile of dmFiles) {
+        const code = fs.readFileSync(dmFile, 'utf-8');
+        const collector = new DiagnosticCollector();
+        collector.file = path.relative(options.inputDir, dmFile);
+        const preprocessor = new DMPreprocessor(collector, collected.object, collected.function);
+        segments.push({ file: dmFile, text: preprocessor.process(code, dmFile) });
+        diagnostics.merge(collector);
+      }
+    }
+
+    for (const seg of segments) {
       const collector = new DiagnosticCollector();
-      collector.file = path.relative(options.inputDir, dmFile);
-      const preprocessor = new DMPreprocessor(collector, collected.object, collected.function);
-      const processed = preprocessor.process(code, dmFile);
-      const lexer = new DMLexer(processed);
+      collector.file = path.relative(options.inputDir, seg.file);
+      const lexer = new DMLexer(seg.text);
       const tokens = lexer.tokenize();
       collector.merge(lexer.diagnostics);
       const parser = new DMParser(tokens, collector);
@@ -79,14 +112,14 @@ export class DM2SS14Transpiler {
     if (globals.length > 0) {
       console.log(`      Collected ${globals.length} /global/var/ declarations.`);
     }
+    // Corpus-wide symbol table for emit-time call-target resolution (item 64).
+    // Built BEFORE the AST array is released below.
+    const symbols = new SymbolTable();
+    symbols.addTypeDecls(allASTNodes);
     // The parsed ASTs are only needed for IR generation — release them before
     // emission so the YAML + C# outputs (which are large at corpus scale)
     // fit in the heap alongside the IR (item 66 full-corpus boot).
     allASTNodes.length = 0;
-
-    // Corpus-wide symbol table for emit-time call-target resolution (item 64).
-    const symbols = new SymbolTable();
-    for (const node of allASTNodes) symbols.addTypeDecls([node]);
     let unresolvedCallNames = 0;
     const emitterWarn = console.warn.bind(console);
     console.warn = (msg: string) => {
@@ -166,6 +199,42 @@ export class DM2SS14Transpiler {
     if (diagnostics.hasErrors()) {
       throw new Error(`DM parsing failed with ${diagnostics.errors.length} error(s)`);
     }
+  }
+
+  /**
+   * Locates the DM environment (.dme) to compile. Top-level .dme files are
+   * preferred; among candidates the one with the most #include lines wins
+   * (a codebase may ship several environments — test harnesses, alternate
+   * map packs — and the main one includes the most files). Returns null
+   * when no .dme exists.
+   */
+  private findDmeFile(inputDir: string): string | null {
+    if (!fs.existsSync(inputDir)) return null;
+    const stat = fs.statSync(inputDir);
+    if (stat.isFile()) return inputDir.endsWith('.dme') ? inputDir : null;
+
+    const candidates = this.findFiles(inputDir, '.dme');
+    if (candidates.length === 0) return null;
+    const topLevel = candidates.filter(f => path.resolve(path.dirname(f)) === path.resolve(inputDir));
+    const pool = topLevel.length > 0 ? topLevel : candidates;
+
+    let best: string | null = null;
+    let bestIncludes = -1;
+    for (const f of pool) {
+      let includes = 0;
+      try {
+        const text = fs.readFileSync(f, 'utf-8');
+        includes = (text.match(/^\s*#include\b/gm) || []).length;
+      } catch { /* unreadable — skip */ }
+      if (includes > bestIncludes) {
+        bestIncludes = includes;
+        best = f;
+      }
+    }
+    if (pool.length > 1) {
+      console.warn(`[dm2ss14] warning: ${pool.length} .dme environments found; using ${path.basename(best!)} (${bestIncludes} includes)`);
+    }
+    return best;
   }
 
   private findFiles(dir: string, ext: string): string[] {

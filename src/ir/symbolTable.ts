@@ -65,7 +65,8 @@ export class SymbolTable {
     // table grew after lookups — invalidate on every mutation.
     this.clearCaches();
     for (const decl of typeDecls) {
-      const path = normalizeTypePath(decl.path);
+      // DM type paths are case-insensitive; var names are not.
+      const path = normalizeTypePath(decl.path).toLowerCase();
       let sym = this.types.get(path);
       if (!sym) {
         sym = {
@@ -77,7 +78,11 @@ export class SymbolTable {
         this.types.set(path, sym);
       }
       for (const proc of decl.procs || []) sym.procNames.add(proc.name.toLowerCase()); // DM names are case-insensitive
-      for (const v of decl.vars || []) sym.varNames.set(v.name.toLowerCase(), v);
+      for (const v of decl.vars || []) {
+        // Keep the declaring node (it carries the type); overrides only set a value.
+        const prev = sym.varNames.get(v.name);
+        if (!prev || (!prev.varType && v.varType)) sym.varNames.set(v.name, v);
+      }
       if (path === '/proc' || path.startsWith('/proc/')) {
         for (const proc of decl.procs || []) this.globalProcs.add(proc.name.toLowerCase());
       }
@@ -107,7 +112,7 @@ export class SymbolTable {
     const cached = this.typeProcCache.get(cacheKey);
     if (cached !== undefined) return cached;
     
-    let current: string | null = normalizeTypePath(typePath);
+    let current: string | null = normalizeTypePath(typePath).toLowerCase();
     while (current) {
       const sym = this.types.get(current);
       if (sym && sym.procNames.has(name.toLowerCase())) {
@@ -120,11 +125,63 @@ export class SymbolTable {
     return false;
   }
   
+  /** A var reachable on `typePath` (declared on it, an ancestor, or a BYOND builtin var). */
+  resolveTypeVar(typePath: string, name: string): boolean {
+    return this.typeVarDecl(typePath, name) !== undefined || builtinVarOwner(typePath, name);
+  }
+
+  /** The declaration of a var on `typePath` or its nearest ancestor (for declared types). */
+  typeVarDecl(typePath: string, name: string, requireType = false): DMVarDeclNode | undefined {
+    let current: string | null = normalizeTypePath(typePath).toLowerCase();
+    while (current) {
+      const sym = this.types.get(current);
+      const decl = sym?.varNames.get(name);
+      if (decl && (!requireType || decl.varType)) return decl;
+      current = sym ? sym.parentPath : computeParentPath(current);
+    }
+    return undefined;
+  }
+
+  /** Declared type of a var (e.g. /obj/item for `var/obj/item/held`), walking overrides to the declaration. */
+  typeVarType(typePath: string, name: string): string | undefined {
+    const t = this.typeVarDecl(typePath, name, true)?.varType;
+    if (!t) return undefined;
+    const segs = t.split('/').filter(s => s && !['global', 'static', 'tmp', 'const', 'final'].includes(s));
+    return segs.length > 0 ? '/' + segs.join('/') : undefined;
+  }
+
   /** Clear resolution caches when symbol table changes. */
   clearCaches(): void {
     this.bareProcCache.clear();
     this.typeProcCache.clear();
   }
+}
+
+// BYOND builtin vars by owning base type (mirrors runtime DMBuiltinTypes).
+const BUILTIN_VARS: Record<string, string[]> = {
+  '/datum': ['type', 'parent_type', 'tag', 'vars'],
+  '/atom': ['name', 'desc', 'suffix', 'text', 'icon', 'icon_state', 'icon_w', 'icon_z', 'dir', 'loc', 'x', 'y', 'z',
+    'density', 'opacity', 'invisibility', 'luminosity', 'infra_luminosity', 'layer', 'plane', 'alpha', 'color',
+    'blend_mode', 'appearance_flags', 'mouse_opacity', 'mouse_over_pointer', 'mouse_drag_pointer',
+    'mouse_drop_pointer', 'mouse_drop_zone', 'pixel_x', 'pixel_y', 'pixel_w', 'pixel_z', 'maptext',
+    'maptext_width', 'maptext_height', 'maptext_x', 'maptext_y', 'transform', 'render_source', 'render_target',
+    'vis_flags', 'filters', 'contents', 'overlays', 'underlays', 'verbs', 'vis_contents', 'vis_locs', 'appearance'],
+  '/atom/movable': ['animate_movement', 'bound_x', 'bound_y', 'bound_width', 'bound_height', 'step_x', 'step_y',
+    'step_size', 'glide_size', 'screen_loc', 'particles', 'locs'],
+  '/mob': ['key', 'ckey', 'client', 'sight', 'see_invisible', 'see_in_dark', 'see_infrared', 'group'],
+  '/client': ['mob', 'key', 'ckey', 'eye', 'view', 'statpanel', 'images', 'screen', 'address', 'computer_id',
+    'byond_version', 'byond_build', 'perspective', 'pixel_x', 'pixel_y', 'color', 'verbs', 'inactivity',
+    'connection', 'show_popup_menus', 'preload_rsc', 'script', 'gender', 'lazy_eye', 'dir', 'tick_lag', 'fps',
+    'virtual_eye', 'bounds'],
+};
+
+function builtinVarOwner(typePath: string, name: string): boolean {
+  let current: string | null = normalizeTypePath(typePath).toLowerCase();
+  while (current) {
+    if (BUILTIN_VARS[current]?.includes(name)) return true;
+    current = computeParentPath(current);
+  }
+  return false;
 }
 
 export function normalizeTypePath(path: string): string {

@@ -28,6 +28,8 @@ cat > "$WORK/code/fixture.dm" <<'EOF'
 	..()
 	var/obj/bootsmoke_item/o = new /obj/bootsmoke_item(null)
 	world.log << "bootsmoke: spawned [o.type]"
+	spawn(10)
+		world.log << "bootsmoke: tick [world.time]"
 
 /obj/bootsmoke_item
 	name = "smoke item"
@@ -80,6 +82,14 @@ if grep -q "Server Version .* -> Ready" "$WORK/boot.log"; then
     echo "[boot-smoke] PASS: entity spawn bridge materialized the DM atom"
   else
     echo "[boot-smoke] FAIL: entity spawn bridge did not fire"; grep -iE "spawn|dm" "$WORK/boot.log" | tail -5; exit 1
+  fi
+  if grep -q "bootsmoke: tick" "$WORK/boot.log"; then
+    echo "[boot-smoke] PASS: DM scheduler driven by the engine tick ($(grep -o 'bootsmoke: tick [0-9.]*' "$WORK/boot.log" | head -1))"
+  else
+    echo "[boot-smoke] FAIL: spawn(10) never ran (scheduler not ticking)"; grep -iE "dm|runtime" "$WORK/boot.log" | tail -8; exit 1
+  fi
+  if grep -q "runtime error" "$WORK/boot.log"; then
+    echo "[boot-smoke] FAIL: DM runtime errors during boot"; grep "runtime error" "$WORK/boot.log" | head -5; exit 1
   fi
   exit 0
 fi

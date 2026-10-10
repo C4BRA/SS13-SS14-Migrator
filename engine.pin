@@ -5,9 +5,13 @@ The generated SS14 solution builds against the REAL engine via ProjectReference
 engine commit the generated code + runtime template were verified against.
 
 repo: https://github.com/space-wizards/RobustToolbox
-commit: 9cefa1167c9ac45f7258094129daf46b6c3516d3
+commit: edf061e7450a4074f173e3000bf1552b6f54082f
+version: 289.0.0
 target-framework: net10.0
 notes:
+- v289.0.0 is the engine used by Oxyd14; `setup-engine.sh` fetches exactly this commit.
+- Previously verified: 9cefa1167c9ac45f7258094129daf46b6c3516d3 (no API drift found
+  moving to v289: build, tests and boot smoke green).
 - A shallow clone suffices: `git clone --depth 1`
 - Submodules are required for the build: `git submodule update --init --depth 1`
   (Lidgren.Network, NetSerializer, XamlX, Robust.LoaderApi, cefglue)

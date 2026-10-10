@@ -40,6 +40,14 @@ export class DMPreprocessor {
   private includedFiles = new Set<string>();
   private allowMultipleIncludes = false;
   private macroExpansionBudget = MAX_MACRO_EXPANSION_WORK;
+  /** When true, `#include` output is wrapped in `\u0001F:<path>\u0002` marker
+   * lines so the caller can attribute the flattened text back to source
+   * files (single-translation-unit .dme processing). */
+  public emitFileMarkers = false;
+  /** Fires around each inlined file: ('start', path) before its directives
+   *  run, ('end', path) after. Lets the caller track which file diagnostics
+   *  belong to while recursing. */
+  public onIncludeBoundary?: (kind: 'start' | 'end', filePath: string) => void;
 
   constructor(
     collector: DiagnosticCollector,
@@ -68,7 +76,8 @@ export class DMPreprocessor {
 
   process(code: string, filePath: string): string {
     this.blockCommentState.inBlockComment = false;
-    return this.processText(code, path.dirname(path.resolve(filePath)));
+    this.macroExpansionBudget = MAX_MACRO_EXPANSION_WORK;
+    return this.processText(code, path.dirname(path.resolve(filePath)), path.resolve(filePath));
   }
 
   processFile(filePath: string): string {
@@ -76,7 +85,34 @@ export class DMPreprocessor {
     return this.process(code, filePath);
   }
 
-  private processText(code: string, dir: string): string {
+  /**
+   * Splits flattened text (produced with emitFileMarkers) into per-file
+   * segments in include order. Lines before the first marker belong to
+   * `entryFile`; each `\u0001F:<path>\u0002` line switches attribution.
+   */
+  public static splitFileMarkers(text: string, entryFile: string): { file: string; text: string }[] {
+    const segments: { file: string; text: string }[] = [];
+    let current = entryFile;
+    let buf: string[] = [];
+    const flush = () => {
+      const joined = buf.join('\n');
+      if (joined.trim().length > 0) segments.push({ file: current, text: joined });
+      buf = [];
+    };
+    for (const line of text.split('\n')) {
+      const m = line.match(/^\u0001F:(.*)\u0002$/);
+      if (m) {
+        flush();
+        current = m[1];
+      } else {
+        buf.push(line);
+      }
+    }
+    flush();
+    return segments;
+  }
+
+  private processText(code: string, dir: string, selfPath?: string): string {
     // Strip CRLF line endings: splitting on '\n' leaves a trailing '\r' on
     // every line, which corrupts #define bodies and string literals.
     const joined = this.joinParenBlocks(this.joinContinuations(code.split('\n').map(l => (l.endsWith('\r') ? l.slice(0, -1) : l))));
@@ -208,9 +244,16 @@ export class DMPreprocessor {
               break;
             }
             this.includedFiles.add(incPath);
+            this.onIncludeBoundary?.('start', incPath);
             const incCode = this.processFile(incPath);
+            this.onIncludeBoundary?.('end', incPath);
             if (incCode.length > 0) {
-              out.push(incCode);
+              if (this.emitFileMarkers) {
+                out.push(`\u0001F:${incPath}\u0002`, incCode);
+                if (selfPath) out.push(`\u0001F:${selfPath}\u0002`);
+              } else {
+                out.push(incCode);
+              }
             }
             break;
           }
@@ -559,12 +602,31 @@ export class DMPreprocessor {
   private static isBalancedDefineBody(body: string): boolean {
     let inString = false;
     let inIcon = false;
+    let inBlock = false;
     let depth = 0;
     for (let i = 0; i < body.length; i++) {
       const ch = body[i];
+      if (inBlock) {
+        if (ch === '*' && body[i + 1] === '/') {
+          inBlock = false;
+          i++;
+        }
+        continue;
+      }
       if (ch === '\\' && (body[i + 1] === '"' || body[i + 1] === "'")) {
         i++;
         continue;
+      }
+      if (!inString && !inIcon) {
+        if (ch === '/' && body[i + 1] === '*') {
+          inBlock = true;
+          i++;
+          continue;
+        }
+        // Everything after // is a comment: parens and apostrophes there
+        // don't affect the body ("we'll" inside /* */ toggled inIcon and
+        // swallowed following #define lines at corpus scale).
+        if (ch === '/' && body[i + 1] === '/') break;
       }
       if (ch === '"' && !inIcon) {
         inString = !inString;

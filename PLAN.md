@@ -282,3 +282,83 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       stubs 4,172, unresolved 138). Files: `fidelityAudit.ts`, runtime.
 76. [ ] **B-8 — Speed.** Worker-thread parallel parse + DMI conversion (files are
       independent; the audit measured the parse as the dominant stage). Files: `index.ts`.
+
+---
+
+## Part C — Layered lowering (supersedes Part B items 70–75)
+
+Goal: convert any compilable SS13 codebase into a solution that runs natively on a
+pinned RobustToolbox, with **no VM / interpreter** and no human in the loop. BYOND
+semantics are *lowered* onto native Robust constructs; nothing is emulated at the
+bytecode level. Three layers, each covering what the previous one cannot:
+
+1. **Data & assets (deterministic, full fidelity).** DMI→RSI, DMM→grid maps, sounds,
+   and var-only types → pure entity prototypes (no runtime component).
+2. **Framework recognisers.** tg-lineage idioms mapped to their Robust equivalent
+   instead of line-by-line: signals → `RaiseLocalEvent`/`SubscribeLocalEvent`,
+   `/datum/component|element` → ECS components, subsystems/MC →
+   `EntitySystem.Update` cadence, TGUI → `BoundUserInterface` + `Robust.Client.WebView`.
+3. **Lowering compiler.** Everything else: DM procs → C#, with BYOND semantics as a
+   small native support library (not an interpreter): atoms ↔ entities, `loc`/`contents`
+   ↔ transform/containers, appearance ↔ `SpriteComponent`, `sleep`/`spawn` ↔ a
+   deterministic tick scheduler.
+
+Engine pin: RobustToolbox **v289.0.0** (`edf061e7`, same as Oxyd14). First corpus: tgstation.
+Reference semantics: OpenDream's runtime (`DreamValue`, `DMOpcodeHandlers`) is used as the
+written spec for BYOND behaviour where docs are ambiguous.
+
+### Findings that reset the semantic baseline (2026-10-09)
+
+The Part A probes assert several behaviours that BYOND does not have. Verified against
+OpenDream `DreamValue.Equals` / `DMOpcodeHandlers.IsEqual`:
+
+| Probe asserted | BYOND actual |
+|---|---|
+| `"ABC" == "abc"` is true | false — `==` is type-strict and case-sensitive (`cmptext` is the folding form) |
+| `null == ""` / `null == 0` true | false — null only equals null |
+| `"0"` is falsy | truthy — only `""`, `0`, `null` (and deleted refs) are false |
+| `list(1,2) == list(1,2)` true | false — lists compare by reference |
+| lists copy-on-write | lists are shared references; `L += x` mutates in place |
+| numbers are doubles | numbers are 32-bit floats |
+
+Structural defects in the Part A emitter/runtime:
+
+- Proc locals and args are stored as **datum vars** (`comp.SetVar("x")`): locals clobber
+  `src` vars, recursion and concurrent sleeping procs corrupt each other.
+- `new /type` never applies the type's compile-time var defaults (only YAML `initialVars`,
+  as strings, on entities).
+- `sleep`/`spawn` run on the thread pool (`Task.Run`/`Task.Delay`): non-deterministic,
+  not on the engine thread, races with the entity manager.
+- `usr` is set to `src` on every call instead of propagating from the caller.
+- Assoc entries live in a separate string-keyed map (`list("a"=1)[1]` is null; datum/path
+  keys collapse to text).
+- Repeated definitions of one proc on one type keep only the last (no `..()` chain).
+- `index.ts` clears the AST array before building the symbol table (always empty).
+
+### Items
+
+77. [x] **C-0 — Pin + baseline.** `engine.pin` → v289; build/test/boot-smoke green on it.
+78. [x] **C-1 — Value semantics.** float32 numbers, type-strict case-sensitive `==`,
+      `~=`/`~!` equivalence, truthiness, null distinct, lists by reference; probes rebaselined
+      to BYOND (OpenDream-verified) answers.
+79. [x] **C-2 — List model.** One ordered key sequence + assoc values keyed by `DMValue`
+      (text/path/datum keys); reference semantics; `+=`/`-=`/`|=`/`&=` mutate in place,
+      `+`/`-` copy.
+80. [x] **C-3 — Proc frames.** Locals/args/`.` become C# locals (scoped, unique names);
+      `spawn` captures a copy of the frame; `usr` propagates.
+81. [x] **C-4 — Deterministic scheduler.** Single-threaded, tick-driven queue with a custom
+      awaitable; `sleep(n)`, `spawn(n)`, `set waitfor = 0`; driven by
+      `EntitySystem.Update` on the server and by a virtual clock in probes.
+82. [x] **C-5 — Type table.** Generated `DMTypes` registry: parent, compile-time var
+      defaults, non-constant initializers (init proc), override chains so `..()` reaches
+      earlier same-type definitions; `new` applies defaults → init → `New()`.
+83. [ ] **C-6 — Typed lowering.** Declared types (`var/obj/item/I`) resolve `.` access and
+      calls statically; slot-based var storage; subtype checks via pre-order type ids.
+84. [ ] **C-7 — Atom lowering.** atom ↔ entity: `loc`/`contents`/`x,y,z` ↔ transform parent
+      + map coordinates, builtin var write hooks, appearance (`icon`, `icon_state`, `dir`,
+      `overlays`, `layer`, `pixel_*`) ↔ `SpriteComponent`.
+85. [ ] **C-8 — Layer 1.** var-only types → pure prototypes; map objects with var
+      overrides; verify DMI/DMM on tgstation.
+86. [ ] **C-9 — Layer 2.** tg recognisers: signals, datum components/elements, subsystems,
+      TGUI.
+87. [ ] **C-10 — tgstation gate.** convert → build 0 errors → boot → world init completes.

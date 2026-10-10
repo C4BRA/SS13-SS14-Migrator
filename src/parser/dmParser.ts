@@ -7,7 +7,7 @@ export interface ASTNode {
 
 // Expression AST Nodes
 export type ExpressionNode =
-  | { type: 'literal'; value: string | number | boolean | null; literalType: 'string' | 'number' | 'bool' | 'null' | 'path'; floatLiteral?: boolean }
+  | { type: 'literal'; value: string | number | boolean | null; literalType: 'string' | 'number' | 'bool' | 'null' | 'path' | 'file'; floatLiteral?: boolean }
   | { type: 'variable'; name: string }
   | { type: 'binary'; operator: string; left: ExpressionNode; right: ExpressionNode }
   | { type: 'unary'; operator: string; operand: ExpressionNode }
@@ -20,7 +20,25 @@ export type ExpressionNode =
   | { type: 'property_assignment'; target: ExpressionNode; property: string; value: ExpressionNode }
   | { type: 'index_assignment'; target: ExpressionNode; index: ExpressionNode; value: ExpressionNode }
   | { type: 'list'; elements: ExpressionNode[] }
-  | { type: 'range'; start: ExpressionNode; end: ExpressionNode };
+  | { type: 'range'; start: ExpressionNode; end: ExpressionNode }
+  | { type: 'interp'; parts: ExpressionNode[] };
+
+/** Local `var/<modifiers>/<type>/<name>` split: DM modifiers are not part of the type. */
+export interface LocalVarPath {
+  name?: string;
+  varType: string | undefined;
+  modifiers: string[];
+}
+
+const VAR_MODIFIERS = new Set(['global', 'static', 'const', 'tmp', 'final']);
+
+export function splitLocalVarPath(pathVal: string): LocalVarPath {
+  const segs = pathVal.split('/').filter(Boolean);
+  const name = segs.pop() ?? '';
+  const modifiers = segs.filter(s => VAR_MODIFIERS.has(s));
+  const typeSegs = segs.filter(s => !VAR_MODIFIERS.has(s));
+  return { name, varType: typeSegs.length > 0 ? '/' + typeSegs.join('/') : undefined, modifiers };
+}
 
 export interface DMTypeDeclNode extends ASTNode {
   type: 'DMTypeDecl';
@@ -494,6 +512,14 @@ export class DMParser {
         continue;
       }
 
+      // Proc override inside a type block: `New(loc)` / `Destroy()` + body.
+      if ((token.type === TokenType.Identifier || token.type === TokenType.Keyword) &&
+          this.peekNext()?.type === TokenType.Punctuation && this.peekNext()?.value === '(') {
+        this.advance();
+        this.parseProcRest(token.value, currentTypeNode);
+        continue;
+      }
+
       // Var assignment override (e.g. name = "Sword", density = 1). DM
       // keywords like step/to/as/in are legal var names (item 56).
       if (token.type === TokenType.Identifier ||
@@ -681,6 +707,8 @@ export class DMParser {
       // (otherwise "hello world" re-lexes as two bare identifiers).
       if (token.type === TokenType.StringLiteral) {
         parts.push('"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
+      } else if (token.type === TokenType.FileLiteral) {
+        parts.push("'" + value + "'");
       } else {
         parts.push(value);
       }
@@ -872,7 +900,23 @@ export class DMParser {
       } else if (this.isType(TokenType.Identifier)) {
         procName = this.advance().value;
       }
+      // operator overloads: proc/operator+(x), operator[]=(k, v), operator""()
+      if (procName === 'operator') {
+        while (!this.isType(TokenType.EOF) && !(this.isType(TokenType.Punctuation) && this.peek().value === '(' && !procName.endsWith('operator'))) {
+          const t = this.peek();
+          if (t.type === TokenType.Newline) break;
+          if (t.type === TokenType.Punctuation && t.value === '(' ) break;
+          procName += t.type === TokenType.StringLiteral ? '""' : t.value;
+          this.advance();
+        }
+      }
+      this.parseProcRest(procName, targetTypeNode);
+    }
+  }
 
+  /** Argument list, optional `as` return type, and body of a proc whose name was just consumed. */
+  private parseProcRest(procName: string, targetTypeNode: DMTypeDeclNode): void {
+    {
       if (procName) {
         const args = this.parseProcArgs();
 
@@ -928,23 +972,27 @@ export class DMParser {
         continue;
       }
 
-      // DM `set` statements: set name = "x" / set hidden = FALSE — parsed
-      // and dropped (they only affect the verb's UI configuration).
+      // DM `set` statements: set waitfor = 0 / set name = "x" / set src in
+      // view(1). Kept as SetStatement nodes: the emitter reads them as proc
+      // attributes (waitfor, verb name/category/src access).
       if (this.peek().value === 'set') {
         this.advance();
+        let setting = '';
         if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
-          this.advance();
+          setting = this.advance().value;
         }
+        const setNode: DMStatementNode = { type: 'SetStatement', setting };
         if (this.matchOperator('=')) {
-          this.parseExpression();
+          setNode.value = this.parseExpression();
         }
         // Verb-set clauses like `set src in view(1)` / `set popup_menu = TRUE`:
         // consume the `in <expr>` tail so it never leaks as a phantom token
         // (item 56 — `Unexpected token 'in'` on macro-expanded verbs).
         if (this.peek().value === 'in') {
           this.advance();
-          this.parseExpression();
+          setNode.inExpr = this.parseExpression();
         }
+        statements.push(setNode);
         if (this.isType(TokenType.Punctuation) && this.peek().value === ';') {
           this.advance();
         }
@@ -1116,18 +1164,21 @@ export class DMParser {
         continue;
       }
 
-      // Verb modifiers: set name = value / set hidden / set src in view
-      // (verb settings are out of scope; parse and drop without data loss)
+      // Proc/verb settings: set waitfor = 0 / set name = "x" / set src in view(1).
+      // Kept as SetStatement nodes; the emitter reads them as proc attributes.
       if (token.value === 'set') {
         this.advance();
+        let setting = '';
         if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
-          this.advance();
+          setting = this.advance().value;
         }
         if (this.peek().value === 'in') {
           this.advance();
-          this.parseExpression();
+          statements.push({ type: 'SetStatement', setting, inExpr: this.parseExpression() });
         } else if (this.matchOperator('=')) {
-          this.parseExpression();
+          statements.push({ type: 'SetStatement', setting, value: this.parseExpression() });
+        } else {
+          statements.push({ type: 'SetStatement', setting });
         }
         continue;
       }
@@ -1142,18 +1193,19 @@ export class DMParser {
       if (token.value === 'var') {
         this.advance();
         let varName = '';
+        let decl: LocalVarPath = { varType: undefined, modifiers: [] };
         if (this.isType(TokenType.TypePath)) {
-          const pathVal = this.advance().value;
-          const lastSlash = pathVal.lastIndexOf('/');
-          varName = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
+          decl = splitLocalVarPath(this.advance().value);
+          varName = decl.name!;
         } else if (this.isType(TokenType.Identifier)) {
           // var/list/x — bare type followed by /name (no leading slash)
           const next = this.peekNext();
           if (next && next.type === TokenType.Operator && next.value === '/') {
-            this.advance(); // type
+            const typeWord = this.advance().value; // type
             this.advance(); // /
             if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
-              varName = this.advance().value;
+              decl = splitLocalVarPath(`/${typeWord}/${this.advance().value}`);
+              varName = decl.name!;
             }
           } else {
             varName = this.advance().value;
@@ -1180,14 +1232,14 @@ export class DMParser {
         if (this.matchOperator('=')) {
           varInit = this.parseExpression();
         }
-        statements.push({ type: 'VarDeclStatement', varName, varInit });
+        statements.push({ type: 'VarDeclStatement', varName, varInit, varType: decl.varType, modifiers: decl.modifiers });
         // DM multi-decl: var/i, ch, len = length(key)
         while (this.matchPunctuation(',')) {
           let nextName = '';
+          let nextDecl: LocalVarPath = { varType: undefined, modifiers: [] };
           if (this.isType(TokenType.TypePath)) {
-            const pathVal = this.advance().value;
-            const lastSlash = pathVal.lastIndexOf('/');
-            nextName = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
+            nextDecl = splitLocalVarPath(this.advance().value);
+            nextName = nextDecl.name!;
           } else if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
             nextName = this.advance().value;
           }
@@ -1195,7 +1247,7 @@ export class DMParser {
           if (this.matchOperator('=')) {
             nextInit = this.parseExpression();
           }
-          statements.push({ type: 'VarDeclStatement', varName: nextName, varInit: nextInit });
+          statements.push({ type: 'VarDeclStatement', varName: nextName, varInit: nextInit, varType: nextDecl.varType, modifiers: nextDecl.modifiers });
         }
         continue;
       }
@@ -1644,17 +1696,18 @@ export class DMParser {
     if (token.value === 'var') {
       this.advance();
       let varName = '';
+      let decl: LocalVarPath = { varType: undefined, modifiers: [] };
       if (this.isType(TokenType.TypePath)) {
-        const pathVal = this.advance().value;
-        const lastSlash = pathVal.lastIndexOf('/');
-        varName = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
+        decl = splitLocalVarPath(this.advance().value);
+        varName = decl.name!;
       } else if (this.isType(TokenType.Identifier)) {
         const next = this.peekNext();
         if (next && next.type === TokenType.Operator && next.value === '/') {
-          this.advance();
+          const typeWord = this.advance().value;
           this.advance();
           if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
-            varName = this.advance().value;
+            decl = splitLocalVarPath(`/${typeWord}/${this.advance().value}`);
+            varName = decl.name!;
           }
         } else {
           varName = this.advance().value;
@@ -1679,9 +1732,9 @@ export class DMParser {
         this.matchPunctuation(']');
       }
       if (dims.length > 0) {
-        return { type: 'VarDeclStatement', varName, varInit, dims } as any;
+        return { type: 'VarDeclStatement', varName, varInit, dims, varType: decl.varType, modifiers: decl.modifiers } as any;
       }
-      return { type: 'VarDeclStatement', varName, varInit };
+      return { type: 'VarDeclStatement', varName, varInit, varType: decl.varType, modifiers: decl.modifiers };
     }
     if (token.value === 'return') {
       this.advance();
@@ -1854,12 +1907,13 @@ export class DMParser {
         const right = this.parseExpression(1);
         const baseOp = op.slice(0, -1);
         const value: ExpressionNode = { type: 'binary', operator: baseOp, left, right };
+        // `compound` keeps the operator so list targets mutate in place (L += x).
         if (left.type === 'variable') {
-          left = { type: 'assignment', target: left.name, value };
+          left = { type: 'assignment', target: left.name, value, compound: op } as any;
         } else if (left.type === 'property') {
-          left = { type: 'property_assignment', target: left.target, property: left.property, value };
+          left = { type: 'property_assignment', target: left.target, property: left.property, value, compound: op } as any;
         } else {
-          left = { type: 'index_assignment', target: left.target, index: left.index, value };
+          left = { type: 'index_assignment', target: left.target, index: left.index, value, compound: op } as any;
         }
         continue;
       }
@@ -1973,7 +2027,8 @@ export class DMParser {
           left = {
             type: 'assignment',
             target: left.name,
-            value: { type: 'binary', operator: baseOp, left: { type: 'variable', name: left.name }, right }
+            value: { type: 'binary', operator: baseOp, left: { type: 'variable', name: left.name }, right },
+            compound: op
           } as any;
           continue;
         } else if (left.type === 'property') {
@@ -1981,7 +2036,8 @@ export class DMParser {
             type: 'property_assignment',
             target: left.target,
             property: left.property,
-            value: { type: 'binary', operator: baseOp, left, right }
+            value: { type: 'binary', operator: baseOp, left, right },
+            compound: op
           } as any;
           continue;
         } else if (left.type === 'index') {
@@ -1989,7 +2045,8 @@ export class DMParser {
             type: 'index_assignment',
             target: left.target,
             index: left.index,
-            value: { type: 'binary', operator: baseOp, left, right }
+            value: { type: 'binary', operator: baseOp, left, right },
+            compound: op
           } as any;
           continue;
         }
@@ -2044,27 +2101,26 @@ export class DMParser {
       if (parts.length === 1) {
         return { type: 'literal', value: token.value, literalType: 'string' };
       }
-      // "a [x] b" — interleave literal text and re-parsed expressions,
-      // chained with string concatenation (DMValue.Add concatenates text).
-      let node: ExpressionNode = { type: 'literal', value: '', literalType: 'string' };
+      // "a [x] b" — literal text interleaved with embedded expressions; each
+      // embedded value is converted with DM text rules (not `+`, which
+      // errors on text + number).
+      const pieces: ExpressionNode[] = [];
       for (const part of parts) {
-        let piece: ExpressionNode;
         if (typeof part === 'string') {
-          piece = { type: 'literal', value: part, literalType: 'string' };
+          pieces.push({ type: 'literal', value: part, literalType: 'string' });
         } else {
           const collector = new DiagnosticCollector();
           const expr = this.parseInitializerTextToExpr(part.interp, collector);
-          piece = expr ?? { type: 'literal', value: part.interp, literalType: 'string' };
+          pieces.push(expr ?? { type: 'literal', value: part.interp, literalType: 'string' });
         }
-        node = { type: 'binary', operator: '+', left: node, right: piece };
       }
-      return this.parsePostfix(node);
+      return this.parsePostfix({ type: 'interp', parts: pieces });
     }
 
     // File literal
     if (token.type === TokenType.FileLiteral) {
       this.advance();
-      return { type: 'literal', value: token.value, literalType: 'string' };
+      return { type: 'literal', value: token.value, literalType: 'file' } as any;
     }
 
     // Number literal
@@ -2115,6 +2171,9 @@ export class DMParser {
       if (token.value === 'new') {
         this.advance();
         let typePath = '';
+        // new some_var(...) / new src.type(...) / new L[i](...): the type is
+        // a runtime value held in an expression, not a literal path.
+        let typeExpr: ExpressionNode | undefined;
         if (this.isType(TokenType.TypePath)) {
           typePath = this.advance().value;
         } else if (this.isType(TokenType.Operator) && this.peek().value === '/') {
@@ -2122,8 +2181,25 @@ export class DMParser {
           if (this.isType(TokenType.TypePath)) {
             typePath = this.advance().value;
           }
-        } else if (this.isType(TokenType.Identifier)) {
-          typePath = '/' + this.advance().value;
+        } else if (this.isType(TokenType.Identifier) || (this.isType(TokenType.Keyword) && this.peek().value === 'src')) {
+          typeExpr = { type: 'variable', name: this.advance().value };
+          while (true) {
+            // Only '.' chains here — not ':', which is the ternary separator
+            // in `x ? new ident : fallback` (cards.dm); `a:b` typecheck syntax
+            // doesn't apply to a `new` type operand.
+            if (this.peek().value === '.' &&
+                (this.peekNext()?.type === TokenType.Identifier || this.peekNext()?.type === TokenType.Keyword)) {
+              this.advance();
+              typeExpr = { type: 'property', target: typeExpr, property: this.advance().value };
+            } else if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
+              this.advance();
+              const index = this.parseExpression();
+              this.matchPunctuation(']');
+              typeExpr = { type: 'index', target: typeExpr, index };
+            } else {
+              break;
+            }
+          }
         }
         const args: ExpressionNode[] = [];
         if (this.matchPunctuation('(')) {
@@ -2150,7 +2226,7 @@ export class DMParser {
             parenIndents -= 1;
           }
         }
-        return this.parsePostfix({ type: 'new', typePath, arguments: args });
+        return this.parsePostfix({ type: 'new', typePath, arguments: args, ...(typeExpr ? { typeExpr } : {}) } as any);
       }
     }
 
@@ -2173,6 +2249,9 @@ export class DMParser {
         }
         if (operand.type === 'property') {
           return { type: 'property_assignment', target: operand.target, property: operand.property, value } as any;
+        }
+        if (operand.type === 'index') {
+          return { type: 'index_assignment', target: operand.target, index: operand.index, value } as any;
         }
       }
       return { type: 'unary', operator: op, operand };
@@ -2225,10 +2304,11 @@ export class DMParser {
         // statement (item 56: `if(C) . += "</a>"` — the postfix loop must not
         // eat the body's leading dot).
         if (nxt && (nxt.type === TokenType.Identifier || nxt.type === TokenType.Keyword)) {
+          const safe = this.peek().value === '?.';
           this.advance();
           const propToken = this.peek();
           this.advance();
-          node = { type: 'property', target: node, property: propToken.value };
+          node = { type: 'property', target: node, property: propToken.value, ...(safe ? { safe: true } : {}) } as any;
         } else {
           break;
         }
@@ -2288,7 +2368,7 @@ export class DMParser {
           // obj.method(x) — the method name is the last property segment and
           // the receiver is the chain before it. Previously this emitted a
           // call with an empty name targeting the property lookup itself.
-          node = { type: 'call', name: node.property, target: node.target, arguments: args };
+          node = { type: 'call', name: node.property, target: node.target, arguments: args, ...((node as any).safe ? { safe: true } : {}) } as any;
         } else {
           node = { type: 'call', name: '', target: node, arguments: args };
         }
@@ -2298,12 +2378,12 @@ export class DMParser {
         this.matchPunctuation(']');
         node = { type: 'index', target: node, index };
       } else if (this.peek().value === '?' && this.peekNext()?.value === '[') {
-        // Null-conditional index: x?[key] — treated as plain indexing.
+        // Null-conditional index: x?[key] — null when x is null.
         this.advance();
         this.advance();
         const index = this.parseExpression();
         this.matchPunctuation(']');
-        node = { type: 'index', target: node, index };
+        node = { type: 'index', target: node, index, safe: true } as any;
       } else {
         break;
       }
@@ -2350,27 +2430,31 @@ export class DMParser {
   private buildPostfixIncrement(left: ExpressionNode, op: string): ExpressionNode {
     const one: ExpressionNode = { type: 'literal', value: 1, literalType: 'number' };
     const baseOp = op === '++' ? '+' : '-';
+    // `postfix` marks x++ / x--: the expression's value is the OLD value.
     if (left.type === 'variable') {
       return {
         type: 'assignment',
         target: left.name,
-        value: { type: 'binary', operator: baseOp, left: { type: 'variable', name: left.name }, right: one }
-      };
+        value: { type: 'binary', operator: baseOp, left: { type: 'variable', name: left.name }, right: one },
+        postfix: op
+      } as any;
     }
     if (left.type === 'property') {
       return {
         type: 'property_assignment',
         target: left.target,
         property: left.property,
-        value: { type: 'binary', operator: baseOp, left, right: one }
-      };
+        value: { type: 'binary', operator: baseOp, left, right: one },
+        postfix: op
+      } as any;
     }
     return {
       type: 'index_assignment',
       target: (left as any).target,
       index: (left as any).index,
-      value: { type: 'binary', operator: baseOp, left, right: one }
-    };
+      value: { type: 'binary', operator: baseOp, left, right: one },
+      postfix: op
+    } as any;
   }
 
   private getOrCreateTypeNode(path: string, map: Map<string, DMTypeDeclNode>): DMTypeDeclNode {

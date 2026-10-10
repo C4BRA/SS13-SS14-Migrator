@@ -138,9 +138,9 @@ async function runTests() {
   const globalsIR = irGen.generateIR(globalsNodes);
   const globalsEmitter = new CSharpEmitter();
   const globalsCS = globalsEmitter.generateProcsCS(globalsIR, globalsParser.globalVars);
-  const ensureInit = (globalsCS.split('private static async Task EnsureInit')[1] || '').split('}')[0];
+  const ensureInit = (globalsCS.split('public static async Task Init()')[1] || '').split('await Task.CompletedTask')[0];
   assert(ensureInit.includes('DMValue.FromString("hello world")'), "Global string initializer round-trips as string literal");
-  assert(ensureInit.includes('DMValue.FromNumber(42)'), "Global numeric initializer preserved");
+  assert(ensureInit.includes('DMValue.FromNumber(42d)'), "Global numeric initializer preserved");
   assert(ensureInit.includes('GlobalVars.Get("motd")'), "Global initializer referencing another global resolves via GlobalVars.Get");
   assert(!ensureInit.includes('comp.GetVar'), "Global initializers must not reference comp (CS0103 in static context)");
 

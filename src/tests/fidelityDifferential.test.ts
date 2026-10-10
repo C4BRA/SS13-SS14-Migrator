@@ -1,13 +1,17 @@
-// Semantic differential probes: for each small DM snippet with KNOWN BYOND
-// behavior, this converts it through the real pipeline (preprocessor ->
-// parser -> IR -> C# emitter), compiles the generated code with the vendored
-// runtime, RUNS it, and reports whether the observed behavior matches DM.
+// Semantic differential probes: each small DM program has a KNOWN BYOND
+// result. It is converted through the real pipeline (preprocessor -> parser ->
+// IR -> C# emitter), compiled against the engine-free runtime and RUN on the
+// deterministic scheduler with a virtual clock.
 //
-// The point is not to pass/fail: it is to measure which DM semantics survive
-// conversion. Run with: npm run audit:semantics   (requires dotnet)
+// Expected values are BYOND behaviour, cross-checked against OpenDream's
+// runtime (DreamValue, DMOpcodeHandlers, DreamProcNativeRoot) where the
+// reference is ambiguous. `ERROR` means BYOND raises a runtime error.
+// Probes must be valid DM (declared vars, existing types).
 //
-// Expected values are BYOND semantics; observed values are the converted
-// runtime's behavior. ✅ = semantics preserved, ❌ = semantics lost.
+// All probes build into ONE project (one namespace each) and run in one
+// process, resetting the runtime between probes.
+//
+// Run with: npm run audit:semantics   (requires dotnet)
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -18,6 +22,7 @@ import { DMLexer } from '../parser/dmLexer.js';
 import { DMParser } from '../parser/dmParser.js';
 import { DiagnosticCollector } from '../diagnostics.js';
 import { DMIRGenerator } from '../ir/dmIRGenerator.js';
+import { SymbolTable } from '../ir/symbolTable.js';
 import { CSharpEmitter } from '../transpiler/csharpEmitter.js';
 import { DMRuntimeCS } from '../runtimeTemplate/dmRuntimeCS.js';
 
@@ -28,877 +33,226 @@ interface Probe {
   files?: Record<string, string>;
 }
 
-const PROBES: Probe[] = [
-  {
-    name: 'text equality is case-insensitive',
-    dm: `/datum/probe/proc/run()\n\treturn "ABC" == "abc"`,
-    expected: '1' // BYOND: "ABC" == "abc" is true
-  },
-  {
-    name: 'text < compares lexicographically',
-    dm: `/datum/probe/proc/run()\n\treturn "10" < "9"`,
-    expected: '1' // BYOND: "10" < "9" is true (lexicographic)
-  },
-  {
-    name: 'list equality is element-wise',
-    dm: `/datum/probe/proc/run()\n\tvar/a = list(1, 2)\n\tvar/b = list(1, 2)\n\treturn a == b`,
-    expected: '1'
-  },
-  {
-    name: 'null == "" is true',
-    dm: `/datum/probe/proc/run()\n\treturn null == ""`,
-    expected: '1'
-  },
-  {
-    name: '|| returns the operand value',
-    dm: `/datum/probe/proc/run()\n\treturn 5 || 3`,
-    expected: '5' // BYOND returns 5, not a boolean
-  },
-  {
-    name: '&& short-circuits (side effects)',
-    dm: `/datum/probe/proc/run()\n\tvar/x = 0\n\tif (0 && (x = 1))\n\t\treturn -1\n\treturn x`,
-    expected: '0' // DM: right operand never evaluated
-  },
-  {
-    name: 'L += x appends to a list',
-    dm: `/datum/probe/proc/run()\n\tvar/L = list(1, 2)\n\tL += 3\n\treturn L`,
-    expected: 'list(1, 2, 3)' // DM: list text rendering; probe hardened (WS13-8)
-  },
-  {
-    name: 'L.len reads list length',
-    dm: `/datum/probe/proc/run()\n\tvar/L = list(1, 2)\n\treturn L.len`,
-    expected: '2'
-  },
-  {
-    name: 'negative list index reads from end',
-    dm: `/datum/probe/proc/run()\n\tvar/L = list(1, 2)\n\treturn L[-1]`,
-    expected: '2' // BYOND: last element
-  },
-  {
-    name: 'two new /type() create distinct objects',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\treturn a == b`,
-    expected: '0'
-  },
-  {
-    name: '..() executes the parent proc',
-    dm: `/datum\n\tproc/run()\n\t\tsrc.mark = 9\n/datum/probe\n\tproc/run()\n\t\t..()\n\t\treturn src.mark`,
-    expected: '9'
-  },
-  {
-    name: 'world.time is a number',
-    dm: `/datum/probe/proc/run()\n\treturn world.time`,
-    expected: '0' // BYOND: some number >= 0; the converted runtime must not return null
-  },
-  {
-    name: 'findtext is 1-based',
-    dm: `/datum/probe/proc/run()\n\treturn findtext("abc", "b")`,
-    expected: '2'
-  },
-  {
-    name: 'text2num handles hex',
-    dm: `/datum/probe/proc/run()\n\treturn text2num("0x1F")`,
-    expected: '31'
-  },
-  {
-    name: '"0" is falsy in conditions',
-    dm: `/datum/probe/proc/run()\n\treturn ("0" ? 1 : 0)`,
-    expected: '0'
-  },
-  {
-    name: 'num2text of integer',
-    dm: `/datum/probe/proc/run()\n\treturn num2text(42)`,
-    expected: '42'
-  },
-  {
-    name: 'break exits a C-style for loop',
-    dm: `/datum/probe/proc/run()\n\tvar/count = 0\n\tfor (var/i = 1, i <= 10, i++)\n\t\tif (i == 3)\n\t\t\tbreak\n\t\tcount++\n\treturn count`,
-    expected: '2'
-  },
-  {
-    name: 'replacetext transforms text',
-    dm: `/datum/probe/proc/run()\n\treturn replacetext("aaa", "a", "b")`,
-    expected: 'bbb'
-  },
-  {
-    name: 'as /type cast preserves the object',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = a as /datum/probe2\n\treturn b == null`,
-    expected: '0' // BYOND: cast keeps the object, not null
-  },
-  {
-    name: '1-based list indexing',
-    dm: `/datum/probe/proc/run()\n\tvar/L = list(10, 20)\n\treturn L[1]`,
-    expected: '10'
-  },
-  {
-    name: '"a" + 5 concatenates',
-    dm: `/datum/probe/proc/run()\n\treturn "a" + 5`,
-    expected: 'a5'
-  },
-  {
-    name: 'for(x in 1..3) sums range',
-    dm: `/datum/probe/proc/run()\n\tvar/s = 0\n\tfor (var/i in 1..3)\n\t\ts += i\n\treturn s`,
-    expected: '6'
-  },
-  {
-    name: 'istype(null, /datum) is false',
-    dm: `/datum/probe/proc/run()\n\treturn istype(null, /datum)`,
-    expected: '0'
-  },
-  {
-    name: 'islist() on a list',
-    dm: `/datum/probe/proc/run()\n\treturn islist(list(1))`,
-    expected: '1'
-  },
-  {
-    name: 'bare call to a global proc resolves (/proc fallback)',
-    dm: `/proc/global_probe_helper()\n\treturn 42\n/datum/probe/proc/run()\n\treturn global_probe_helper()`,
-    expected: '42'
-  },
-  {
-    name: 'isnull() on an uninitialized var',
-    dm: `/datum/probe/proc/run()\n\tvar/x\n\treturn isnull(x)`,
-    expected: '1'
-  },
-  {
-    name: 'isnum/istext predicates',
-    dm: `/datum/probe/proc/run()\n\treturn isnum(5) && istext("a") && !isnum("x")`,
-    expected: '1'
-  },
-  {
-    name: 'ismob() on a mob instance',
-    dm: `/mob/probe_mob\n/datum/probe/proc/run()\n\tvar/m = new /mob/probe_mob()\n\treturn ismob(m)`,
-    expected: '1'
-  },
-  {
-    name: 'nameof() returns the final path segment',
-    dm: `/datum/probe/proc/run()\n\treturn nameof(/datum/probe/proc/run)`,
-    expected: 'run'
-  },
-  {
-    name: 'turn() rotates a direction clockwise',
-    dm: `/datum/probe/proc/run()\n\treturn turn(4, 90)`,
-    expected: '2' // E + 90deg clockwise = S
-  },
-  {
-    name: 'get_dist() is Chebyshev over x/y vars',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 1\n\ta.y = 1\n\tb.x = 4\n\tb.y = 5\n\treturn get_dist(a, b)`,
-    expected: '4'
-  },
-  {
-    name: 'get_dir() returns binary direction',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 1\n\ta.y = 1\n\tb.x = 4\n\tb.y = 5\n\treturn get_dir(a, b)`,
-    expected: '5' // NE
-  },
-  {
-    name: 'splittext() splits into a list',
-    dm: `/datum/probe/proc/run()\n\tvar/L = splittext("a,b,c", ",")\n\treturn L.len`,
-    expected: '3'
-  },
-  {
-    name: 'jointext() joins a list',
-    dm: `/datum/probe/proc/run()\n\treturn jointext(list("a", "b", "c"), "-")`,
-    expected: 'a-b-c'
-  },
-  {
-    name: 'rgb() formats hex color',
-    dm: `/datum/probe/proc/run()\n\treturn rgb(255, 0, 128)`,
-    expected: '#FF0080'
-  },
-  {
-    name: 'initial() reads the pre-mutation var value',
-    dm: `/datum/probe2\n\tproc/New()\n\t\tsrc.foo = 7\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\ta.foo = 99\n\treturn initial(a.foo)`,
-    expected: '7'
-  },
-  {
-    name: 'call() proc reference invokes dynamically',
-    dm: `/datum/probe2\n\tproc/helper(x)\n\t\treturn x + 1\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn call(a, "helper")(5)`,
-    expected: '6'
-  },
-  // --- Plan 01 pure-function builtins (BYOND-verified expected values) ---
-  {
-    name: 'floor() rounds down',
-    dm: `/datum/probe/proc/run()\n\treturn floor(3.7)`,
-    expected: '3'
-  },
-  {
-    name: 'ceil() rounds up',
-    dm: `/datum/probe/proc/run()\n\treturn ceil(3.2)`,
-    expected: '4'
-  },
-  {
-    name: 'sqrt() square root',
-    dm: `/datum/probe/proc/run()\n\treturn sqrt(16)`,
-    expected: '4'
-  },
-  {
-    name: 'sin() takes degrees (sin 30 = 0.5)',
-    dm: `/datum/probe/proc/run()\n\treturn round(sin(30) * 100)`,
-    expected: '50'
-  },
-  {
-    name: 'cos() takes degrees (cos 60 = 0.5)',
-    dm: `/datum/probe/proc/run()\n\treturn round(cos(60) * 100)`,
-    expected: '50'
-  },
-  {
-    name: 'sign() returns -1/0/1',
-    dm: `/datum/probe/proc/run()\n\treturn sign(-5)`,
-    expected: '-1'
-  },
-  {
-    name: 'copytext_char() is char-based',
-    dm: `/datum/probe/proc/run()\n\treturn copytext_char("hello", 2, 4)`,
-    expected: 'el'
-  },
-  {
-    name: 'length_char() counts chars',
-    dm: `/datum/probe/proc/run()\n\treturn length_char("hello")`,
-    expected: '5'
-  },
-  {
-    name: 'text2ascii() returns char code',
-    dm: `/datum/probe/proc/run()\n\treturn text2ascii("A")`,
-    expected: '65'
-  },
-  {
-    name: 'ascii2text() converts code to char',
-    dm: `/datum/probe/proc/run()\n\treturn ascii2text(65)`,
-    expected: 'A'
-  },
-  {
-    name: 'ckey() canonicalizes',
-    dm: `/datum/probe/proc/run()\n\treturn ckey("My_Thing #2!")`,
-    expected: 'my thing 2'
-  },
-  {
-    name: 'sorttext() case-insensitive compare',
-    dm: `/datum/probe/proc/run()\n\treturn sorttext("b", "A")`,
-    expected: '1'
-  },
-  {
-    name: 'replacetextEx() literal case-sensitive replace',
-    dm: `/datum/probe/proc/run()\n\treturn replacetextEx("aXbX", "X", "c")`,
-    expected: 'acbc'
-  },
-  {
-    name: 'html_encode() escapes markup',
-    dm: `/datum/probe/proc/run()\n\treturn html_encode("<b>")`,
-    expected: '&lt;b&gt;'
-  },
-  {
-    name: 'html_decode() unescapes markup',
-    dm: `/datum/probe/proc/run()\n\treturn html_decode("&lt;b&gt;")`,
-    expected: '<b>'
-  },
-  {
-    name: 'rgb2num(r, g, b) packs a color number',
-    dm: `/datum/probe/proc/run()\n\treturn rgb2num(255, 128, 0)`,
-    expected: '16744448'
-  },
-  {
-    name: 'rgb2num("#hex") decomposes to channels',
-    dm: `/datum/probe/proc/run()\n\tvar/c = rgb2num("#ff8000")\n\treturn c[1] * 1000000 + c[2] * 1000 + c[3]`,
-    expected: '255128000'
-  },
-  {
-    name: 'json_encode() serializes lists',
-    dm: `/datum/probe/proc/run()\n\treturn json_encode(list(1, "two", null))`,
-    expected: '[1,"two",null]'
-  },
-  {
-    name: 'json_encode() escapes quotes and backslashes',
-    dm: `/datum/probe/proc/run()\n\treturn json_encode(list("a\\"b", "c\\\\d", "e\\nf", "a\\tb"))`,
-    expected: '["a\\"b","c\\\\d","e\\nf","a\\tb"]' // hardened: escape paths (WS13-7)
-  },
-  {
-    name: 'time2text() formats decisecond world time',
-    dm: `/datum/probe/proc/run()\n\treturn time2text(1000, "hh:mm:ss")`,
-    expected: '00:01:40'
-  },
-  {
-    name: 'json_decode() parses into an assoc list',
-    dm: `/datum/probe/proc/run()\n\tvar/L = json_decode("{\\"a\\": 1}")\n\treturn L["a"]`,
-    expected: '1'
-  },
-  {
-    name: 'typesof() lists registered descendants',
-    dm: `/datum/probe_base\n\tproc/base_helper()\n\t\treturn 1\n/datum/probe_base/child\n\tproc/child_helper()\n\t\treturn 1\n/datum/probe/proc/run()\n\tvar/L = typesof(/datum/probe_base)\n\treturn L.len`,
-    expected: '2'
-  },
-  {
-    name: 'range() finds datums within distance',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 0\n\ta.y = 0\n\tb.x = 1\n\tb.y = 1\n\treturn range(2, a).len`,
-    expected: '2'
-  },
-  {
-    name: 'GLOB.x reads the global default value',
-    dm: `/global/var/counter = 5\n/datum/probe/proc/run()\n\treturn GLOB.counter`,
-    expected: '5'
-  },
-  {
-    name: 'GLOB.x = v writes and reads back',
-    dm: `/global/var/x = 0\n/datum/probe/proc/run()\n\tGLOB.x = 42\n\treturn GLOB.x`,
-    expected: '42'
-  },
-  {
-    name: 'GLOB list default appends',
-    dm: `/global/var/list/items = list()\n/datum/probe/proc/run()\n\tGLOB.items += "z"\n\treturn GLOB.items.len`,
-    expected: '1'
-  },
-  {
-    name: 'global initializer references an earlier global',
-    dm: `/global/var/a = 2\n/global/var/b = GLOB.a + 3\n/datum/probe/proc/run()\n\treturn GLOB.b`,
-    expected: '5'
-  },
-  {
-    name: 'global with new /type() default is a datum',
-    dm: `/datum/probe2\n/global/var/obj = new /datum/probe2()\n/datum/probe/proc/run()\n\treturn GLOB.obj != null`,
-    expected: '1'
-  },
-  {
-    name: 'undeclared GLOB.x reads as null',
-    dm: `/datum/probe/proc/run()\n\treturn isnull(GLOB.nope)`,
-    expected: '1'
-  },
-  {
-    name: 'GLOB state persists across proc calls',
-    dm: `/global/var/x = 0\n/datum/probe/proc/run()\n\tGLOB.x = 9\n\treturn helper()\n/datum/probe/proc/helper()\n\treturn GLOB.x`,
-    expected: '9'
-  },
-  {
-    name: 'GLOB shared across datum types',
-    dm: `/global/var/shared = 7\n/datum/probe2\n\tproc/helper()\n\t\treturn GLOB.shared\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn a.helper()`,
-    expected: '7'
-  },
-  {
-    name: 'assoc key on global list persists',
-    dm: `/global/var/list/registry = list()\n/datum/probe/proc/run()\n\tGLOB.registry["k"] = 5\n\treturn GLOB.registry["k"]`,
-    expected: '5'
-  },
-  // --- Plan 01 file-ops builtins (seed files written to the scratch dir) ---
-  {
-    name: 'fdel() on a missing file returns 0',
-    dm: `/datum/probe/proc/run()\n\treturn fdel("probe_missing.txt")`,
-    expected: '0'
-  },
-  {
-    name: 'fexists() true for a seeded file',
-    dm: `/datum/probe/proc/run()\n\treturn fexists("probe_seed.txt")`,
-    expected: '1',
-    files: { 'probe_seed.txt': 'seed content' }
-  },
-  {
-    name: 'fdel() deletes a file and returns 1',
-    dm: `/datum/probe/proc/run()\n\treturn fdel("probe_del.txt")`,
-    expected: '1',
-    files: { 'probe_del.txt': 'delete me' }
-  },
-  {
-    name: 'file() yields a file value that isfile() accepts',
-    dm: `/datum/probe/proc/run()\n\tvar/f = file("probe_seed.txt")\n\treturn isfile(f)`,
-    expected: '1',
-    files: { 'probe_seed.txt': 'seed content' }
-  },
-  {
-    name: 'isfile() false for plain text',
-    dm: `/datum/probe/proc/run()\n\treturn isfile("not a file")`,
-    expected: '0'
-  },
-  {
-    name: 'length(file) reports the byte size',
-    dm: `/datum/probe/proc/run()\n\treturn length(file("probe_seed.txt"))`,
-    expected: '12',
-    files: { 'probe_seed.txt': 'seed content' }
-  },
-  {
-    name: 'fcopy() copies a file and fexists() confirms',
-    dm: `/datum/probe/proc/run()\n\tif (fcopy("probe_seed.txt", "probe_copy.txt"))\n\t\treturn fexists("probe_copy.txt")\n\treturn 0`,
-    expected: '1',
-    files: { 'probe_seed.txt': 'seed content' }
-  },
-  {
-    name: 'flist() lists a seeded file name',
-    dm: `/datum/probe/proc/run()\n\tfor (var/f in flist("."))\n\t\tif (f == "probe_seed.txt")\n\t\t\treturn 1\n\treturn 0`,
-    expected: '1',
-    files: { 'probe_seed.txt': 'seed content' }
-  },
-  {
-    name: 'ref() is stable per datum and unique across datums',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\treturn ref(a) == ref(a) && ref(a) != ref(b)`,
-    expected: '1'
-  },
-  {
-    name: 'ref() of a non-datum is empty',
-    dm: `/datum/probe/proc/run()\n\treturn ref(5)`,
-    expected: ''
-  },
-  {
-    name: 'refcount() is a number, not null',
-    dm: `/datum/probe/proc/run()\n\treturn isnum(refcount(new /datum/probe2()))`,
-    expected: '1'
-  },
-  {
-    name: 'SpacemanDMM_unlint() is a no-op returning null',
-    dm: `/datum/probe/proc/run()\n\treturn SpacemanDMM_unlint("x")`,
-    expected: 'null'
-  },
-  // --- Plan 01 movement builtins (engine-free x/y/z grid) ---
-  {
-    name: 'step() moves an atom north and returns 1',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tvar/r = step(a, 1)\n\treturn a.y * 10 + r`,
-    expected: '41'
-  },
-  {
-    name: 'step() with speed 2 moves two tiles',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tstep(a, 1, 2)\n\treturn a.y`,
-    expected: '5'
-  },
-  {
-    name: 'step() with no direction returns 0',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn step(a, 0)`,
-    expected: '0'
-  },
-  {
-    name: 'step_towards() moves one step toward the target',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 6\n\tstep_towards(a, b)\n\treturn a.y`,
-    expected: '4'
-  },
-  {
-    name: 'step_away() moves one step away from the target',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 1\n\tstep_away(a, b)\n\treturn a.y`,
-    expected: '4'
-  },
-  {
-    name: 'get_step_away() locates the turf one step away',
-    dm: `/turf/away_turf\n/datum/probe/proc/run()\n\tvar/a = new /turf/away_turf()\n\tvar/b = new /turf/away_turf()\n\tvar/c = new /turf/away_turf()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 1\n\tc.x = 3\n\tc.y = 4\n\tvar/t = get_step_away(a, b)\n\treturn t.x + t.y * 10`,
-    expected: '43'
-  },
-  {
-    name: 'get_step_towards() locates the turf one step toward',
-    dm: `/turf/away_turf\n/datum/probe/proc/run()\n\tvar/a = new /turf/away_turf()\n\tvar/b = new /turf/away_turf()\n\tvar/c = new /turf/away_turf()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 6\n\tc.x = 3\n\tc.y = 4\n\tvar/t = get_step_towards(a, b)\n\treturn t.x + t.y * 10`,
-    expected: '43'
-  },
-  {
-    name: 'orange(1, c) excludes the center tile',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\tvar/c = new /datum/probe2()\n\tvar/d = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 4\n\tc.x = 3\n\tc.y = 3\n\td.x = 5\n\td.y = 5\n\treturn orange(1, a).len`,
-    expected: '1'
-  },
-  {
-    name: 'orange(0, c) excludes the center tile entirely',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\tvar/b = new /datum/probe2()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 3\n\treturn orange(0, a).len`,
-    expected: '0'
-  },
-  {
-    name: 'viewers() lists mobs within range',
-    dm: `/mob/dummy\n/datum/probe/proc/run()\n\tvar/a = new /mob/dummy()\n\tvar/b = new /mob/dummy()\n\tvar/c = new /mob/dummy()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 5\n\tc.x = 3\n\tc.y = 20\n\treturn viewers(2, a).len`,
-    expected: '2'
-  },
-  {
-    name: 'hearers() uses the 7-tile default range',
-    dm: `/mob/dummy\n/datum/probe/proc/run()\n\tvar/a = new /mob/dummy()\n\tvar/b = new /mob/dummy()\n\tvar/c = new /mob/dummy()\n\ta.x = 3\n\ta.y = 3\n\tb.x = 3\n\tb.y = 10\n\tc.x = 3\n\tc.y = 12\n\treturn hearers(a).len`,
-    expected: '2'
-  },
+/** probe(name, expected, ...lines): lines are DM source (tabs for indentation). */
+function probe(name: string, expected: string, ...lines: string[]): Probe {
+  return { name, expected, dm: lines.join('\n') };
+}
 
-  // --- Plan 10 B1: value semantics (expected = BYOND reference) ---
-  {
-    name: 'division of two integers is floor division',
-    dm: `/datum/probe/proc/run()\n\treturn 7 / 2`,
-    expected: '3'
-  },
-  {
-    name: 'division of negative integers floors toward -inf',
-    dm: `/datum/probe/proc/run()\n\treturn -7 / 2`,
-    expected: '-4'
-  },
-  {
-    name: 'division with a fractional operand is float division',
-    dm: `/datum/probe/proc/run()\n\treturn 7.0 / 2`,
-    expected: '3.5'
-  },
-  {
-    name: 'number equality is exact (no float tolerance)',
-    dm: `/datum/probe/proc/run()\n\treturn 1 == 1.000000001`,
-    expected: '0'
-  },
-  {
-    name: 'number equality exact for identical values',
-    dm: `/datum/probe/proc/run()\n\treturn 1 == 1.0`,
-    expected: '1'
-  },
-  {
-    name: 'findtext is case-insensitive by default',
-    dm: `/datum/probe/proc/run()\n\treturn findtext("ABC", "b")`,
-    expected: '2'
-  },
-  {
-    name: 'findtext with an empty needle finds the start',
-    dm: `/datum/probe/proc/run()\n\treturn findtext("abc", "")`,
-    expected: '1'
-  },
-  {
-    name: 'isnull("") is 0 (empty string is not null)',
-    dm: `/datum/probe/proc/run()\n\treturn isnull("")`,
-    expected: '0'
-  },
-  {
-    name: 'isnull(0) is 0 (zero is not null)',
-    dm: `/datum/probe/proc/run()\n\treturn isnull(0)`,
-    expected: '0'
-  },
-  {
-    name: 'sign() of non-numeric text is 0',
-    dm: `/datum/probe/proc/run()\n\treturn sign("abc")`,
-    expected: '0'
-  },
-  {
-    name: 'sign() of negative text is -1',
-    dm: `/datum/probe/proc/run()\n\treturn sign("-3")`,
-    expected: '-1'
-  },
-  {
-    name: 'text2num radix parses the longest valid prefix',
-    dm: `/datum/probe/proc/run()\n\treturn text2num("1G", 16)`,
-    expected: '1'
-  },
-  {
-    name: 'text2num radix 16 parses hex digits',
-    dm: `/datum/probe/proc/run()\n\treturn text2num("1F", 16)`,
-    expected: '31'
-  },
-  {
-    name: 'text2num accepts a leading plus sign',
-    dm: `/datum/probe/proc/run()\n\treturn text2num("+42")`,
-    expected: '42'
-  },
-  {
-    name: 'in checks associative keys',
-    dm: `/datum/probe/proc/run()\n\treturn "a" in list("a" = 1)`,
-    expected: '1'
-  },
-  {
-    name: 'in checks positional values, not assoc keys as values',
-    dm: `/datum/probe/proc/run()\n\treturn 2 in list("a" = 1)`,
-    expected: '0'
-  },
-  {
-    name: 'assoc list len counts entries',
-    dm: `/datum/probe/proc/run()\n\treturn list("a" = 1).len`,
-    expected: '1'
-  },
-  {
-    name: 'assoc lists with different keys are not equal',
-    dm: `/datum/probe/proc/run()\n\treturn list("a" = 1) == list("b" = 1)`,
-    expected: '0'
-  },
-  {
-    name: 'assoc lists with same keys are equal',
-    dm: `/datum/probe/proc/run()\n\treturn list("a" = 1) == list("a" = 1)`,
-    expected: '1'
-  },
-  {
-    name: 'for-in iterates assoc values',
-    dm: `/datum/probe/proc/run()\n\tvar/n = 0\n\tfor (var/x in list("a" = 7))\n\t\tn = x\n\treturn n`,
-    expected: '7'
-  },
-  {
-    name: 'params2list URL-decodes values',
-    dm: `/datum/probe/proc/run()\n\treturn params2list("a=b%20c")["a"]`,
-    expected: 'b c'
-  },
-  {
-    name: 'length counts Unicode code points',
-    dm: `/datum/probe/proc/run()\n\treturn length("a😀b")`,
-    expected: '3'
-  },
-  {
-    name: 'copytext slices by code points',
-    dm: `/datum/probe/proc/run()\n\treturn copytext("a😀b", 2, 3)`,
-    expected: '😀'
-  },
-  {
-    name: 'findtext indexes by code points',
-    dm: `/datum/probe/proc/run()\n\treturn findtext("a😀b", "😀")`,
-    expected: '2'
-  },
-  {
-    name: 'ispath("x") is 0 (text is not a path)',
-    dm: `/datum/probe/proc/run()\n\treturn ispath("x")`,
-    expected: '0'
-  },
-  {
-    name: 'ispath(/obj) is 1',
-    dm: `/datum/probe/proc/run()\n\treturn ispath(/obj)`,
-    expected: '1'
-  },
-  {
-    name: 'ispath base-type check (subtype is within)',
-    dm: `/datum/probe/proc/run()\n\treturn ispath(/obj/item, /obj)`,
-    expected: '1'
-  },
-  {
-    name: 'ispath base-type check (base is not within subtype)',
-    dm: `/datum/probe/proc/run()\n\treturn ispath(/obj, /obj/item)`,
-    expected: '0'
-  },
-  {
-    name: 'copytext with end 0 goes to the end of the string',
-    dm: `/datum/probe/proc/run()\n\treturn copytext("abc", 1, 0)`,
-    expected: 'abc'
-  },
-  {
-    name: 'copytext with negative end counts from the end',
-    dm: `/datum/probe/proc/run()\n\treturn copytext("abc", 2, -1)`,
-    expected: 'b'
-  },
-  {
-    name: 'copytext with start 0 is treated as 1',
-    dm: `/datum/probe/proc/run()\n\treturn copytext("abc", 0)`,
-    expected: 'abc'
-  },
+const RUN = '/datum/probe/proc/run()';
 
-  // --- Plan 10 B2: emitter control flow + list semantics ---
-  {
-    name: 'for range with positive step',
-    dm: `/datum/probe/proc/run()\n\tvar/s = 0\n\tfor (var/i = 1 to 6 step 2)\n\t\ts += i\n\treturn s`,
-    expected: '9'
-  },
-  {
-    name: 'for range with descending step',
-    dm: `/datum/probe/proc/run()\n\tvar/s = 0\n\tfor (var/i = 5 to 1 step -2)\n\t\ts += i\n\treturn s`,
-    expected: '9'
-  },
-  {
-    name: 'for range step with continue still increments',
-    dm: `/datum/probe/proc/run()\n\tvar/s = 0\n\tfor (var/i = 1 to 6 step 2)\n\t{\n\t\tif (i == 3)\n\t\t\tcontinue\n\t\ts += i\n\t}\n\treturn s`,
-    expected: '6'
-  },
-  {
-    name: 'for(var/type) iterates only matching instances',
-    dm: `/mob/p_mob\n/obj/p_obj\n/datum/probe/proc/run()\n\tvar/count = 0\n\tfor (var/mob/p_mob/M in list(new /mob/p_mob(), new /obj/p_obj()))\n\t\tcount++\n\treturn count`,
-    expected: '1'
-  },
-  {
-    name: 'list index assignment copies on write',
-    dm: `/datum/probe/proc/run()\n\tvar/a = list(1)\n\tvar/b = a\n\ta[1] = 9\n\treturn b[1]`,
-    expected: '1'
-  },
-  {
-    name: 'list += keeps associative keys',
-    dm: `/datum/probe/proc/run()\n\tvar/a = list("k" = 1)\n\ta += 2\n\treturn a["k"]`,
-    expected: '1'
-  },
-  {
-    name: 'string + null concatenates null as empty',
-    dm: `/datum/probe/proc/run()\n\treturn "a" + null`,
-    expected: 'a'
-  },
-  {
-    name: 'string + 0 concatenates the zero',
-    dm: `/datum/probe/proc/run()\n\treturn "a" + 0`,
-    expected: 'a0'
-  },
-  {
-    name: 'abs of a negative number',
-    dm: `/datum/probe/proc/run()\n\treturn abs(-5)`,
-    expected: '5'
-  },
+export const PROBES: Probe[] = [
+  // ===== value semantics =====
+  probe('text == is case-sensitive', '0', RUN, '\treturn "ABC" == "abc"'),
+  probe('cmptext() is case-insensitive', '1', RUN, '\treturn cmptext("ABC", "abc")'),
+  probe('text < compares lexicographically', '1', RUN, '\treturn "10" < "9"'),
+  probe('lists compare by reference', '0', RUN, '\tvar/a = list(1, 2)', '\tvar/b = list(1, 2)', '\treturn a == b'),
+  probe('~= compares list contents', '1', RUN, '\treturn list(1, 2) ~= list(1, 2)'),
+  probe('null == "" is false', '0', RUN, '\treturn null == ""'),
+  probe('null == 0 is false', '0', RUN, '\treturn null == 0'),
+  probe('!null is true', '1', RUN, '\treturn !null'),
+  probe('"0" is truthy', '1', RUN, '\treturn ("0" ? 1 : 0)'),
+  probe('"" is falsy', '0', RUN, '\treturn ("" ? 1 : 0)'),
+  probe('|| returns the deciding operand', '5', RUN, '\treturn 5 || 3'),
+  probe('&& short-circuits', '0', RUN, '\tvar/x = 0', '\tif (0 && (x = 1))', '\t\treturn -1', '\treturn x'),
+  probe('7 / 2 is 3.5 (no integer division)', '3.5', RUN, '\treturn 7 / 2'),
+  probe('-7 / 2 is -3.5', '-3.5', RUN, '\treturn -7 / 2'),
+  probe('numbers are 32-bit floats', '1', RUN, '\treturn 1 == 1.000000001'),
+  probe('1/3 renders with 6 significant digits', '0.333333', RUN, '\treturn "[1/3]"'),
+  probe('0.1 + 0.2 renders as 0.3', '0.3', RUN, '\treturn "[0.1 + 0.2]"'),
+  probe('interpolation stringifies numbers', 'a5', RUN, '\treturn "a[5]"'),
+  probe('interpolation of null is empty', 'ab', RUN, '\treturn "a[null]b"'),
+  probe('text + number is a runtime error', 'ERROR', RUN, '\treturn "a" + 5'),
+  probe('text + null is the text', 'a', RUN, '\treturn "a" + null'),
+  probe('null + 3 is 3', '3', RUN, '\treturn null + 3'),
+  probe('text - 1 is a runtime error', 'ERROR', RUN, '\treturn "a" - 1'),
+  probe('division by zero is a runtime error', 'ERROR', RUN, '\tvar/z = 0', '\treturn 1 / z'),
+  probe('% truncates toward zero', '-1', RUN, '\treturn -7 % 3'),
+  probe('%% follows the divisor sign', '-2', RUN, '\treturn 7 %% -3'),
+  probe('** is power', '1024', RUN, '\treturn 2 ** 10'),
+  probe('~ is 24-bit', '16777215', RUN, '\treturn ~0'),
+  probe('<< on numbers shifts', '8', RUN, '\treturn 1 << 3'),
+  probe('0x hex literal', '31', RUN, '\treturn 0x1F'),
+  probe('abs of a negative number', '5', RUN, '\treturn abs(-5)'),
+  probe('isnull("") is 0', '0', RUN, '\treturn isnull("")'),
+  probe('isnull(0) is 0', '0', RUN, '\treturn isnull(0)'),
+  probe('isnum/istext predicates', '1', RUN, '\treturn isnum(5) && istext("a") && !isnum("x")'),
+  probe('isnull() on an uninitialized local', '1', RUN, '\tvar/x', '\treturn isnull(x)'),
 
-  // --- Plan 10 B3: lexer literals ---
-  {
-    name: '0x hex literal',
-    dm: `/datum/probe/proc/run()\n\treturn 0x1F`,
-    expected: '31'
-  },
-  {
-    name: '0b binary literal',
-    dm: `/datum/probe/proc/run()\n\treturn 0b101`,
-    expected: '5'
-  },
-  {
-    name: 'CRLF line endings parse without errors',
-    dm: `/datum/probe/proc/run()\r\n\tvar/x = 5\r\n\treturn x + 1`,
-    expected: '6'
-  },
-  {
-    name: 'return inside spawn() compiles and exits the block',
-    dm: `/datum/probe/proc/run()\n\tvar/x = 1\n\tspawn(0)\n\t\treturn\n\treturn x`,
-    expected: '1' // DM: return exits the spawn block; run() returns 1
-  },
-  {
-    name: '\\x and \\u escapes decode to characters',
-    dm: `/datum/probe/proc/run()\n\treturn "\\x41\\u0041"`,
-    expected: 'AA' // BYOND: \x41 = 'A', \u0041 = 'A'
-  },
-  {
-    name: 'unknown escapes keep the backslash',
-    dm: `/datum/probe/proc/run()\n\treturn "\\a\\b"`,
-    expected: '\\a\\b' // unknown escapes pass through byte-exact
-  },
-  {
-    name: '\\the text-macro marker is preserved',
-    dm: `/datum/probe/proc/run()\n\treturn "\\the item"`,
-    expected: '\\the item' // marker kept verbatim, not corrupted to a tab
-  },
-  {
-    name: 'arctan() returns degrees',
-    dm: `/datum/probe/proc/run()\n\treturn round(arctan(1) * 10)`,
-    expected: '450' // BYOND: atan(1) = 45 degrees
-  },
-  {
-    name: 'regex() find returns the match start index',
-    dm: `/datum/probe/proc/run()\n\tvar/re = regex("b+")\n\treturn re.Find("xabbb")`,
-    expected: '3' // 1-based index of the first match ("xabbb": b at 3)
-  },
-  {
-    name: 'regex() match returns the matched text',
-    dm: `/datum/probe/proc/run()\n\tvar/re = regex("b+")\n\treturn re.Match("xabbb")`,
-    expected: 'bbb'
-  },
-  {
-    name: 'regex() replace substitutes matches',
-    dm: `/datum/probe/proc/run()\n\tvar/re = regex("b+")\n\treturn re.Replace("xabbb", "Z")`,
-    expected: 'xaZ'
-  },
-  {
-    name: 'astype() returns the datum type path',
-    dm: `/datum/probe2\n/datum/probe/proc/run()\n\tvar/a = new /datum/probe2()\n\treturn astype(a)`,
-    expected: '/datum/probe2'
-  },
-  {
-    name: 'regex_quote() escapes regex metacharacters',
-    dm: `/datum/probe/proc/run()\n\treturn regex_quote("a.b")`,
-    expected: 'a\\.b'
-  },
-  {
-    name: 'findlasttext() finds the last match',
-    dm: `/datum/probe/proc/run()\n\treturn findlasttext("abcabc", "b")`,
-    expected: '5' // 1-based index of the last b
-  },
-  {
-    name: 'values_sum() sums a list',
-    dm: `/datum/probe/proc/run()\n\treturn values_sum(list(1, 2, 3))`,
-    expected: '6'
-  },
-  {
-    name: 'values_dot() dot product of two lists',
-    dm: `/datum/probe/proc/run()\n\treturn values_dot(list(1, 2), list(3, 4))`,
-    expected: '11' // 1*3 + 2*4
-  },
-  {
-    name: 'roll() evaluates NdM dice',
-    dm: `/datum/probe/proc/run()\n\treturn roll("1d1")`,
-    expected: '1'
-  },
-  {
-    name: 'isicon() is true only for dmi paths',
-    dm: `/datum/probe/proc/run()\n\treturn isicon(/obj) + isicon("/x.dmi") * 0 + isicon(null)`,
-    expected: '0'
-  },
-  {
-    name: 'world.view and world.tick_lag are numbers',
-    dm: `/datum/probe/proc/run()\n\treturn world.view + world.tick_lag`,
-    expected: '6' // BYOND defaults 5 + 1
-  },
-  {
-    name: 'default arg applies when omitted',
-    dm: `/datum/probe/proc/f(a = 5)\n\treturn a\n/datum/probe/proc/run()\n\treturn f()`,
-    expected: '5' // BYOND: missing arg binds the declared default (item 58)
-  },
-  {
-    name: 'default arg overridden by a real argument',
-    dm: `/datum/probe/proc/f(a = 5)\n\treturn a\n/datum/probe/proc/run()\n\treturn f(7)`,
-    expected: '7'
-  },
-  {
-    name: 'assoc identifier key list(a = 1)',
-    dm: `/datum/probe/proc/run()\n\tvar/list/l = list(a = 1, "b" = 2)\n\treturn l["a"] + l["b"]`,
-    expected: '3' // identifier keys are associative pairs (item 58)
-  },
-  {
-    name: 'default arg is an expression evaluated per call',
-    dm: `/datum/probe/proc/f(a = list(1, 2))\n\treturn length(a)\n/datum/probe/proc/run()\n\treturn f()`,
-    expected: '2'
-  },
-  {
-    name: 'labeled continue jumps back to the labeled loop',
-    dm: `/datum/probe/proc/run()\n\tvar/count = 0\n\tvar/i = 0\n\touter:\n\t\twhile(i < 3)\n\t\t\ti += 1\n\t\t\tvar/j = 0\n\t\t\twhile(j < 3)\n\t\t\t\tj += 1\n\t\t\t\tif(j == 2)\n\t\t\t\t\tcontinue outer\n\t\t\t\tcount += 1\n\treturn count`,
-    expected: '3' // item 59: label + goto, not a comment
-  },
-  {
-    name: 'labeled break exits the labeled block',
-    dm: `/datum/probe/proc/run()\n\tvar/count = 0\n\touter:\n\t\twhile(count < 100)\n\t\t\tcount += 1\n\t\t\tif(count == 3)\n\t\t\t\tbreak outer\n\treturn count`,
-    expected: '3'
-  },
-  {
-    name: '.type reads the datum type path',
-    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn d.type`,
-    expected: '/datum' // bare new is /datum; item 62: DMGetProperty resolves type
-  },
-  {
-    name: '.dir defaults to SOUTH (2)',
-    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn d.dir`,
-    expected: '2' // implicit atom var default
-  },
-  {
-    name: '.contents defaults to an empty list',
-    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn length(d.contents)`,
-    expected: '0'
-  },
-  {
-    name: '.overlays defaults to an empty list',
-    dm: `/datum/probe/proc/run()\n\tvar/datum/d = new\n\treturn length(d.overlays)`,
-    expected: '0'
-  },
-  {
-    name: 'new Type(loc, args) sets the loc var',
-    dm: `/obj/probe/proc/New(a, b)\n\treturn\n/datum/probe/proc/run()\n\tvar/datum/d = new\n\tvar/obj/probe/o = new /obj/probe(d, 7)\n\treturn o.loc == d`,
-    expected: '1' // item 63: the first new() argument is the atom loc
-  },
-  {
-    name: 'new /datum(x) passes x to New without a loc split',
-    dm: `/datum/probe/proc/New(a)\n\tsrc.arg = a\n/datum/probe/proc/run()\n\tvar/datum/probe/p = new /datum/probe(9)\n\treturn p.arg`,
-    expected: '9' // pure datums have no loc; New receives the argument
-  },
-  {
-    name: 'atom New receives the loc as its first parameter',
-    dm: `/obj/probe/proc/New(a, b)\n\tsrc.first = a\n\tsrc.second = b\n/datum/probe/proc/run()\n\tvar/datum/d = new\n\tvar/obj/probe/o = new /obj/probe(d, 7)\n\treturn (o.first == d) + o.second`,
-    expected: '8' // New(loc, args...) keeps the loc as its first argument
-  },
-  {
-    name: 'image() creates a datum with vars',
-    dm: `/datum/probe/proc/run()\n\tvar/image/i = image('icons/x.dmi', null, "on", 4, 1)\n\treturn i.layer + i.dir`,
-    expected: '5' // item 65: layer 4 + dir 1
-  },
-  {
-    name: 'sound() creates a datum with volume',
-    dm: `/datum/probe/proc/run()\n\tvar/sound/s = sound(null, 0, 0, 50, 3)\n\treturn s.volume + s.channel`,
-    expected: '53'
-  },
-  {
-    name: 'matrix scale mutates the transform vars',
-    dm: `/datum/probe/proc/run()\n\tvar/matrix/m = matrix()\n\tm.Scale(2, 3)\n\treturn m.a + m.d`,
-    expected: '5' // 2 + 3 — the builtin /matrix procs register at startup
-  },
-  {
-    name: 'matrix translate then turn',
-    dm: `/datum/probe/proc/run()\n\tvar/matrix/m = matrix()\n\tm.Translate(10, 20)\n\tm.Turn(90)\n\treturn m.e + m.f`,
-    expected: '-20' // 90deg rotates (e,f) = (0,20) -> (-20,0)
-  },
-  {
-    name: 'splicetext removes a range',
-    dm: `/datum/probe/proc/run()\n\treturn splicetext("abcdef", 2, 4)`,
-    expected: 'aef' // item 67: head "a" + tail "ef"
-  },
-  {
-    name: 'filter() creates a datum with vars',
-    dm: `/datum/probe/proc/run()\n\tvar/filter/f = filter("blur", 5)\n\treturn f.size`,
-    expected: '5' // item 67: the size argument reads back
-  },
-  {
-    name: 'stack_trace returns null',
-    dm: `/datum/probe/proc/run()\n\treturn stack_trace("x")`,
-    expected: 'null' // debug aid; Null in the engine-free runtime
-  }
+  // ===== lists =====
+  probe('L += x appends', 'list(1, 2, 3)', RUN, '\tvar/L = list(1, 2)', '\tL += 3', '\treturn L'),
+  probe('L += x mutates the shared list', '2', RUN, '\tvar/a = list(1)', '\tvar/b = a', '\ta += 2', '\treturn b.len'),
+  probe('a = a + x copies', '1', RUN, '\tvar/a = list(1)', '\tvar/b = a', '\ta = a + 2', '\treturn b.len'),
+  probe('index writes are visible through every reference', '9', RUN, '\tvar/a = list(1)', '\tvar/b = a', '\ta[1] = 9', '\treturn b[1]'),
+  probe('L.len reads the length', '2', RUN, '\tvar/L = list(1, 2)', '\treturn L.len'),
+  probe('L.len = n resizes', '5', RUN, '\tvar/L = list(1)', '\tL.len = 5', '\treturn length(L)'),
+  probe('lists are 1-indexed', '10', RUN, '\tvar/L = list(10, 20)', '\treturn L[1]'),
+  probe('negative list index is a runtime error', 'ERROR', RUN, '\tvar/L = list(1, 2)', '\treturn L[-1]'),
+  probe('out-of-range index is a runtime error', 'ERROR', RUN, '\tvar/L = list(1, 2)', '\treturn L[3]'),
+  probe('assoc list keys are its elements', 'a', RUN, '\tvar/L = list("a" = 1)', '\treturn L[1]'),
+  probe('assoc list len counts entries', '1', RUN, '\treturn list("a" = 1).len'),
+  probe('assoc lookup', '1', RUN, '\tvar/L = list("a" = 1)', '\treturn L["a"]'),
+  probe('assoc keys are case-sensitive', 'null', RUN, '\tvar/L = list("a" = 1)', '\treturn L["A"]'),
+  probe('datum assoc keys', '5', RUN, '\tvar/datum/d = new', '\tvar/L = list()', '\tL[d] = 5', '\treturn L[d]'),
+  probe('in checks keys', '1', RUN, '\treturn "a" in list("a" = 1)'),
+  probe('in does not check assoc values', '0', RUN, '\treturn 1 in list("a" = 1)'),
+  probe('for-in over an assoc list yields keys', 'a', RUN, '\tvar/n', '\tfor (var/x in list("a" = 7))', '\t\tn = x', '\treturn n'),
+  probe('for-in iterates a snapshot', '3', RUN, '\tvar/L = list(1, 2, 3)', '\tvar/n = 0', '\tfor (var/x in L)', '\t\tL += x', '\t\tn++', '\treturn n'),
+  probe('L.Add appends every argument', '4', RUN, '\tvar/L = list(1)', '\tL.Add(2, 3, 4)', '\treturn L.len'),
+  probe('L.Add of a list appends its elements', '3', RUN, '\tvar/L = list(1)', '\tL.Add(list(2, 3))', '\treturn L.len'),
+  probe('L -= x removes the last occurrence', 'list(1, 2)', RUN, '\tvar/L = list(1, 2, 1)', '\tL -= 1', '\treturn L'),
+  probe('L |= x skips duplicates', 'list(1, 2)', RUN, '\tvar/L = list(1, 2)', '\tL |= 2', '\tL |= 1', '\treturn L'),
+  probe('L.Find', '2', RUN, '\treturn list(5, 6, 7).Find(6)'),
+  probe('L.Cut', 'list(1, 4)', RUN, '\tvar/L = list(1, 2, 3, 4)', '\tL.Cut(2, 4)', '\treturn L'),
+  probe('L.Insert', 'list(1, 9, 2)', RUN, '\tvar/L = list(1, 2)', '\tL.Insert(2, 9)', '\treturn L'),
+  probe('L.Copy', 'list(2, 3)', RUN, '\tvar/L = list(1, 2, 3)', '\treturn L.Copy(2)'),
+  probe('L.Join', '1-2-3', RUN, '\treturn list(1, 2, 3).Join("-")'),
+  probe('list += keeps associative keys', '1', RUN, '\tvar/a = list("k" = 1)', '\ta += 2', '\treturn a["k"]'),
+  probe('identifier assoc key list(a = 1)', '3', RUN, '\tvar/list/l = list(a = 1, "b" = 2)', '\treturn l["a"] + l["b"]'),
+  probe('mixed list literal', 'list(1, "b" = 2)', RUN, '\treturn list(1, "b" = 2)'),
+
+  // ===== procs and frames =====
+  probe('locals never clobber src vars', 'src', '/datum/probe', '\tvar/name = "src"', RUN, '\tvar/name = "local"', '\treturn src.name'),
+  probe('recursion keeps separate frames', '120', '/datum/probe/proc/fact(n)', '\tif (n <= 1)', '\t\treturn 1', '\tvar/r = n * fact(n - 1)', '\treturn r', RUN, '\treturn fact(5)'),
+  probe('args is the argument list', '3', '/datum/probe/proc/f(a, b)', '\treturn args.len', RUN, '\treturn f(1, 2, 3)'),
+  probe('named arguments bind by parameter name', '129', '/datum/probe/proc/f(a, b = 2, c = 3)', '\treturn a * 100 + b * 10 + c', RUN, '\treturn f(1, c = 9)'),
+  probe('default arg applies when omitted', '5', '/datum/probe/proc/f(a = 5)', '\treturn a', RUN, '\treturn f()'),
+  probe('default arg applies when null is passed', '5', '/datum/probe/proc/f(a = 5)', '\treturn a', RUN, '\treturn f(null)'),
+  probe('default arg overridden by a real argument', '7', '/datum/probe/proc/f(a = 5)', '\treturn a', RUN, '\treturn f(7)'),
+  probe('default arg expression evaluated per call', '2', '/datum/probe/proc/f(a = list(1, 2))', '\treturn length(a)', RUN, '\treturn f()'),
+  probe('. is the implicit return value', '3', RUN, '\t. = 3', '\treturn'),
+  probe('. is returned when the proc ends', '4', RUN, '\t. = 4'),
+  probe('..() runs the parent type proc', '9', '/datum', '\tvar/mark', '\tproc/run()', '\t\tsrc.mark = 9', '/datum/probe', '\trun()', '\t\t..()', '\t\treturn src.mark'),
+  probe('..() reaches an earlier definition on the same type', '11', '/datum/probe/proc/v()', '\treturn 1', '/datum/probe/v()', '\treturn ..() + 10', RUN, '\treturn v()'),
+  probe('..() with no arguments passes the current argument values', '7', '/datum/pb/proc/f(x)', '\treturn x', '/datum/pb/c/f(x)', '\tx = 7', '\treturn ..()', RUN, '\tvar/datum/pb/c/o = new', '\treturn o.f(1)'),
+  probe('bare call resolves a global proc', '42', '/proc/global_probe_helper()', '\treturn 42', RUN, '\treturn global_probe_helper()'),
+  probe('global proc redefinition chains through ..()', '3', '/proc/gp()', '\treturn 1', '/proc/gp()', '\treturn ..() + 2', RUN, '\treturn gp()'),
+  probe('usr is assignable and flows into callees', '1', '/datum/probe/proc/who()', '\treturn usr', RUN, '\tusr = src', '\treturn who() == src'),
+  probe('call() proc reference', '6', '/datum/probe2', '\tproc/helper(x)', '\t\treturn x + 1', RUN, '\tvar/datum/probe2/a = new', '\treturn call(a, "helper")(5)'),
+  probe('undefined proc on a datum is a runtime error', 'ERROR', '/datum/probe2', RUN, '\tvar/datum/probe2/a = new', '\treturn a:nope()'),
+  probe('calling a proc on null is a runtime error', 'ERROR', '/datum/probe2/proc/f()', '\treturn 1', RUN, '\tvar/datum/probe2/a', '\treturn a.f()'),
+  probe('?. on null is null', 'null', '/datum/probe2/proc/f()', '\treturn 1', RUN, '\tvar/datum/probe2/a', '\treturn a?.f()'),
+  probe('try/catch catches runtime errors', 'caught', RUN, '\ttry', '\t\tvar/x = "a" - 1', '\tcatch(var/exception/e)', '\t\treturn "caught"', '\treturn "no"'),
+  probe('proc static locals persist across calls', '2', '/datum/probe/proc/count()', '\tvar/static/n = 0', '\tn++', '\treturn n', RUN, '\tcount()', '\treturn count()'),
+  probe('x++ evaluates to the old value', '15', RUN, '\tvar/x = 5', '\tvar/y = x++', '\treturn y + x + 4'),
+  probe('++x evaluates to the new value', '12', RUN, '\tvar/x = 5', '\tvar/y = ++x', '\treturn y + x'),
+  probe('break exits a C-style for', '2', RUN, '\tvar/count = 0', '\tfor (var/i = 1, i <= 10, i++)', '\t\tif (i == 3)', '\t\t\tbreak', '\t\tcount++', '\treturn count'),
+  probe('for(x in 1 to 3) sums', '6', RUN, '\tvar/s = 0', '\tfor (var/i in 1 to 3)', '\t\ts += i', '\treturn s'),
+  probe('for range with positive step', '9', RUN, '\tvar/s = 0', '\tfor (var/i = 1 to 6 step 2)', '\t\ts += i', '\treturn s'),
+  probe('for range with descending step', '9', RUN, '\tvar/s = 0', '\tfor (var/i = 5 to 1 step -2)', '\t\ts += i', '\treturn s'),
+  probe('for(var/type in L) visits only that type', '1', '/mob/p_mob', '/obj/p_obj', RUN, '\tvar/count = 0', '\tfor (var/mob/p_mob/M in list(new /mob/p_mob(), new /obj/p_obj()))', '\t\tcount++', '\treturn count'),
+  probe('switch with ranges', 'mid', RUN, '\tswitch (5)', '\t\tif (1 to 3)', '\t\t\treturn "low"', '\t\tif (4 to 6)', '\t\t\treturn "mid"', '\treturn "none"'),
+  probe('labeled continue', '3', RUN, '\tvar/count = 0', '\tvar/i = 0', '\touter:', '\t\twhile(i < 3)', '\t\t\ti += 1', '\t\t\tvar/j = 0', '\t\t\twhile(j < 3)', '\t\t\t\tj += 1', '\t\t\t\tif(j == 2)', '\t\t\t\t\tcontinue outer', '\t\t\t\tcount += 1', '\treturn count'),
+  probe('labeled break', '3', RUN, '\tvar/count = 0', '\touter:', '\t\twhile(count < 100)', '\t\t\tcount += 1', '\t\t\tif(count == 3)', '\t\t\t\tbreak outer', '\treturn count'),
+  probe('CRLF line endings parse', '6', `${RUN}\r`, '\tvar/x = 5\r', '\treturn x + 1\r'),
+
+  // ===== type tree =====
+  probe('type var defaults apply to new instances', '5', '/datum/pd', '\tvar/x = 5', RUN, '\tvar/datum/pd/p = new', '\treturn p.x'),
+  probe('subtype overrides a default', '7', '/datum/pd', '\tvar/x = 5', '/datum/pd/sub', '\tx = 7', RUN, '\tvar/datum/pd/p = new /datum/pd/sub', '\treturn p.x'),
+  probe('constant-folded default', '12', '/datum/pd', '\tvar/x = (1 << 2) | 8', RUN, '\tvar/datum/pd/p = new', '\treturn p.x'),
+  probe('list initializers are per instance', '0', '/datum/pd', '\tvar/list/L = list()', RUN, '\tvar/datum/pd/a = new', '\tvar/datum/pd/b = new', '\ta.L += 1', '\treturn b.L.len'),
+  probe('initial() reads the compile-time default', '7', '/datum/probe2', '\tvar/foo = 7', RUN, '\tvar/datum/probe2/a = new', '\ta.foo = 99', '\treturn initial(a.foo)'),
+  probe('parent_type reparents a type', '1', '/datum/pa', '\tvar/x = 1', '/datum/zz', '\tparent_type = /datum/pa', RUN, '\tvar/datum/zz/z = new', '\treturn z.x + istype(z, /datum/pa) - 1'),
+  probe('implicit new uses the declared type', '5', '/datum/pd', '\tvar/x = 5', RUN, '\tvar/datum/pd/p = new', '\treturn p.x'),
+  probe('new with a type held in a variable', '5', '/datum/pd', '\tvar/x = 5', RUN, '\tvar/t = /datum/pd', '\tvar/datum/pd/p = new t', '\treturn p.x'),
+  probe('New() receives the arguments', '9', '/datum/pn', '\tvar/arg', '\tNew(a)', '\t\targ = a', RUN, '\tvar/datum/pn/p = new(9)', '\treturn p.arg'),
+  probe('two new objects are distinct', '0', '/datum/probe2', RUN, '\tvar/a = new /datum/probe2()', '\tvar/b = new /datum/probe2()', '\treturn a == b'),
+  probe('.type reads the type path', '/datum/probe2', '/datum/probe2', RUN, '\tvar/datum/probe2/d = new', '\treturn d.type'),
+  probe('typesof() lists the type and its subtypes', '2', '/datum/probe_base', '/datum/probe_base/child', RUN, '\tvar/L = typesof(/datum/probe_base)', '\treturn L.len'),
+  probe('istype() follows the tree', '1', '/obj/item', '/obj/item/tool', RUN, '\tvar/obj/item/tool/t = new', '\treturn istype(t, /obj/item) && !istype(t, /mob)'),
+  probe('ismob() on a mob instance', '1', '/mob/probe_mob', RUN, '\tvar/m = new /mob/probe_mob()', '\treturn ismob(m)'),
+  probe('istype(null, /datum) is false', '0', RUN, '\treturn istype(null, /datum)'),
+  probe('ispath("x") is 0', '0', RUN, '\treturn ispath("x")'),
+  probe('ispath(/obj) is 1', '1', RUN, '\treturn ispath(/obj)'),
+  probe('ispath subtype check', '1', '/obj/item', RUN, '\treturn ispath(/obj/item, /obj)'),
+  probe('ispath base is not within a subtype', '0', '/obj/item', RUN, '\treturn ispath(/obj, /obj/item)'),
+  probe('atom builtin defaults', '5', RUN, '\tvar/obj/o = new', '\treturn o.dir + o.layer + length(o.contents)'),
+  probe('loc and contents stay in sync', '1', RUN, '\tvar/obj/box = new', '\tvar/obj/item = new(box)', '\treturn item.loc == box && (item in box.contents)'),
+  probe('moving out updates the old contents', '0', RUN, '\tvar/obj/box = new', '\tvar/obj/item = new(box)', '\titem.loc = null', '\treturn length(box.contents)'),
+  probe('deleted references read as null', '1', RUN, '\tvar/datum/d = new', '\tvar/datum/e = d', '\tdel d', '\treturn isnull(e)'),
+  probe('operator overloads', '3', '/datum/vec', '\tvar/v = 1', '\tproc/operator+(datum/vec/other)', '\t\tvar/datum/vec/r = new', '\t\tr.v = v + other.v', '\t\treturn r', RUN, '\tvar/datum/vec/a = new', '\tvar/datum/vec/b = new', '\tb.v = 2', '\tvar/datum/vec/c = a + b', '\treturn c.v'),
+  probe('as /type keeps the object', '0', '/datum/probe2', RUN, '\tvar/a = new /datum/probe2()', '\tvar/b = a as /datum/probe2', '\treturn b == null'),
+
+  // ===== scheduler =====
+  probe('sleep and spawn interleave by world.time', 'abc', '/datum/probe', '\tvar/list/log', RUN, '\tlog = list()', '\tspawn(5)', '\t\tlog += "b"', '\tlog += "a"', '\tsleep(10)', '\tlog += "c"', '\treturn jointext(log, "")'),
+  probe('spawn runs with a copy of the locals', '1', '/datum/probe', '\tvar/list/log', RUN, '\tlog = list()', '\tvar/x = 1', '\tspawn(1)', '\t\tlog += "[x]"', '\tx = 2', '\tsleep(2)', '\treturn jointext(log, "")'),
+  probe('world.time advances across sleep', '5', RUN, '\tvar/t = world.time', '\tsleep(5)', '\treturn world.time - t'),
+  probe('world.time starts at 0', '0', RUN, '\treturn world.time'),
+  probe('a sleeping callee suspends the caller', 'xy', '/datum/probe', '\tvar/list/log', '/datum/probe/proc/slow()', '\tsleep(5)', '\tlog += "x"', RUN, '\tlog = list()', '\tslow()', '\tlog += "y"', '\treturn jointext(log, "")'),
+  probe('set waitfor = 0 returns at the first sleep', 'rs', '/datum/probe', '\tvar/list/log', '/datum/probe/proc/slow()', '\tset waitfor = 0', '\tsleep(10)', '\tlog += "s"', RUN, '\tlog = list()', '\tslow()', '\tlog += "r"', '\tsleep(20)', '\treturn jointext(log, "")'),
+  probe('return inside spawn exits the block', '1', RUN, '\tvar/x = 1', '\tspawn(0)', '\t\treturn', '\treturn x'),
+
+  // ===== globals =====
+  probe('global var default', '5', '/var/global/counter = 5', RUN, '\treturn counter'),
+  probe('global. prefix', '5', '/var/global/counter = 5', RUN, '\treturn global.counter'),
+  probe('global write persists across procs', '9', '/var/global/gx = 0', '/datum/probe/proc/helper()', '\treturn gx', RUN, '\tgx = 9', '\treturn helper()'),
+  probe('global initializer references an earlier global', '5', '/var/global/ga = 2', '/var/global/gb = ga + 3', RUN, '\treturn gb'),
+  probe('global list += appends', '1', '/var/global/list/items = list()', RUN, '\titems += "z"', '\treturn items.len'),
+  probe('global initialized with new', '1', '/datum/probe2', '/var/global/datum/probe2/gobj = new /datum/probe2()', RUN, '\treturn gobj != null'),
+
+  // ===== builtins =====
+  probe('findtext is 1-based', '2', RUN, '\treturn findtext("abc", "b")'),
+  probe('findtext is case-insensitive', '2', RUN, '\treturn findtext("ABC", "b")'),
+  probe('findtext with an empty needle is 0', '0', RUN, '\treturn findtext("abc", "")'),
+  probe('text2num handles hex', '31', RUN, '\treturn text2num("0x1F")'),
+  probe('text2num radix 16', '31', RUN, '\treturn text2num("1F", 16)'),
+  probe('num2text of an integer', '42', RUN, '\treturn num2text(42)'),
+  probe('replacetext', 'bbb', RUN, '\treturn replacetext("aaa", "a", "b")'),
+  probe('replacetextEx is case-sensitive', 'acbc', RUN, '\treturn replacetextEx("aXbX", "X", "c")'),
+  probe('nameof() returns the final path segment', 'run', RUN, '\treturn nameof(/datum/probe/proc/run)'),
+  probe('turn() is counter-clockwise', '1', RUN, '\treturn turn(4, 90)'),
+  probe('splittext()', '3', RUN, '\tvar/list/L = splittext("a,b,c", ",")', '\treturn L.len'),
+  probe('jointext()', 'a-b-c', RUN, '\treturn jointext(list("a", "b", "c"), "-")'),
+  probe('rgb() is lowercase hex', '#ff0080', RUN, '\treturn rgb(255, 0, 128)'),
+  probe('floor()', '3', RUN, '\treturn floor(3.7)'),
+  probe('ceil()', '4', RUN, '\treturn ceil(3.2)'),
+  probe('sqrt()', '4', RUN, '\treturn sqrt(16)'),
+  probe('sin() takes degrees', '50', RUN, '\treturn round(sin(30) * 100)'),
+  probe('cos() takes degrees', '50', RUN, '\treturn round(cos(60) * 100)'),
+  probe('sign()', '-1', RUN, '\treturn sign(-5)'),
+  probe('sign() of text is 0', '0', RUN, '\treturn sign("-3")'),
+  probe('copytext_char()', 'el', RUN, '\treturn copytext_char("hello", 2, 4)'),
+  probe('length_char()', '5', RUN, '\treturn length_char("hello")'),
+  probe('text2ascii()', '65', RUN, '\treturn text2ascii("A")'),
+  probe('ascii2text()', 'A', RUN, '\treturn ascii2text(65)'),
+  probe('ckey() keeps [a-z0-9@]', 'mything2', RUN, '\treturn ckey("My_Thing #2!")'),
+  probe('sorttext() returns 1 for ascending order', '-1', RUN, '\treturn sorttext("b", "A")'),
+  probe('html_encode()', '&lt;b&gt;', RUN, '\treturn html_encode("<b>")'),
+  probe('html_decode()', '<b>', RUN, '\treturn html_decode("&lt;b&gt;")'),
+  probe('rgb2num(r, g, b)', '16744448', RUN, '\treturn rgb2num(255, 128, 0)'),
+  probe('rgb2num("#hex") channels', '255,128,0', RUN, '\tvar/list/c = rgb2num("#ff8000")', '\treturn "[c[1]],[c[2]],[c[3]]"'),
+  probe('large numbers render with 6 significant digits', '2.55128e+08', RUN, '\treturn "[255128000]"'),
+  probe('json_encode()', '[1,"two",null]', RUN, '\treturn json_encode(list(1, "two", null))'),
+  probe('json_encode() escapes', '["a\\"b","c\\\\d","e\\nf","a\\tb"]', RUN, '\treturn json_encode(list("a\\"b", "c\\\\d", "e\\nf", "a\\tb"))'),
+  probe('json_decode()', '1', RUN, '\tvar/list/L = json_decode("{\\"a\\": 1}")', '\treturn L["a"]'),
+  probe('params2list URL-decodes', 'b c', RUN, '\tvar/list/L = params2list("a=b%20c")', '\treturn L["a"]'),
+  probe('time2text()', '00:01:40', RUN, '\treturn time2text(1000, "hh:mm:ss")'),
+  probe('length counts code points', '3', RUN, '\treturn length("a😀b")'),
+  probe('copytext by code points', '😀', RUN, '\treturn copytext("a😀b", 2, 3)'),
+  probe('copytext with end 0', 'abc', RUN, '\treturn copytext("abc", 1, 0)'),
+  probe('copytext with negative end', 'b', RUN, '\treturn copytext("abc", 2, -1)'),
+  probe('copytext with start 0', 'abc', RUN, '\treturn copytext("abc", 0)'),
+  probe('\\x and \\u escapes', 'AA', RUN, '\treturn "\\x41\\u0041"'),
+  probe('arctan() returns degrees', '450', RUN, '\treturn round(arctan(1) * 10)'),
+  probe('regex Find', '3', RUN, '\tvar/regex/re = regex("b+")', '\treturn re.Find("xabbb")'),
+  probe('regex Replace', 'xaZ', RUN, '\tvar/regex/re = regex("b+")', '\treturn re.Replace("xabbb", "Z")'),
+  probe('regex_quote()', 'a\\.b', RUN, '\treturn regex_quote("a.b")'),
+  probe('findlasttext()', '5', RUN, '\treturn findlasttext("abcabc", "b")'),
+  probe('values_sum()', '6', RUN, '\treturn values_sum(list(1, 2, 3))'),
+  probe('roll("1d1")', '1', RUN, '\treturn roll("1d1")'),
+  probe('world.view + world.tick_lag', '6', RUN, '\treturn world.view + world.tick_lag'),
+  probe('ref() is stable and unique', '1', '/datum/probe2', RUN, '\tvar/a = new /datum/probe2()', '\tvar/b = new /datum/probe2()', '\treturn ref(a) == ref(a) && ref(a) != ref(b)'),
+  probe('image() vars', '5', RUN, "\tvar/image/i = image('icons/x.dmi', null, \"on\", 4, 1)", '\treturn i.layer + i.dir'),
+  probe('sound() vars', '53', RUN, '\tvar/sound/s = sound(null, 0, 0, 50, 3)', '\treturn s.volume + s.channel'),
+  probe('matrix Scale (x\' = a*x + b*y + c)', '5', RUN, '\tvar/matrix/m = matrix()', '\tm.Scale(2, 3)', '\treturn m.a + m.e'),
+  probe('matrix Translate', '30', RUN, '\tvar/matrix/m = matrix()', '\tm.Translate(10, 20)', '\treturn m.c + m.f'),
+  probe('splicetext()', 'aef', RUN, '\treturn splicetext("abcdef", 2, 4)'),
+
+  // ===== files (seeded in the probe working directory) =====
+  { ...probe('fdel() on a missing file returns 0', '0', RUN, '\treturn fdel("probe_missing.txt")') },
+  { ...probe('fexists() for a seeded file', '1', RUN, '\treturn fexists("probe_seed.txt")'), files: { 'probe_seed.txt': 'seed content' } },
+  { ...probe('fdel() deletes a file', '1', RUN, '\treturn fdel("probe_del.txt")'), files: { 'probe_del.txt': 'delete me' } },
+  { ...probe('file() values are files', '1', RUN, '\tvar/f = file("probe_seed.txt")', '\treturn isfile(f)'), files: { 'probe_seed.txt': 'seed content' } },
+  { ...probe('length(file) is the byte size', '12', RUN, '\treturn length(file("probe_seed.txt"))'), files: { 'probe_seed.txt': 'seed content' } },
 ];
 
 function assert(condition: boolean, message: string): void {
@@ -908,38 +262,64 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
-function emitConverted(dmCode: string, outDir: string): void {
+function emitProbe(dmCode: string, ns: string): string {
   const collector = new DiagnosticCollector();
-  const pp = new DMPreprocessor(collector);
-  const pre = pp.process(dmCode, 'probe.dm');
+  const pre = new DMPreprocessor(collector).process(dmCode, 'probe.dm');
   const parser = new DMParser(new DMLexer(pre).tokenize(), collector);
   const nodes = parser.parse();
   assert(collector.errors.length === 0, `Probe failed to parse: ${collector.errors[0]?.message ?? 'unknown'}`);
+  const symbols = new SymbolTable();
+  symbols.addTypeDecls(nodes);
   const ir = new DMIRGenerator().generateIR(nodes);
-  const emitter = new CSharpEmitter();
-  fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, 'ConvertedDMProcs.cs'), emitter.generateProcsCS(ir, parser.globalVars), 'utf-8');
+  return new CSharpEmitter({ namespace: ns }).generateProcsCS(ir, parser.globalVars, symbols);
 }
 
-const DRIVER = `using System;
+function driver(count: number): string {
+  const cases = Array.from({ length: count }, (_, i) =>
+    `            Console.WriteLine("PROBE_RESULT_${i}:" + Escape(Run(Probe${i}.ConvertedDMProcs.Boot)));`).join('\n');
+  return `using System;
+using System.Threading.Tasks;
 using SS13.DM.Runtime;
-using Content.Server.DM;
 
-class ProbeDriver
+static class ProbeDriver
 {
+    static string Escape(string s) => s.Replace("\\\\", "\\\\\\\\").Replace("\\n", "\\\\n");
+
+    static string Run(Func<Task> boot)
+    {
+        DMRuntimeHelpers.ResetRuntime();
+        DMTickScheduler.ErrorSink = (_, _) => { };
+        DMRuntimeHelpers.OutputSink = (_, _) => { };
+        Task<DMValue>? task = null;
+        try
+        {
+            task = DMTickScheduler.Run(async () =>
+            {
+                await boot();
+                var probe = new DMRuntime(DMTypes.GetOrThrow("/datum/probe"));
+                await probe.RunInitializers();
+                return await probe.CallProc("run");
+            });
+            DMTickScheduler.RunUntilIdle();
+        }
+        catch (Exception e)
+        {
+            return "ERROR: " + e.Message;
+        }
+        if (!task.IsCompleted) return "(did not finish)";
+        if (task.IsFaulted) return "ERROR: " + (task.Exception!.InnerException ?? task.Exception).Message;
+        return task.Result.Repr();
+    }
+
     static void Main()
     {
-        var datum = new DMRuntime { DMTypePath = "/datum/probe" };
-        ConvertedDMProcs.RegisterProcs();
-        var res = datum.CallProc("run").Result;
-        Console.WriteLine("PROBE_RESULT:" + res.ToString());
+${cases}
     }
 }
 `;
+}
 
 async function main(): Promise<void> {
-  // WS13-10: missing dotnet must SKIP gracefully, not hard-fail — execSync
-  // throws when the binary is absent.
   try {
     execSync('dotnet --version', { stdio: 'pipe' });
   } catch {
@@ -948,67 +328,59 @@ async function main(): Promise<void> {
   }
 
   const scratch = path.join(os.tmpdir(), 'dm2ss14-fidelity');
-  if (fs.existsSync(scratch)) fs.rmSync(scratch, { recursive: true, force: true });
+  fs.rmSync(scratch, { recursive: true, force: true });
   fs.mkdirSync(scratch, { recursive: true });
-
-  // Engine-free probe project: the SS13.DM.Runtime sources + the generated
-  // proc file + a driver. No RobustToolbox needed — the runtime is pure C#.
-  const csproj = `<Project Sdk="Microsoft.NET.Sdk">
+  fs.writeFileSync(path.join(scratch, 'ProbeDriver.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <NoWarn>CS0162;CS0164;CS0168;CS0219;CS1998;CS8321;CS8600;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
   </PropertyGroup>
-</Project>`;
-  fs.writeFileSync(path.join(scratch, 'ProbeDriver.csproj'), csproj, 'utf-8');
-  for (const f of DMRuntimeCS.getRuntimeCSFiles()) {
-    fs.writeFileSync(path.join(scratch, f.filename), f.content, 'utf-8');
-  }
-  fs.writeFileSync(path.join(scratch, 'Program.cs'), DRIVER, 'utf-8');
+</Project>`, 'utf-8');
+  for (const f of DMRuntimeCS.getRuntimeCSFiles()) fs.writeFileSync(path.join(scratch, f.filename), f.content, 'utf-8');
 
-  console.log('=== Semantic Differential Probes (expected = BYOND, observed = converted) ===');
+  PROBES.forEach((p, i) => {
+    fs.writeFileSync(path.join(scratch, `Probe${i}.cs`), emitProbe(p.dm, `Probe${i}`), 'utf-8');
+    for (const [name, content] of Object.entries(p.files ?? {})) fs.writeFileSync(path.join(scratch, name), content, 'utf-8');
+  });
+  fs.writeFileSync(path.join(scratch, 'Program.cs'), driver(PROBES.length), 'utf-8');
+
+  console.log(`=== Semantic Differential Probes: ${PROBES.length} (expected = BYOND, observed = converted) ===`);
+  let output: string;
+  try {
+    output = execSync('dotnet run --project ProbeDriver.csproj --nologo -v q', {
+      cwd: scratch, timeout: 600000, maxBuffer: 64 * 1024 * 1024, stdio: 'pipe',
+      env: { ...process.env, DOTNET_ROLL_FORWARD: 'LatestMajor' }
+    }).toString();
+  } catch (e: any) {
+    output = (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '');
+    const errors = output.split('\n').filter(l => l.includes('error CS'));
+    if (errors.length > 0) {
+      console.log(`❌ probe build failed (${errors.length} errors):`);
+      for (const l of [...new Set(errors)].slice(0, 25)) console.log('   ' + l.replace(scratch + '/', ''));
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   let matches = 0;
-  const results: { name: string; expected: string; observed: string; match: boolean }[] = [];
-
-  for (const probe of PROBES) {
-    emitConverted(probe.dm, scratch);
-    if (probe.files) {
-      for (const [name, content] of Object.entries(probe.files)) {
-        fs.writeFileSync(path.join(scratch, name), content, 'utf-8');
-      }
-    }
-    let output: string;
-    try {
-      output = execSync('dotnet run --project ProbeDriver.csproj --nologo -v q', {
-        cwd: scratch,
-        timeout: 300000,
-        maxBuffer: 16 * 1024 * 1024,
-        stdio: 'pipe',
-        env: { ...process.env, DOTNET_ROLL_FORWARD: 'LatestMajor' }
-      }).toString();
-    } catch (e: any) {
-      output = (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '');
-      const compileErrors = output.split('\n').filter(l => l.includes('error CS')).slice(0, 3);
-      const match = false;
-      const failure = e.killed || e.signal ? `TIMED OUT after 300s (killed=${e.killed})` : (compileErrors.length > 0 ? `BUILD FAILED: ${compileErrors.join('; ')}` : `FAILED: ${e.message ?? e.code ?? 'no output'}`);
-      results.push({ name: probe.name, expected: probe.expected, observed: failure, match });
-      console.log(`❌ ${probe.name}  (expected ${probe.expected}) — ${failure}`);
-      continue;
-    }
-    const m = output.match(/PROBE_RESULT:(.*)$/m);
-    const observed = m ? m[1] : '(no result)';
-    const match = observed === probe.expected;
+  PROBES.forEach((p, i) => {
+    const m = output.match(new RegExp(`^PROBE_RESULT_${i}:(.*)$`, 'm'));
+    const observed = m ? m[1].replace(/\\(\\|n)/g, (_, c) => (c === 'n' ? '\n' : '\\')) : '(no result)';
+    const match = p.expected === 'ERROR' ? observed.startsWith('ERROR') : observed === p.expected;
     if (match) matches++;
-    results.push({ name: probe.name, expected: probe.expected, observed, match });
-    console.log(`${match ? '✅' : '❌'} ${probe.name}  (expected ${probe.expected}, observed ${observed})`);
-  }
-
+    console.log(`${match ? '✅' : '❌'} ${p.name}  (expected ${p.expected}, observed ${observed})`);
+  });
   console.log(`\n=== Summary: ${matches}/${PROBES.length} probes preserved DM semantics ===`);
   console.log(`Scratch project kept at: ${scratch}`);
+  if (matches !== PROBES.length) process.exitCode = 1;
 }
 
-main().catch(err => {
-  console.error('Probe error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Probe error:', err);
+    process.exit(1);
+  });
+}
