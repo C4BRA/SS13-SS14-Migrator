@@ -243,7 +243,7 @@ body {
   var browserCard = $("browserCard"), browseRoot = $("browseRoot"), browseBtn = $("browseBtn");
   var breadcrumb = $("breadcrumb"), treeList = $("treeList");
   var fileViewer = $("fileViewer"), fileName = $("fileName"), fileSize = $("fileSize"), fileText = $("fileText");
-  var selectedFile = null, dragCounter = 0, es = null, converting = false;
+  var selectedFile = null, dragCounter = 0, es = null, converting = false, doneHandled = false;
   var convertStart = 0, elapsedTimer = null, browseRel = "";
 
   function esc(s) {
@@ -339,9 +339,19 @@ body {
       if (msg.t === "log") {
         log(msg.line, logLevelCls(msg.level, msg.line));
         watchStageLine(msg.line);
+      } else if (msg.t === "running") {
+        // Connected while a run is in flight — resume the busy UI so the
+        // streamed lines land on a live stage bar and Cancel is offered.
+        setBusy(true);
+      } else if (msg.t === "done") {
+        // A run we believe is in flight finished — only possible on a page
+        // that joined mid-run (e.g. after reload); the run's own page settles
+        // via the fetch response first and marks doneHandled.
+        if (converting) finishRunUI(msg);
       } else if (msg.t === "start" && !msg.replay) {
         // A new run began after we connected — drop the previous run's
         // replayed history so the box shows this run only.
+        doneHandled = false;
         logBox.innerHTML = "";
       }
     };
@@ -383,8 +393,41 @@ body {
     summaryCard.className = "card visible";
   }
 
+  // Applies a finished run's result to the UI, once. Called by the convert
+  // fetch response and by the SSE 'done' event — whichever lands first wins,
+  // so a page that joined mid-run renders the same end state.
+  function finishRunUI(data) {
+    if (doneHandled) return;
+    doneHandled = true;
+    if (data.success) {
+      progressFill.style.width = "100%";
+      progressStage.textContent = "Done";
+      log("");
+      log("[SUCCESS] Transpilation complete! Output saved.");
+      renderSummary(data.summary);
+      successCard.className = "success-card visible";
+      successPath.textContent = data.outputDir;
+      browseRoot.value = data.outputDir;
+      browserCard.className = "card visible";
+      loadTree("");
+    } else if (data.cancelled) {
+      log("");
+      log("[CANCELLED] Conversion cancelled by user.", "l-err");
+      progressStage.textContent = "Cancelled";
+    } else {
+      log("");
+      log("[ERROR] " + (data.error || "Failed"), "l-err");
+      progressStage.textContent = "Failed";
+    }
+    // Hold the busy state a beat: a Cancel click that lands just after the
+    // run ends would otherwise hit the re-enabled Convert button and start
+    // an unintended run.
+    setTimeout(function() { setBusy(false); }, 700);
+  }
+
   convertBtn.addEventListener("click", async function() {
     if (!selectedFile || converting) return;
+    doneHandled = false;
     setBusy(true);
     logBox.style.display = "block";
     logBox.innerHTML = "";
@@ -392,8 +435,6 @@ body {
     summaryCard.className = "card";
     progressFill.style.width = "0%";
     progressStage.textContent = "Uploading archive\u2026";
-
-    openEvents();
 
     var formData = new FormData();
     formData.append("file", selectedFile);
@@ -403,33 +444,9 @@ body {
     try {
       var res = await fetch("/api/convert", { method: "POST", headers: { "X-Auth-Token": AUTH_TOKEN }, body: formData });
       var data = await res.json();
-      if (data.success) {
-        progressFill.style.width = "100%";
-        progressStage.textContent = "Done";
-        log("");
-        log("[SUCCESS] Transpilation complete! Output saved.");
-        renderSummary(data.summary);
-        successCard.className = "success-card visible";
-        successPath.textContent = data.outputDir;
-        browseRoot.value = data.outputDir;
-        browserCard.className = "card visible";
-        loadTree("");
-      } else if (data.cancelled) {
-        log("");
-        log("[CANCELLED] Conversion cancelled by user.", "l-err");
-        progressStage.textContent = "Cancelled";
-      } else {
-        log("");
-        log("[ERROR] " + (data.error || "Failed"), "l-err");
-        progressStage.textContent = "Failed";
-      }
+      finishRunUI(data);
     } catch (err) {
-      log("");
-      log("[ERROR] " + err.message, "l-err");
-      progressStage.textContent = "Failed";
-    } finally {
-      if (es) { es.close(); es = null; }
-      setBusy(false);
+      finishRunUI({ success: false, error: err.message });
     }
   });
 
@@ -542,6 +559,11 @@ body {
       fileText.textContent = err.message;
     });
   }
+
+  // One EventSource for the page's lifetime: on connect the server replays
+  // the buffered log (and 'done' if the last run finished, or 'running' when
+  // a convert is in flight), so reloads resume instead of going blank.
+  openEvents();
 })();
 </script>
 </body>

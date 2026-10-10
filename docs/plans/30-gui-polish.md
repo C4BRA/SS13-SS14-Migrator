@@ -29,7 +29,7 @@ forwarded and re-printed on the server console.
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/events` | SSE: `{t:'start'}` on run begin (`{replay:true}` marker on connect), `{t:'log'}` per line, `{t:'done'}` at finish. Token via `?token=` (EventSource can't set headers). Replay buffer 5000 lines; mid-flight joiners catch up, late joiners get history + `done`. |
+| `GET /api/events` | SSE: `{t:'start'}` on run begin (`{replay:true}` marker on connect), `{t:'running'}` when a convert is in flight, `{t:'log'}` per line, `{t:'done'}` at finish. Token via `?token=` (EventSource can't set headers). Replay buffer 5000 lines; mid-flight joiners catch up, late joiners get history + `done`. |
 | `POST /api/cancel` | 409 when idle; otherwise sets the cancelled flag + terminates the worker. The pending `/api/convert` resolves `{cancelled:true}` from the worker `exit` event — one code path finishes every outcome. |
 | `GET /api/tree` | `root`+`path`; entries `{name,dir,size}` dirs-first, 5000-entry cap. |
 | `GET /api/file` | `root`+`path`; first 256 KB text, `truncated`/`binary` flags. |
@@ -52,6 +52,11 @@ first live drive.
 
 - **Live log tail**: SSE-driven; stage tracker reads the pipeline's own
   `[N/5]` markers into a progress bar + elapsed timer. No more fake stages.
+  The EventSource is opened once on page load and kept for the page's
+  lifetime — a reload replays the buffered log and a `{t:'running'}` marker
+  resumes the busy UI mid-run; `{t:'done'}` and the fetch response share one
+  idempotent `finishRunUI` path so a rejoined page renders the same end
+  state.
 - **Fidelity summary card**: tiles for input files (`.dm/.dmi/.dmm` counted
   from the zip), DM types, globals, procs emitted (`ProcRegistry.Register(`
   lines in emitted `.cs`), emitted file counts (prototype YAML, `.cs`, `.rsi`
@@ -60,7 +65,9 @@ first live drive.
   walked off disk — absent metrics render as no tile, never invented.
 - **Jobs picker**: Auto (core count) / 1 / 4 / 8 → `--jobs` equivalent.
 - **Cancel**: visible only mid-flight; cancel → terminate → `[CANCELLED]` in
-  the log; partial output is left on disk (not silently deleted).
+  the log; partial output is left on disk (not silently deleted). The busy
+  state is held ~700ms at run end so a just-landed Cancel click can't fall
+  through onto the re-enabled Convert button and start an unintended run.
 - **Output browser**: root field (defaults to the output dir after a
   convert, editable to any dir under `$HOME`), breadcrumb, `..` row, dirs +
   file sizes, text preview for any file (binaries flagged).
@@ -79,13 +86,17 @@ first live drive.
   - 5000-file synthetic corpus at jobs=1: cancelled mid-stage-2, worker
     terminated, `[CANCELLED]` shown, Convert re-enabled — no second job
     state leak (429 guard unchanged).
+  - Reload checks: idle reload replays the buffered log + final stage;
+    mid-run reload resumes Converting/Cancel via `running` and settles on
+    the SSE `done`. Independent agent verification over real Chrome
+    confirmed all five features and caught the pre-fix replay gap.
 
 ## Known limits
 
 - Output dir for a cancelled run keeps whatever stage-1 bootstrap wrote —
   reported, not auto-cleaned (partial trees can be useful and deleting is
   the destructive default).
-- Log buffer caps at 5000 lines per run in the client DOM too; corpus-scale
+- Log buffer caps at 5000 lines (SSE replay) and 3000 DOM nodes; corpus-scale
   warning floods truncate oldest lines.
 - `dm2ss14 serve`/`:7780` in older task notes is stale — the entry point is
   `node dist/cli.js gui` on `:3456` (`cli.ts` is outside this item's scope).

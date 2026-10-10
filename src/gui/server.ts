@@ -281,6 +281,11 @@ export class GUIServer {
     // a terminal event if the last run already finished. A 'start' marker
     // first lets the client tell replayed history from live lines.
     res.write(`data: ${JSON.stringify({ t: 'start', replay: true })}\n\n`);
+    if (this.convertInFlight) {
+      // Lets a page that (re)loaded mid-run resume its busy UI before the
+      // buffered lines pour in; 'done' is not sent while a run is live.
+      res.write(`data: ${JSON.stringify({ t: 'running' })}\n\n`);
+    }
     for (const ev of this.logEvents) {
       res.write(`data: ${JSON.stringify({ t: 'log', level: ev.level, line: ev.line })}\n\n`);
     }
