@@ -285,11 +285,40 @@ namespace SS13.DM.Runtime
             return DMValue.FromNumber(0);
         }
 
-        // DM output operator: world << "text" / usr << x
+        // DM 'x << y' dispatch (item 72, B-4): the emitter sends every
+        // variable/property << here and the runtime picks the semantics by
+        // the LHS type — BYOND << is output only for client-capable
+        // targets (client/mob/world/datums), list-append for lists, and a
+        // plain bitwise shift otherwise. Datum and list cases return the
+        // TARGET so 'usr << a << b' chains and 'x = (x << y)' writes back
+        // safely; the shift case returns the shifted value for writeback.
         public static DMValue Output(DMValue target, DMValue message)
         {
-            Console.WriteLine($"[DM] {target} << {message}");
-            return message;
+            // list << x appends (BYOND: 'L << x' == 'L += x'), honoring the
+            // runtime's copy-on-write rule (clone when shared).
+            if (target.Type == DMValueType.List && target.ListValue != null)
+            {
+                var list = target.ListValue;
+                if (list.RefCount > 1)
+                {
+                    list = list.Clone();
+                    list.RefCount = 1;
+                }
+                list.Add(message);
+                return FromList(list);
+            }
+            // Datum output: engine bridge when set (player consoles/server
+            // log — see ConvertedDMSystem), else stdout.
+            if (target.Type == DMValueType.DatumRef)
+            {
+                if (DMVerbRuntime.OutputBridge != null)
+                    DMVerbRuntime.OutputBridge(target, message);
+                else
+                    Console.WriteLine($"[DM] {target} << {message}");
+                return target;
+            }
+            // x << n where x is anything else: bitwise shift.
+            return ShiftLeft(target, message);
         }
 
         // Implicit conversions
@@ -741,6 +770,34 @@ namespace SS13.DM.Runtime
             }
             handler = null!;
             return false;
+        }
+
+        // ==== B-4 verbs/input (item 72) ====
+
+        /// <summary>
+        /// Every proc name registered for a type, walking ancestors so the
+        /// verb list reflects what the datum can actually be asked to run
+        /// (dmverbs listing / command completion). Exact-path wins on
+        /// duplicate names — the same precedence CallProc uses.
+        /// </summary>
+        public static List<string> EnumerateProcs(string typePath)
+        {
+            var names = new List<string>();
+            var seen = new HashSet<string>();
+            var path = typePath.ToLowerInvariant();
+            while (true)
+            {
+                foreach (var kv in Procs)
+                {
+                    if (kv.Key.TypePath != path) continue;
+                    if (seen.Add(kv.Key.Name)) names.Add(kv.Key.Name);
+                }
+                var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0) break;
+                parts = parts[..^1];
+                path = "/" + string.Join("/", parts);
+            }
+            return names;
         }
     }
 }
@@ -2290,7 +2347,16 @@ namespace SS13.DM.Runtime
         /// DM output(msg, target): sends text to a client UI element; the
         /// engine-free runtime has no client — Null (item 67).
         /// </summary>
-        public static DMValue Output(params DMValue[] args) => DMValue.Null;
+        // B-4 (item 72): output(control, message, ...) has no skin control to
+        // target; route the message through the real << output path so it
+        // reaches the calling player's session console instead of vanishing.
+        public static DMValue Output(params DMValue[] args)
+        {
+            if (args.Length >= 2)
+                DMValue.Output(DMRuntimeHelpers.CurrentUsr.Type == DMValueType.DatumRef
+                    ? DMRuntimeHelpers.CurrentUsr : DMRuntimeHelpers.WorldValue, args[1]);
+            return DMValue.Null;
+        }
 
         private static DMValue MobScan(DMValue center, DMValue distValue, bool includeCenter)
         {
@@ -2669,6 +2735,10 @@ namespace SS13.DM.Runtime
         public static DMValue Animate(params DMValue[] args) => DMValue.Null;
         public static DMValue Flick(params DMValue[] args) => DMValue.Null;
         public static DMValue Browse(params DMValue[] args) => DMValue.Null;
+        // B-4 (item 72): skin/window verbs stay stubs — no DM skin in the
+        // converted client (browse/topic equivalents go through dmtopic).
+        public static DMValue Winset(params DMValue[] args) => DMValue.Null;
+        public static DMValue Winget(params DMValue[] args) => DMValue.Null;
         public static DMValue CallExt(params DMValue[] args) => DMValue.Null;
         public static DMValue DetectRustG(params DMValue[] args) => DMValue.FromNumber(0);
 
@@ -4109,6 +4179,142 @@ namespace SS13.DM.Runtime
                 default:
                     return a.Type == DMValueType.Null ? DMValue.Null : a;
             }
+        }
+    }
+
+    // ==== B-4 verbs/input (item 72) ====
+
+    /// <summary>
+    /// Verb/input runtime support (PLAN item 72, B-4). Engine-free: the
+    /// generated Content.Server.DM adapter installs the engine-side
+    /// implementations (OutputBridge -> player consoles/server log).
+    ///
+    /// DM verb semantics: a '/type/verb/name' declaration registers under
+    /// the same (type, name) key as a proc, so verb dispatch is proc
+    /// dispatch. What makes a call a *verb* invocation is the usr binding:
+    /// BYOND sets usr to the mob that ran the command, which differs from
+    /// src whenever the verb lives on another atom (obj/turf verbs). The
+    /// command bridge calls CallVerbAsUsr(target, usrMob, name, args).
+    /// </summary>
+    public static class DMVerbRuntime
+    {
+        /// <summary>
+        /// Engine output sink for 'x << msg' on datum targets (world/mob/
+        /// client). Null engine-free: DMValue.Output falls back to stdout.
+        /// </summary>
+        public static Action<DMValue, DMValue>? OutputBridge;
+
+        /// <summary>
+        /// Invoke proc 'procName' on 'target' with DM verb semantics:
+        /// src = target, usr = the mob that ran the command. Mirrors
+        /// DMRuntime.CallProc's registry walk (exact -> inherited -> /proc
+        /// fallback) but keeps 'usr' bound to the caller instead of
+        /// rebinding it to the receiver.
+        /// </summary>
+        public static async Task<DMValue> CallVerbAsUsr(DMRuntime target, DMRuntime usr, string procName, params DMValue[] args)
+        {
+            // arglist-style single-assoc-list calls bind named entries to the
+            // callee's parameter names (same rule DMRuntime.CallProc uses).
+            if (args.Length == 1 && args[0].Type == DMValueType.List && args[0].ListValue.AssocEntries.Count > 0)
+            {
+                var list = args[0].ListValue;
+                var names = ProcRegistry.GetParamNames(target.DMTypePath, procName)
+                            ?? ProcRegistry.GetParamNames("/proc", procName);
+                if (names != null && names.Length > 0)
+                {
+                    var reordered = new DMValue[names.Length];
+                    for (var i = 0; i < reordered.Length; i++) reordered[i] = DMValue.Null;
+                    for (var i = 1; i <= list.PositionalCount && i <= names.Length; i++) reordered[i - 1] = list.Get(i);
+                    foreach (var kv in list.AssocEntries)
+                    {
+                        for (var i = 0; i < names.Length; i++)
+                        {
+                            if (string.Equals(names[i], kv.Key, StringComparison.OrdinalIgnoreCase))
+                            {
+                                reordered[i] = kv.Value;
+                                break;
+                            }
+                        }
+                    }
+                    args = reordered;
+                }
+            }
+            if (!ProcRegistry.TryGet(target.DMTypePath, procName, out var handler)
+                && !ProcRegistry.TryGetInherited(target.DMTypePath, procName, out handler)
+                && !ProcRegistry.TryGet("/proc", procName, out handler))
+            {
+                return DMValue.Null;
+            }
+            var previousUsr = DMRuntimeHelpers.CurrentUsr;
+            DMRuntimeHelpers.CurrentUsr = DMValue.FromDatum(usr);
+            try
+            {
+                return await handler(target, args);
+            }
+            finally
+            {
+                DMRuntimeHelpers.CurrentUsr = previousUsr;
+            }
+        }
+
+        /// <summary>
+        /// True when the datum can answer 'procName' through the registry —
+        /// the engine command path reports "no such verb" without invoking.
+        /// </summary>
+        public static bool HasProc(DMRuntime target, string procName)
+        {
+            return ProcRegistry.TryGet(target.DMTypePath, procName, out _)
+                || ProcRegistry.TryGetInherited(target.DMTypePath, procName, out _)
+                || ProcRegistry.TryGet("/proc", procName, out _);
+        }
+
+        /// <summary>
+        /// Datum bound to an engine entity (atom-side): the spawn bridge and
+        /// component init record DMRuntime.EntityId. 0 or missing = none.
+        /// </summary>
+        public static DMRuntime? DatumForEntityId(long entityId)
+        {
+            if (entityId == 0) return null;
+            foreach (var d in DMRuntimeHelpers.LiveDatums)
+            {
+                if (d.EntityId == (ulong)entityId) return d;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// First live datum of an exact DM type path (dmverbon "/obj/x" args).
+        /// </summary>
+        public static DMRuntime? DatumForPath(string typePath)
+        {
+            var norm = typePath.ToLowerInvariant();
+            foreach (var d in DMRuntimeHelpers.LiveDatums)
+            {
+                if (d.DMTypePath == norm) return d;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Atom datum at DM tile coords (dmclick x y z): live datums whose
+        /// x/y/z vars match. Returns the first non-turf atom found so a mob
+        /// or obj on the tile is clicked rather than the turf itself.
+        /// </summary>
+        public static DMRuntime? DatumAt(double x, double y, double z)
+        {
+            DMRuntime? turf = null;
+            foreach (var d in DMRuntimeHelpers.LiveDatums)
+            {
+                var dx = d.GetVar("x").ToNumber();
+                var dy = d.GetVar("y").ToNumber();
+                var dz = d.GetVar("z").ToNumber();
+                if (dx == x && dy == y && dz == z)
+                {
+                    if (d.DMTypePath.StartsWith("/turf")) { turf = d; continue; }
+                    return d;
+                }
+            }
+            return turf;
         }
     }
 }

@@ -347,7 +347,9 @@ async function runCSharpEmitterTests() {
 `);
   assertContains(prec, `DMValue.Equals(comp.GetVar("a"), comp.GetVar("b")).IsTrue() ? comp.GetVar("c") : comp.GetVar("d")`, 'ternary binds looser than ==');
   assertContains(prec, `(comp.GetVar("m")) is var __dm_t1 && !__dm_t1.IsTrue()`, '|| binds looser than &&');
-  assertContains(prec, `DMValue.ShiftLeft(DMValue.Add(comp.GetVar("p"), comp.GetVar("q")), DMValue.FromNumber(2))`, 'shift binds looser than +');
+  // B-4 (item 72): every << routes through DMValue.Output (runtime picks
+  // shift vs output vs append by LHS type) — a numeric LHS still shifts.
+  assertContains(prec, `DMValue.Output(DMValue.Add(comp.GetVar("p"), comp.GetVar("q")), DMValue.FromNumber(2))`, 'shift binds looser than +');
 
   // Test 35: Plan 09 B1 — a/b is division by a variable (not a type-path literal)
   const div = transpileProc(`/obj/foo/proc/run()
@@ -453,6 +455,39 @@ async function runCSharpEmitterTests() {
   assert((col.match(/public static async Task<DMValue> Proc_ObjItemAb_\w+\(DMRuntime/g) || []).length === 2, 'both colliding paths emit distinct static methods');
   assertContains(col, 'Proc_ObjItemAb_2_B(', 'suffixed method for the second path (/obj/item/ab)');
   assertContains(col, 'Proc_ObjItemAb_A(', 'unsuffixed method for /obj/item/a.b');
+
+  // Test 45: Plan 10 B4 (item 72) — `x << y` routes through DMValue.Output
+  // in expression position, and statement-level `x << y` on a local var
+  // writes back through SetVar (compound assign semantics).
+  const outputExpr = transpileProc(`/obj/foo/proc/run()
+    world << "hi"
+    usr << "hi"
+    var/l = list()
+    l << 3
+    var/n = 1
+    n << 2
+    var/m = (src << "a" << "b")
+`);
+  assertContains(outputExpr, `_ = DMValue.Output(DMRuntimeHelpers.WorldValue, DMValue.FromString("hi"));`, 'world << as statement discards cleanly');
+  assertContains(outputExpr, `_ = DMValue.Output(DMRuntimeHelpers.CurrentUsr, DMValue.FromString("hi"));`, 'usr << as statement');
+  assertContains(outputExpr, `comp.SetVar("l", DMValue.Output(comp.GetVar("l"), DMValue.FromNumber(3)));`, 'L << x writes back via SetVar');
+  assertContains(outputExpr, `comp.SetVar("n", DMValue.Output(comp.GetVar("n"), DMValue.FromNumber(2)));`, 'n << 2 writes back (runtime decides shift)');
+  assertContains(outputExpr, `DMValue.Output(DMValue.Output(DMValue.FromDatum(comp), DMValue.FromString("a")), DMValue.FromString("b"))`, 'a << b << c chains left-associatively in expressions');
+
+  // Test 46: Plan 10 B4 (item 72) — the generated system CS carries the
+  // verb/interaction command bridge: dm* IConsoleCommands, the ConGroup
+  // permission shim, the output bridge, and the /client datum bind.
+  const systemCS = new CSharpEmitter().generateSystemCS();
+  for (const cmd of ['dmverb', 'dmverbon', 'dmclick', 'dmsay', 'dmooc', 'dmtopic', 'dmverbs', 'dmloc']) {
+    assertContains(systemCS, `Command => "${cmd}"`, `system CS emits the ${cmd} console command`);
+  }
+  assertContains(systemCS, 'IConGroupControllerImplementation', 'permission shim for client-run dm* commands');
+  assertContains(systemCS, 'IoCManager.Resolve<IConGroupController>().Implementation = new DMPermissions()', 'shim installed at Initialize');
+  assertContains(systemCS, 'DMVerbRuntime.OutputBridge = DmOutput;', 'output bridge installed at Initialize');
+  assertContains(systemCS, 'CallVerbAsUsr(target, usr, "Click"', 'dmclick routes into Click() with src/usr');
+  assertContains(systemCS, 'BindClientDatum(session, uid);', 'attach binds the /client datum');
+  assertContains(systemCS, 'DMVerbRuntime.CallVerbAsUsr(mob, mob, args[0]', 'dmverb dispatches src=usr=mob');
+  assertContains(systemCS, 'ProcRegistry.EnumerateProcs', 'dmverbs lists registered procs');
 
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }

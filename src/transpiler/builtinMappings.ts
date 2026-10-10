@@ -24,7 +24,7 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
   // Tier-3 wave (2026-08-02): remaining corpus backlog
   'regex', 'regex_quote', 'astype', 'isicon', 'icon_states', 'arctan',
   'findlasttext', 'values_sum', 'values_dot', 'values_min', 'values_max',
-  'roll', 'winset', 'link', 'gradient', 'vector', 'openToolTip',
+  'roll', 'winset', 'winget', 'link', 'gradient', 'vector', 'openToolTip',
   'closeToolTip', 'browse_rsc', 'ftp',
   // Tier-4 wave: remaining real BYOND builtins (docs/plans/17)
   'file2text', 'text2file', 'md5', 'addtext', 'trimtext', 'cmptext',
@@ -46,7 +46,7 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
 export const STUBBED_BUILTINS = [
   'animate', 'flick', 'browse', 'call_ext',
   '__detect_rust_g', 'alert', 'input', 'locate', 'refcount',
-  'winset', 'link', 'gradient', 'vector', 'openToolTip', 'closeToolTip',
+  'winset', 'winget', 'link', 'gradient', 'vector', 'openToolTip', 'closeToolTip',
   'browse_rsc', 'ftp'
 ];
 
@@ -323,6 +323,12 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.StackTrace(${args})`;
     case 'output':
       return `DMRuntimeHelpers.Output(${args})`;
+    // B-4 (item 72): skin verbs route to explicit stubs instead of falling
+    // through to a user-proc warning + runtime miss.
+    case 'winset':
+      return `DMRuntimeHelpers.Winset(${args})`;
+    case 'winget':
+      return `DMRuntimeHelpers.Winget(${args})`;
     // ==== Tier-4 builtins (docs/plans/17-remaining-builtins.md) ====
     case 'file2text':
       return `DMRuntimeHelpers.File2Text(${args})`;
