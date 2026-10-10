@@ -4685,6 +4685,9 @@ namespace SS13.DM.Runtime
             "layer", "plane", "invisibility", "opacity", "mouse_opacity",
             "luminosity", "light_color", "light_power", "light_range",
             "overlays", "underlays", "transform", "appearance",
+            // W-H: density republishes too — the system-side bridge mirrors
+            // it onto fixture.Hard (door opens stop blocking).
+            "density",
             "appearance_flags", "blend_mode", "vis_contents", "vis_locs",
             "maptext", "maptext_width", "maptext_height", "maptext_x", "maptext_y",
             "render_target", "render_source", "screen_loc", "base_icon_state",

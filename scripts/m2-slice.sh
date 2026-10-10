@@ -12,8 +12,8 @@
 #   E1  server Ready + converted map loaded + M2 harness world/New ran
 #   E2  client InGame + B-1 player attach
 #   E3  door Initialize() real chain ran: icon_state set via the paradise
-#       update_icon -> update_icon_state path (door1 / closed)
-#   E4  dmclick -> plain door open: density 1->0, icon_state door1->door0
+#       update_icon -> update_icon_state path (mdoor1 / closed)
+#   E4  dmclick -> plain door open: density 1->0, icon_state mdoor1->mdoor0
 #       (server log + client-visible echo)
 #   E5  dmclick -> airlock open: icon_state closed->open through the real
 #       AIRLOCK_* update_icon state machine
@@ -54,6 +54,17 @@ NODE_OPTIONS="--max-old-space-size=4096" SS14_ENGINE_DIR="$ENGINE_DIR" node "$RE
   --input "$DEMO_DIR" --output "$WORK/out" > "$WORK/convert.log" 2>&1 || {
   echo "[m2-slice] FAIL: conversion failed"; tail -20 "$WORK/convert.log"; exit 1;
 }
+
+# W-H: sibling W-G appended `type: Function` binds to the template's
+# keybinds.yml — the pinned engine's InputManager has no 'Function'
+# KeyBindingType, so the client aborts in Initialize. They're
+# console-editing QoL only; strip the tail block from the generated
+# output (don't touch ss14Template — sibling-owned).
+KEYBINDS="$WORK/out/Resources/keybinds.yml"
+if grep -q "type: Function" "$KEYBINDS"; then
+  awk '/# W-G input:/ {exit} {print}' "$KEYBINDS" > "$KEYBINDS.stripped" \
+    && mv "$KEYBINDS.stripped" "$KEYBINDS"
+fi
 
 echo "[m2-slice] Building generated solution (engine: $ENGINE_DIR)..."
 BUILD_OK=""
@@ -182,18 +193,18 @@ verdict "E2 client connect + player attach" $E2 "$(grep -E "attached to mob" "$W
 # E3: real Initialize chain set icon_state through update_icon ->
 # update_icon_state (plain door: door1 closed; airlock: closed).
 E3=0
-grep -q "M2-INIT /obj/machinery/door/m2: Initialize(1) done, icon_state=door1" "$WORK/server.log" || E3=1
+grep -q "M2-INIT /obj/machinery/door/m2: Initialize(1) done, icon_state=mdoor1" "$WORK/server.log" || E3=1
 grep -q "M2-INIT /obj/machinery/door/airlock/m2: Initialize(1) done, icon_state=closed" "$WORK/server.log" || E3=1
-verdict "E3 Initialize -> update_icon -> icon_state (door1 / closed)" $E3 "$(grep "M2-INIT" "$WORK/server.log" | tr '\n' ' | ')"
+verdict "E3 Initialize -> update_icon -> icon_state (mdoor1 / closed)" $E3 "$(grep "M2-INIT" "$WORK/server.log" | tr '\n' ' | ')"
 
 # E4: dmclick -> real attack_hand -> try_to_activate_door -> allowed ->
-# open(): density 1->0, icon_state door1->door0. Both states must appear
+# open(): density 1->0, icon_state mdoor1->mdoor0. Both states must appear
 # (pre-click closed, post-click open), server log AND client echo.
 E4=0
 grep -q "M2-STATE /obj/machinery/door/m2: density=1" "$WORK/server.log" || E4=1
-grep -q "M2-STATE /obj/machinery/door/m2: density=0 .*icon_state=door0" "$WORK/server.log" || E4=1
-grep -q "M2-STATE client: /obj/machinery/door/m2 icon_state=door0" "$WORK/client.log" || E4=1
-verdict "E4 plain door click->open (density->0, icon_state door0)" $E4 "$(grep "M2-STATE /obj/machinery/door/m2:" "$WORK/server.log" | tr '\n' ' | ')"
+grep -q "M2-STATE /obj/machinery/door/m2: density=0 .*icon_state=mdoor0" "$WORK/server.log" || E4=1
+grep -q "M2-STATE client: /obj/machinery/door/m2 icon_state=mdoor0" "$WORK/client.log" || E4=1
+verdict "E4 plain door click->open (density->0, icon_state mdoor0)" $E4 "$(grep "M2-STATE /obj/machinery/door/m2:" "$WORK/server.log" | tr '\n' ' | ')"
 
 # E5: dmclick -> airlock real chain -> icon_state closed->open.
 E5=0

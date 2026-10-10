@@ -136,6 +136,60 @@ namespace Content.Shared.DM
     }
 }
 `, 'utf-8');
+
+    // W-H: client-side appearance -> sprite bridge. The server publishes
+    // DMAppearanceKey data on AppearanceComponent, but nothing consumed it:
+    // the only engine consumer (GenericVisualizerSystem) needs per-value YAML
+    // tables no generated proto ships, so icon_state/icon swaps never reached
+    // pixels (windowed test showed 0px diff with live server state). This
+    // passthrough applies Icon+IconState to sprite layer 0 (BYOND's base
+    // layer) on every appearance change — auto-registered like any content
+    // system.
+    const clientDmDir = path.resolve(outputServerDir, '..', '..', 'Content.Client', 'DM');
+    if (!fs.existsSync(clientDmDir)) fs.mkdirSync(clientDmDir, { recursive: true });
+    fs.writeFileSync(path.join(clientDmDir, 'DMAppearanceVisualizer.cs'), `using Content.Shared.DM;
+using Robust.Client.GameObjects;
+using Robust.Client.Graphics;
+using Robust.Shared.GameObjects;
+using Robust.Shared.IoC;
+using Robust.Shared.Utility;
+
+namespace Content.Client.DM
+{
+    /// <summary>
+    /// DM appearance passthrough: pushes DMAppearanceKey.Icon/IconState into
+    /// sprite layer 0 so converted icon_state swaps actually render.
+    /// </summary>
+    public sealed class DMAppearanceVisualizerSystem : EntitySystem
+    {
+        [Dependency] private readonly SharedAppearanceSystem _appearance = default!;
+        [Dependency] private readonly SpriteSystem _sprite = default!;
+
+        public override void Initialize()
+        {
+            base.Initialize();
+            SubscribeLocalEvent<AppearanceComponent, AppearanceChangeEvent>(OnAppearanceChange);
+        }
+
+        private void OnAppearanceChange(EntityUid uid, AppearanceComponent comp, ref AppearanceChangeEvent args)
+        {
+            if (args.Sprite == null) return;
+
+            _appearance.TryGetData(uid, DMAppearanceKey.IconState, out string? state, args.Component);
+            _appearance.TryGetData(uid, DMAppearanceKey.Icon, out string? rsi, args.Component);
+            if (!string.IsNullOrEmpty(rsi))
+            {
+                _sprite.LayerSetSprite((uid, args.Sprite), 0,
+                    new SpriteSpecifier.Rsi(new ResPath(rsi), state ?? ""));
+            }
+            else if (!string.IsNullOrEmpty(state))
+            {
+                _sprite.LayerSetRsiState((uid, args.Sprite), 0, new RSI.StateId(state));
+            }
+        }
+    }
+}
+`, 'utf-8');
   }
 
   /**
@@ -1107,6 +1161,18 @@ namespace Content.Server.DM
             Set(DMAppearanceKey.LightRange, (int)NumVar(datum, "light_range", 0));
             Set(DMAppearanceKey.LightPower, (float)NumVar(datum, "light_power", 1));
             Set(DMAppearanceKey.LightColor, StrVar(datum, "light_color"));
+
+            // W-H: density -> physics bridge. An opened door must stop
+            // blocking: mirror datum density onto each fixture via the
+            // sanctioned SharedPhysicsSystem.SetHard (fixture.Hard is
+            // write-gated to physics code at this pin).
+            if (EntityManager.TryGetComponent(uid, out Robust.Shared.Physics.FixturesComponent? fxManager))
+            {
+                var phys = EntityManager.System<Robust.Shared.Physics.Systems.SharedPhysicsSystem>();
+                var hard = datum.GetVar("density").IsTrue();
+                foreach (var fixture in fxManager.Fixtures.Values)
+                    phys.SetHard(uid, fixture, hard, fxManager);
+            }
         }
 
         private static string StrVar(DMRuntime d, string name)

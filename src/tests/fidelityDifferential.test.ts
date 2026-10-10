@@ -1907,6 +1907,13 @@ async function main(): Promise<void> {
     }
     let output: string;
     try {
+      // W-H: incremental `dotnet run` can serve a stale ProbeDriver dll
+      // under parallel build load — observed probe output then shows a
+      // PREVIOUS probe's result (nondeterministic false failures). Drop
+      // the build artifacts so each probe recompiles deterministically.
+      for (const d of ['obj', 'bin']) {
+        fs.rmSync(path.join(scratch, d), { recursive: true, force: true });
+      }
       output = execSync('dotnet run --project ProbeDriver.csproj --nologo -v q', {
         cwd: scratch,
         timeout: 300000,

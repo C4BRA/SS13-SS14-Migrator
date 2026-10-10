@@ -133,6 +133,13 @@
 /obj/machinery/door/m2/update_icon_state()
 	world << "M2-TR [src.type]: update_icon_state() density=[src.density]"
 	. = ..()
+	// Corpus fixture note (verified 2026-10-10): paradise's doorint.dmi has
+	// NO door0/door1 states — upstream never places a bare /obj/machinery/door,
+	// only subtypes with their own states. mdoor0/mdoor1 are the real metal
+	// door states inside the same DMI, so retarget the state NAME after the
+	// verbatim chain runs (every proc above still executes).
+	if(src.icon_state == "door1") src.icon_state = "mdoor1"
+	else if(src.icon_state == "door0") src.icon_state = "mdoor0"
 	world << "M2-TR [src.type]: update_icon_state ret, icon_state=[src.icon_state]"
 
 // Tracing overrides on the interaction chain — expose which branch of

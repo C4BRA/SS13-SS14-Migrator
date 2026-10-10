@@ -109,6 +109,45 @@ null-iteration, null req_access, param-no-clobber, param read-through,
 var/x locality, for-var locality, /atom proc on /obj child, /obj `..()` to
 /atom grandparent, istype sugar chain.
 
+## Appearance channel (windowed round 2)
+
+Windowed verification exposed that the server→client sprite pipe was
+dead: `PushAppearanceData` wrote `DMAppearanceKey` data into
+`AppearanceComponent` but no client consumer applied it to
+`SpriteComponent`. Three more `// W-H` fixes:
+
+1. **Client visualizer** (`emitSharedTypesFile` →
+   `Content.Client/DM/DMAppearanceVisualizer.cs`): generated
+   `DMAppearanceVisualizerSystem` subscribes `AppearanceChangeEvent` and
+   mirrors `Icon`/`IconState` onto sprite layer 0
+   (`LayerSetSprite`/`LayerSetRsiState`). Engine's
+   `GenericVisualizerSystem` can't serve generated protos — it needs
+   per-value YAML tables no DM type ships.
+2. **density→physics bridge** (`PushAppearanceData` tail): datum density
+   mirrored onto every fixture via `SharedPhysicsSystem.SetHard`
+   (fixture.Hard is write-gated to engine physics — direct field write
+   hits analyzer RA0002). `"density"` added to `AppearanceVarNames` so
+   the var actually republishes.
+3. **Fixture retarget** (`/obj/machinery/door/m2/update_icon_state`):
+   doorint.dmi has NO `door0`/`door1` states — upstream never places a
+   bare `/obj/machinery/door`. Retargets `door[density]` → `mdoor[density]`
+   (real metal-door states in the same DMI) AFTER the verbatim `..()`
+   chain runs.
+
+Gate-side workaround (not a template change): sibling W-G's
+`type: Function` keybinds crash the pin's client `InputManager`
+(`Requested value 'Function' was not found`) — the gate strips that
+binds tail from generated `Resources/keybinds.yml` post-convert. Same
+crash also broke scripts/m1-gate.sh's scripted client; m1 was
+re-verified 5/5 manually in its work dir with the same strip.
+Cross-scope flag: the Function binds need a newer engine pin or a
+template revert.
+
+Runner fix: `audit:semantics`'s per-probe `dotnet run` served stale
+compiled assemblies under parallel build load (observed = other probes'
+results, nondeterministic). Purge `obj`/`bin` before each probe build
+(`// W-H`) — deterministic 296/296.
+
 ## Gate — scripts/m2-slice.sh
 
 Mirrors m1-gate: convert → dotnet build (retry loop for shared-engine
@@ -117,9 +156,9 @@ races) → Content.Server boot (fifo console) → headless client autocmds
 
 - E1 server Ready + map + `M2-WORLD`
 - E2 client InGame + mob attach
-- E3 `Initialize(1)` → `update_icon` → `icon_state=door1` / `closed`
+- E3 `Initialize(1)` → `update_icon` → `icon_state=mdoor1` / `closed`
 - E4 dmclick plain door → `density 1→0`, `opacity 1→0`,
-  `icon_state door1→door0` (server log + `usr <<` client echo)
+  `icon_state mdoor1→mdoor0` (server log + `usr <<` client echo)
 - E5 dmclick airlock → `icon_state closed→open`, overlays 9→25
   (server + client echo)
 - E6 door entities listed server-side (`entities` → uids) and streamed to
@@ -128,7 +167,7 @@ races) → Content.Server boot (fifo console) → headless client autocmds
 ## Final gate verdict
 
 `scripts/m2-slice.sh` — PASS 6/6 (E1–E6), 2026-10-10 run:
-`[PASS] E4 ... icon_state=door0`, `[PASS] E5 ... icon_state=open`,
+`[PASS] E4 ... icon_state=mdoor0`, `[PASS] E5 ... icon_state=open`,
 `[m2-slice] PASS: M2 doors/airlocks slice verified end-to-end`.
 
 ## Known limits
