@@ -582,6 +582,162 @@ namespace Content.Client
 }`;
     fs.writeFileSync(path.join(clientDir, 'EntryPoint.cs'), clientEntryPointCS, 'utf-8');
 
+    // ==== W-G input (docs/plans/28): client input commands ====
+    // dmclickpick — the real-click path: bound to MouseLeft in
+    // Resources/keybinds.yml (type: Command runs the function string
+    // through IClientConsoleHost.ExecuteCommand on key-down). The command
+    // resolves the atom under the cursor client-side, then forwards the
+    // PROVEN server path — 'dmclick @uid' (or 'dmclick x,y,z' on bare
+    // ground) — which executes server-side with shell.Player = this
+    // session, so usr binds to the attached mob exactly like a typed
+    // dmclick. The engine has no content click->interaction pipeline at
+    // pin 9cefa116 (only ClickableComponentState), so sprite hit-testing
+    // is done here with the same bounds the renderer uses
+    // (SpriteSystem.CalculateBounds).
+    // dmcontrols — cheap discoverability: prints the converted world's
+    // input map and reminds that dmverbs lists the mob's verbs (that
+    // listing already reaches this client's console from the server).
+    const dmClientDir = path.join(clientDir, 'DM');
+    fs.mkdirSync(dmClientDir, { recursive: true });
+    const dmClientInputCS = `using System;
+using Robust.Client.Console;
+using Robust.Client.GameObjects;
+using Robust.Client.Graphics;
+using Robust.Client.Input;
+using Robust.Client.Player;
+using Robust.Client.UserInterface;
+using Robust.Shared.Console;
+using Robust.Shared.GameObjects;
+using Robust.Shared.IoC;
+using Robust.Shared.Maths;
+
+namespace Content.Client.DM
+{
+    /// <summary>
+    /// dmclickpick — click the atom under the mouse cursor (W-G input,
+    /// docs/plans/28). Bound to MouseLeft via keybinds.yml. Hit-tests
+    /// sprite bounds (the renderer's own box) topmost-first and forwards
+    /// 'dmclick @uid'; on bare ground forwards 'dmclick x,y,z' so the
+    /// turf gets clicked. Skips the world click entirely when a UI
+    /// control is under the cursor (console window, menus).
+    /// </summary>
+    public sealed class DMClickPickCommand : IConsoleCommand
+    {
+        public string Command => "dmclickpick";
+        public string Description => "Click the DM atom under the mouse cursor (converted world).";
+        public string Help => "dmclickpick";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var eyeMan = IoCManager.Resolve<IEyeManager>();
+            var inputMan = IoCManager.Resolve<IInputManager>();
+            var conHost = IoCManager.Resolve<IClientConsoleHost>();
+            var uiMan = IoCManager.Resolve<IUserInterfaceManager>();
+
+            var mouse = inputMan.MouseScreenPosition;
+            // A UI control under the cursor means the click was meant for
+            // the interface (console window, menus) — never the world.
+            // The viewport container itself reports hovered on every world
+            // click (it owns the map viewport) — only non-viewport controls
+            // count as a UI click.
+            var ctrl = uiMan.MouseGetControl(mouse);
+            if (ctrl != null &&
+                ctrl.GetType().FullName != "Robust.Client.UserInterface.CustomControls.MainViewportContainer")
+                return;
+
+            var map = eyeMan.ScreenToMap(mouse);
+            var xformSys = entMan.System<SharedTransformSystem>();
+            var spriteSys = entMan.System<SpriteSystem>();
+            var eyeRot = eyeMan.CurrentEye.Rotation;
+
+            // Topmost sprite under the cursor: highest DrawDepth wins, uid
+            // breaks ties so the pick is deterministic.
+            EntityUid best = default;
+            var bestDepth = int.MinValue;
+            var found = false;
+            var query = entMan.EntityQueryEnumerator<SpriteComponent, TransformComponent>();
+            while (query.MoveNext(out var uid, out var sprite, out var xf))
+            {
+                if (!sprite.Visible) continue;
+                var wpos = xformSys.GetWorldPosition(xf);
+                var wrot = xformSys.GetWorldRotation(xf);
+                var bounds = spriteSys.CalculateBounds((uid, sprite), wpos, wrot, eyeRot);
+                if (!bounds.Contains(map.Position)) continue;
+                if (sprite.DrawDepth < bestDepth) continue;
+                if (sprite.DrawDepth == bestDepth && found && uid.Id <= best.Id) continue;
+                bestDepth = sprite.DrawDepth;
+                best = uid;
+                found = true;
+            }
+
+            if (found)
+            {
+                // EntityUid is per-side (client uid 4 = button, server
+                // uid 4 = a mob — they do NOT translate), so forward the
+                // picked entity's DM tile coords instead of @uid: the
+                // server's dmclick x,y,z resolver returns the non-turf
+                // atom at that tile — the same entity the pick chose.
+                if (!entMan.TryGetComponent(best, out TransformComponent? hitXf))
+                    return;
+                var hpos = xformSys.GetWorldPosition(hitXf);
+                var hz = 1;
+                if (entMan.TryGetComponent(hitXf.ParentUid, out MetaDataComponent? hmd) &&
+                    hmd.EntityName is { } hgrid &&
+                    hgrid.StartsWith("grid_z") &&
+                    int.TryParse(hgrid.Substring(6), out var hzp))
+                {
+                    hz = hzp;
+                }
+                var hx = (int)Math.Floor(hpos.X) + 1;
+                var hy = (int)Math.Floor(hpos.Y) + 1;
+                conHost.ExecuteCommand(null, $"dmclick {hx},{hy},{hz}");
+                return;
+            }
+
+            // Bare ground: DM tile coords (floor(world)+1), z from the
+            // player's parent grid name 'grid_z<N>' (the map converter's
+            // convention), defaulting to 1.
+            var z = 1;
+            var session = IoCManager.Resolve<IPlayerManager>().LocalSession;
+            if (session?.AttachedEntity is { } mob &&
+                entMan.TryGetComponent(mob, out TransformComponent? mobXf) &&
+                entMan.TryGetComponent(mobXf.ParentUid, out MetaDataComponent? md) &&
+                md.EntityName is { } gridName &&
+                gridName.StartsWith("grid_z") &&
+                int.TryParse(gridName.Substring(6), out var parsed))
+            {
+                z = parsed;
+            }
+            var x = (int)Math.Floor(map.Position.X) + 1;
+            var y = (int)Math.Floor(map.Position.Y) + 1;
+            conHost.ExecuteCommand(null, $"dmclick {x},{y},{z}");
+        }
+    }
+
+    /// <summary>
+    /// dmcontrols — print the converted world's input map (W-G input).
+    /// Cheap verb discoverability: tells the player WASD/arrows move and
+    /// MouseLeft clicks, and that 'dmverbs' lists the mob's verbs.
+    /// </summary>
+    public sealed class DMControlsCommand : IConsoleCommand
+    {
+        public string Command => "dmcontrols";
+        public string Description => "List the converted world's controls.";
+        public string Help => "dmcontrols";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            shell.WriteLine("Controls: W/A/S/D or arrow keys = move (step_* verbs); " +
+                "left-click = Click() on the atom under the cursor; " +
+                "Tilde = console. Type 'dmverbs' to list your mob's verbs, " +
+                "'dmsay <text>' to speak.");
+        }
+    }
+}
+`;
+    fs.writeFileSync(path.join(dmClientDir, 'DMClientInput.cs'), dmClientInputCS, 'utf-8');
+
     // 6. Config files — placed under Resources/ConfigFiles so the booted
     //    server (which loads resources from the output directory) finds them.
     const resourcesDir = path.join(outputDir, 'Resources');
@@ -600,8 +756,63 @@ namespace Content.Client
     // ShowDebugConsole has no default bind and the engine debug console can
     // never open in a windowed client. KeyBindingType at this pin is
     // State|Toggle|Command only — a Press bind crashes the client at boot.
+    //
+    // W-G input (docs/plans/28): real movement + clicks. A Command bind
+    // runs its whole `function` string through IClientConsoleHost
+    // ExecuteCommand on key-down — the same path the autocmd channel and
+    // a typed console line take, so dmverb/dmclick forward to the server
+    // with the player's session and usr binds to the attached mob.
+    //   - WASD + arrows -> 'dmverb step_*' (the converted mob's movement
+    //     verbs). commandWhenUIFocused:false so typing 'w' in the debug
+    //     console LineEdit doesn't also step the mob.
+    //   - MouseLeft -> 'dmclickpick': a CLIENT-side command (DMClientInput
+    //     .cs) that resolves the atom under the cursor and forwards
+    //     'dmclick @uid' (or 'dmclick x,y,z' on bare ground). Left at the
+    //     default commandWhenUIFocused:true because a console LineEdit
+    //     typically keeps keyboard focus while the player clicks the map;
+    //     the command itself skips the click when a UI control is under
+    //     the cursor, so clicking console text doesn't click the world.
     fs.writeFileSync(path.join(resourcesDir, 'keybinds.yml'),
-      `binds:\n- function: ShowDebugConsole\n  key: Tilde\n  type: State\n`, 'utf-8');
+      `binds:
+- function: ShowDebugConsole
+  key: Tilde
+  type: State
+- function: dmverb step_north
+  key: W
+  type: Command
+  commandWhenUIFocused: false
+- function: dmverb step_south
+  key: S
+  type: Command
+  commandWhenUIFocused: false
+- function: dmverb step_east
+  key: D
+  type: Command
+  commandWhenUIFocused: false
+- function: dmverb step_west
+  key: A
+  type: Command
+  commandWhenUIFocused: false
+- function: dmverb step_north
+  key: Up
+  type: Command
+  commandWhenUIFocused: false
+- function: dmverb step_south
+  key: Down
+  type: Command
+  commandWhenUIFocused: false
+- function: dmverb step_east
+  key: Right
+  type: Command
+  commandWhenUIFocused: false
+- function: dmverb step_west
+  key: Left
+  type: Command
+  commandWhenUIFocused: false
+- function: dmclickpick
+  key: MouseLeft
+  type: Command
+`, 'utf-8');
 
     // The engine's content mounts resolve <solution>/RobustToolbox relative
     // to the binary (StartType.Content) — symlink the checkout there when it

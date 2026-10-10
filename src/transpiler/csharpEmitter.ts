@@ -257,6 +257,14 @@ namespace Content.Server.DM
     // (no proc member); proc registrations pair with their members in
     // pass 2's order.
     for (const [pathKey, irType] of irMap.entries()) {
+      // ==== W-G input (docs/plans/28): datum type var defaults ====
+      // Every type gets a TypeVarInits registration carrying its declared
+      // var defaults (own vars + BYOND-inherited name/desc resolution);
+      // DMRuntimeHelpers.ApplyTypeVarInits walks the path ancestors at
+      // datum creation and applies them root-first.
+      const typeInit = this.typeVarInitRegistration(irMap, pathKey, irType);
+      if (typeInit) pathRegs.push(typeInit);
+
       if (irType.procs.size === 0) {
         // Var-only types still register their path so typesof() enumerates
         // them (WS9-4).
@@ -393,6 +401,87 @@ namespace Content.Server.DM
     }
 }
 `);
+  }
+
+  // ==== W-G input (docs/plans/28): datum type var defaults ==============
+  // BYOND semantics: a fresh datum's vars start at the type's declared
+  // defaults — inherited from ancestors unless overridden — applied before
+  // loc assignment and New() dispatch. This emits one TypeVarInits action
+  // per type carrying that type's effective defaults; the runtime applies
+  // the whole ancestor chain root->leaf at datum creation (DMNew, engine
+  // component init, grid turf datums).
+  //
+  // Only unambiguous values are seeded: the identity vars (name/desc —
+  // always text in DM), icon/icon_state, and custom vars whose IR-
+  // normalized initializer is a scalar literal (number, bool literal,
+  // /path, or identifier-safe text — gender is forced to text). Expression
+  // initializers (list(), new, calls, arithmetic) are skipped: the IR's
+  // normalized text can't distinguish a quoted string from an identifier
+  // or expression, and a mis-seeded string is worse than an unseeded var.
+  private typeVarInitRegistration(irMap: Map<string, DMIRType>, pathKey: string, irType: DMIRType): string | null {
+    const sets: string[] = [];
+    const basename = (p: string) => {
+      const seg = p.split('/').filter(Boolean);
+      return seg.length > 0 ? seg[seg.length - 1] : 'object';
+    };
+    // BYOND name resolution: an atom's effective name is its own declared
+    // name, else the nearest ancestor's declared name, else the type
+    // basename. IR's name field is declared-or-basename; a declared name
+    // equal to the basename is indistinguishable from undeclared
+    // (documented approximation — same emitted value either way).
+    let effName = irType.name;
+    if (effName === basename(pathKey)) {
+      let p = irType.parentPath;
+      while (p) {
+        const par = irMap.get(p);
+        if (!par) break;
+        if (par.name !== basename(par.path)) { effName = par.name; break; }
+        p = par.parentPath;
+      }
+    }
+    if (effName && effName !== 'null' && effName !== '') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "name", DMValue.FromString("${this.escapeString(effName)}"));`);
+    }
+    if (irType.desc && irType.desc !== 'null') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "desc", DMValue.FromString("${this.escapeString(irType.desc)}"));`);
+    }
+    if (irType.icon && irType.icon !== 'null') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "icon", DMValue.FromString("${this.escapeString(irType.icon)}"));`);
+    }
+    if (irType.iconState && irType.iconState !== 'null') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "icon_state", DMValue.FromString("${this.escapeString(irType.iconState)}"));`);
+    }
+    // Structural bool vars are inherited in IR like custom vars; emit the
+    // effective value so a datum's density/anchored/opacity reads back.
+    if (irType.density) sets.push('DMRuntimeHelpers.SeedVar(c, "density", DMValue.FromNumber(1));');
+    if (irType.anchored) sets.push('DMRuntimeHelpers.SeedVar(c, "anchored", DMValue.FromNumber(1));');
+    if (irType.opacity) sets.push('DMRuntimeHelpers.SeedVar(c, "opacity", DMValue.FromNumber(1));');
+    for (const [k, v] of irType.customVars) {
+      const init = this.scalarVarInit(k, v);
+      if (init) sets.push(`DMRuntimeHelpers.SeedVar(c, "${this.escapeString(k)}", ${init});`);
+    }
+    if (sets.length === 0) return null;
+    return `            DMRuntimeHelpers.TypeVarInits["${this.escapeString(pathKey)}"] = c => { ${sets.join(' ')} };`;
+  }
+
+  /// W-G input: custom-var initializers we can seed without an expression
+  /// evaluator — numeric, DM truth literals, and /type paths map 1:1 to
+  /// DMValue factories; identifier-safe bare text seeds as a string (the
+  /// overwhelmingly common case: quoted literals, which normalize to bare
+  /// text). Returns the C# initializer expression, or null when the
+  /// normalized text is an expression initializer (unseeded, documented).
+  private scalarVarInit(name: string, v: any): string | null {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (s === '' || s.toLowerCase() === 'null') return null;
+    if (name === 'gender') return `DMValue.FromString("${this.escapeString(s)}")`;
+    if (/^[+-]?\d+$/.test(s)) return `DMValue.FromNumber(${s})`;
+    if (/^[+-]?\d*\.\d+$/.test(s)) return `DMValue.FromNumber(${s}, true)`;
+    if (/^(true|yes|on)$/i.test(s)) return 'DMValue.FromNumber(1)';
+    if (/^(false|no|off)$/i.test(s)) return 'DMValue.FromNumber(0)';
+    if (s.startsWith('/')) return `DMValue.FromPath("${this.escapeString(s)}")`;
+    if (/^[A-Za-z_][A-Za-z0-9_ ]*$/.test(s)) return `DMValue.FromString("${this.escapeString(s)}")`;
+    return null;
   }
 
   /**
@@ -753,6 +842,9 @@ namespace Content.Server.DM
                     && def is DMTilePrototype dmProto)
                     dmPath = dmProto.DMPath;
                 var datum = new DMRuntime { DMTypePath = dmPath };
+                // W-G input: turf datums get the same type-default seeding
+                // (name/desc of the turf type) before positional vars.
+                DMRuntimeHelpers.ApplyTypeVarInits(datum);
                 datum.SetVar("x", DMValue.FromNumber(tileRef.GridIndices.X + 1));
                 datum.SetVar("y", DMValue.FromNumber(tileRef.GridIndices.Y + 1));
                 datum.SetVar("z", DMValue.FromNumber(z));
@@ -851,6 +943,10 @@ namespace Content.Server.DM
         {
             comp.Runtime.DMTypePath = comp.DMTypePath;
             comp.Runtime.EntityId = (ulong)uid.Id;
+            // W-G input: seed the type's declared var defaults (name/desc/
+            // gender/scalars) BEFORE the prototype's initialVars so the
+            // proto's explicit values still win, and before New().
+            DMRuntimeHelpers.ApplyTypeVarInits(comp.Runtime);
             foreach (var (k, v) in comp.InitialVars)
             {
                 comp.Runtime.SetVar(k, DMValue.FromString(v));

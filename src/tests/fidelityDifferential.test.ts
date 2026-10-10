@@ -1532,6 +1532,72 @@ public static class ConvertedDMProcs
     dm: `/datum/probe/proc/run()
 	return ..() == null`,
     expected: '1'
+  },
+  // ==== W-G input (docs/plans/28): type var defaults seeded at DMNew ====
+  {
+    name: 'datum name seeded from declared type default',
+    dm: `/datum/probe/proc/run()
+	var/m = new /obj/wgtest_named()
+	return m.name
+/obj/wgtest_named
+	name = "named thing"`,
+    expected: 'named thing'
+  },
+  {
+    name: 'datum name inherits ancestor declared name',
+    dm: `/datum/probe/proc/run()
+	var/m = new /obj/wgtest_base/child()
+	return m.name
+/obj/wgtest_base
+	name = "ancestor name"
+/obj/wgtest_base/child`,
+    expected: 'ancestor name'
+  },
+  {
+    name: 'datum name defaults to type basename',
+    dm: `/datum/probe/proc/run()
+	var/m = new /obj/wgtest_basename()
+	return m.name
+/obj/wgtest_basename`,
+    expected: 'wgtest_basename'
+  },
+  {
+    name: 'runtime var write wins over seeded default',
+    dm: `/datum/probe/proc/run()
+	var/m = new /obj/wgtest_over()
+	m.name = "written"
+	return m.name
+/obj/wgtest_over
+	name = "seeded"`,
+    expected: 'written'
+  },
+  {
+    name: 'scalar custom var seeded from type default',
+    dm: `/datum/probe/proc/run()
+	var/m = new /obj/wgtest_scalar()
+	return m.power
+/obj/wgtest_scalar
+	var/power = 42`,
+    expected: '42'
+  },
+  {
+    name: 'desc seeded from declared type default',
+    dm: `/datum/probe/proc/run()
+	var/m = new /obj/wgtest_desc()
+	return m.desc
+/obj/wgtest_desc
+	desc = "a describer"`,
+    expected: 'a describer'
+  },
+  {
+    name: 'initial() reads the seeded type default after write',
+    dm: `/datum/probe/proc/run()
+	var/m = new /obj/wgtest_ini()
+	m.name = "mutated"
+	return initial(m.name)
+/obj/wgtest_ini
+	name = "initial name"`,
+    expected: 'initial name'
   }
 ];
 
