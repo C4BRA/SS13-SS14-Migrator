@@ -307,6 +307,24 @@ state "icon"
    assert(entitiesYaml.includes('- type: dmTile') && entitiesYaml.includes('  dmPath: /turf/simulated/floor'), "Turf prototypes emitted as dmTile defs with dmPath (item 69)");
    assert(entitiesYaml.includes('id: dm_player_mob'), "Player-mob fallback prototype emitted (item 69)");
 
+    // Test 5g (Plan 20 B5): generated client entry — real Robust.Client boot
+    // path so `dotnet run --project Content.Client` connects to the server.
+    const clientProgram = fs.readFileSync(path.join(tmpOutputDir, 'Content.Client', 'Program.cs'), 'utf-8');
+    assert(clientProgram.includes('ContentStart.Start'), "Content.Client Program boots ContentStart (item 73)");
+    const clientEntry = fs.readFileSync(path.join(tmpOutputDir, 'Content.Client', 'EntryPoint.cs'), 'utf-8');
+    assert(clientEntry.includes('GameClient'), "Content.Client EntryPoint subclasses GameClient (item 73)");
+    assert(clientEntry.includes('RegisterIgnore("DMRuntime")'), "Client ignores server-only DMRuntime component (item 73)");
+    assert(clientEntry.includes('DoAutoRegistrations') && clientEntry.includes('GenerateNetIds'), "Client runs content auto-registration + net id generation server normally skips (item 73)");
+    assert(clientEntry.includes('RegisterIgnore("dmTile")'), "Client ignores dmTile prototypes it cannot deserialize (item 73)");
+    assert(clientEntry.includes('DebugBuiltinConnectionScreenState'), "Client requests the engine builtin connection screen (item 73)");
+    const clientCsproj = fs.readFileSync(path.join(tmpOutputDir, 'Content.Client', 'Content.Client.csproj'), 'utf-8');
+    assert(clientCsproj.includes('<OutputType>Exe</OutputType>'), "Content.Client is an executable (item 73)");
+    assert(clientCsproj.includes('bin') && clientCsproj.includes('Content.Client'), "Content.Client outputs into <solution>/bin so resource mounts resolve (item 73)");
+    assert(clientCsproj.includes('Client.props'), "Content.Client imports the engine Client.props dependency list (item 73)");
+    assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'manifest.yml')), "Resources/manifest.yml emitted — the client resource manifest (item 73)");
+    const clientManifest = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'manifest.yml'), 'utf-8');
+    assert(clientManifest.includes('autoConnect: true'), "Client manifest enables autoConnect for --connect (item 73)");
+
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;
     const testZipPath = path.join(process.cwd(), 'temp_test_repo.zip');
@@ -342,16 +360,26 @@ state "icon"
         console.log(`   RobustToolbox not found at ${engineDir} (set SS14_ENGINE_DIR) — skipping real-engine build check`);
       } else {
         console.log(`   dotnet found + RobustToolbox at ${engineDir}, verifying generated solution compiles against the real engine...`);
-        const buildResult = spawnSync('dotnet', ['build', path.join(tmpOutputDir, 'Content.sln'), '--nologo', '-v', 'q', '-p:EngineDir=' + engineDir], {
-          stdio: 'pipe',
-          timeout: 600000
-        });
-        const buildLog = buildResult.stdout?.toString() + buildResult.stderr?.toString();
-        const failed = buildResult.status !== 0 || /error CS\d+/.test(buildLog);
+        // The generated RobustToolbox is a symlink: engine obj/ dirs are shared
+        // across every generated tree, and parallel sln builds race each other's
+        // obj/.../ref/*.dll files (transient CS0006). Serial retries converge —
+        // same bounded-retry pattern as scripts/client-smoke.sh.
+        let buildLog = '';
+        let failed = true;
+        let lastStatus: number | null = null;
+        for (let attempt = 0; attempt < 8 && failed; attempt++) {
+          const buildResult = spawnSync('dotnet', ['build', path.join(tmpOutputDir, 'Content.sln'), '--nologo', '-v', 'q', '-m:1', '-p:EngineDir=' + engineDir], {
+            stdio: 'pipe',
+            timeout: 600000
+          });
+          buildLog = buildResult.stdout?.toString() + buildResult.stderr?.toString();
+          lastStatus = buildResult.status;
+          failed = buildResult.status !== 0 || /error CS\d+/.test(buildLog);
+        }
         if (failed) {
           console.error(buildLog.slice(-2000));
         }
-        assert(!failed, `Generated C# solution builds against real RobustToolbox (exit ${buildResult.status})`);
+        assert(!failed, `Generated C# solution builds against real RobustToolbox (exit ${lastStatus})`);
       }
     } else {
       console.log("   dotnet CLI not available — skipping generated solution build check");
