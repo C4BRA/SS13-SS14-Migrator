@@ -113,12 +113,22 @@ export class DMIRGenerator {
               break;
             case 'density':
               irType.density = Boolean(Number(this.coerceTruthy(val)));
+              // W-H: density/opacity/anchored are real DM vars too — SS13
+              // code reads and writes them at runtime (door.open() flips
+              // density; set_opacity writes opacity; update_icon_state
+              // branches on density). Consuming them only into IR flags left
+              // the datum var null — 'if (density)' went false and the
+              // door slice's state machine picked the open branch. Keep the
+              // numeric DM value on the datum alongside the IR flag.
+              irType.customVars.set(varDecl.name, Number(this.coerceTruthy(val)));
               break;
             case 'anchored':
               irType.anchored = Boolean(Number(this.coerceTruthy(val)));
+              irType.customVars.set(varDecl.name, Number(this.coerceTruthy(val))); // W-H
               break;
             case 'opacity':
               irType.opacity = Boolean(Number(this.coerceTruthy(val)));
+              irType.customVars.set(varDecl.name, Number(this.coerceTruthy(val))); // W-H
               break;
             default:
               irType.customVars.set(varDecl.name, val);

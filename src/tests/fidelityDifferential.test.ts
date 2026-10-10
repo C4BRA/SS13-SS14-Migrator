@@ -1762,6 +1762,69 @@ public static class ConvertedDMProcs
 	var/datum/probe/a/b/d = new /datum/probe/a/b()
 	return d.outer + d.inner`,
     expected: '3' // b.New sets 2; implicit chain runs a.New which sets 1 via nested new
+  },
+
+  // --- W-H M2 slice semantics ---
+  {
+    // BYOND `for (x in null)` iterates ZERO times. Real SS13 depends on it:
+    // has_access() loops `for (req in req_access)` with req_access == null
+    // on no-access objects and must reach `return 1`, not iterate once.
+    name: 'for(x in null) iterates zero times',
+    dm: `/datum/probe/proc/run()\n\tvar/n = 0\n\tfor (var/x in null)\n\t\tn++\n\treturn n`,
+    expected: '0'
+  },
+  {
+    // Consequence: access checks with empty requirement lists pass, matching
+    // BYOND's has_access(null, null, list()) == 1 (the M2 door slice path).
+    name: 'has_access-style null req lists allow access',
+    dm: `/datum/probe/proc/run()\n\tvar/list/accesses = list()\n\tvar/ok = 1\n\tfor (var/req in null)\n\t\tok = 0\n\tvar/list/req_one\n\tif (length(req_one))\n\t\treturn 0\n\treturn ok`,
+    expected: '1'
+  },
+  {
+    // W-H: a proc param named like a datum field is a LOCAL — BYOND scopes
+    // it to the proc. Writing it must not clobber the field (real trigger:
+    // paradise get_airlock_overlay(icon_state, ...) wrote "_open" onto the
+    // calling airlock's icon_state var).
+    name: 'proc param does not clobber same-named datum var',
+    dm: `/obj/p_item\n\tvar/icon_state\n\tproc/touch(icon_state)\n\t\treturn icon_state\n/datum/probe/proc/run()\n\tvar/obj/p_item/o = new /obj/p_item\n\to.icon_state = "closed"\n\to.touch("_open")\n\treturn o.icon_state`,
+    expected: 'closed'
+  },
+  {
+    // W-H: reads of a param still see the arg value (the local works).
+    name: 'proc param reads resolve the passed value',
+    dm: `/obj/p_item\n\tvar/icon_state\n\tproc/touch(icon_state)\n\t\treturn icon_state\n/datum/probe/proc/run()\n\tvar/obj/p_item/o = new /obj/p_item\n\treturn o.touch("opening")`,
+    expected: 'opening'
+  },
+  {
+    // W-H: 'var/x' decls are proc locals — they do not leak onto the datum.
+    name: 'var/x decl does not leak onto the datum',
+    dm: `/obj/p_item\n\tproc/mkloc()\n\t\tvar/localx = 42\n\t\treturn localx\n/datum/probe/proc/run()\n\tvar/obj/p_item/o = new /obj/p_item\n\to.mkloc()\n\treturn o.localx == null`,
+    expected: '1'
+  },
+  {
+    // W-H: for-loop vars are proc locals too.
+    name: 'for-loop var does not leak onto the datum',
+    dm: `/obj/p_item\n\tvar/q\n\tproc/loopit()\n\t\tfor (var/q in list(1, 2))\n\t\t\tcontinue\n\t\treturn 1\n/datum/probe/proc/run()\n\tvar/obj/p_item/o = new /obj/p_item\n\to.q = "kept"\n\to.loopit()\n\treturn o.q`,
+    expected: 'kept'
+  },
+  {
+    // W-H: BYOND path shorthand — /obj IS /atom/movable/obj, so an /atom
+    // proc resolves through /obj children (paradise door update_icon).
+    name: '/atom proc resolves on /obj child',
+    dm: `/atom/proc/whoami()\n\treturn "atom"\n/obj/child\n/datum/probe/proc/run()\n\tvar/obj/child/o = new /obj/child\n\treturn o.whoami()`,
+    expected: 'atom'
+  },
+  {
+    // W-H: ..() from an /obj override reaches the /atom grandparent.
+    name: 'obj ..() reaches atom grandparent',
+    dm: `/atom/proc/whoami()\n\treturn "atom!"\n/obj/child/proc/whoami()\n\treturn ..()\n/datum/probe/proc/run()\n\tvar/obj/child/o = new /obj/child\n\treturn o.whoami()`,
+    expected: 'atom!'
+  },
+  {
+    // W-H: istype() honours the sugar chain — /obj child IS an /atom.
+    name: 'istype obj child is atom',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/child/o = new /obj/child\n\treturn istype(o, /atom)`,
+    expected: '1'
   }
 ];
 

@@ -368,11 +368,11 @@ async function runCSharpEmitterTests() {
     while (x) x = x + 1
     for(z in list) z = z + 1
 `);
-  assertContains(oneLine, `if ((comp.GetVar("x")).IsTrue())\n            {\n                return DMValue.FromNumber(5);`, 'single-line if body');
-  assertContains(oneLine, `else\n            {\n                return DMValue.FromNumber(7);`, 'single-line else body');
+  assertContains(oneLine, `if ((comp.GetVar("x")).IsTrue())\n                {\n                    return DMValue.FromNumber(5);`, 'single-line if body');
+  assertContains(oneLine, `else\n                {\n                    return DMValue.FromNumber(7);`, 'single-line else body');
   // x/y/z are move vars: bare writes route through DMSetProperty so datum
   // writes also move the bound entity (item 69, B-1).
-  assertContains(oneLine, `while ((comp.GetVar("x")).IsTrue())\n            {\n                {\n                    await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "x", DMValue.Add(comp.GetVar("x"), DMValue.FromNumber(1)));`, 'single-line while body');
+  assertContains(oneLine, `while ((comp.GetVar("x")).IsTrue())\n                {\n                    {\n                        await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "x", DMValue.Add(comp.GetVar("x"), DMValue.FromNumber(1)));`, 'single-line while body');
   assertContains(oneLine, `await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "z", DMValue.Add(comp.GetVar("z"), DMValue.FromNumber(1)));`, 'single-line for-in body');
 
   // Test 37: Plan 09 B1 — associative list literals list("a" = 1)
@@ -415,10 +415,10 @@ async function runCSharpEmitterTests() {
       else
         doOther()
 `);
-  assertContains(sw, `while (true)\n            {\n                if (DMValue.In(__dm_t`, 'switch wrapper + first case uses the single-evaluated value temp');
+  assertContains(sw, `while (true)\n                {\n                    if (DMValue.In(__dm_t`, 'switch wrapper + first case uses the single-evaluated value temp');
   assertContains(sw, `else if (DMValue.In(__dm_t`, 'switch case conditions reuse the value temp (CS0136 fix)');
   assertContains(sw, `else if (DMValue.In(__dm_t`, 'continue in case (no loop) exits the switch');
-  assertContains(sw, `                }\n                break;\n            }\n            return comp.GetVar(".");`, 'terminating break after the case chain');
+  assertContains(sw, `                }\n                    break;\n                }\n                return comp.GetVar(".");`, 'terminating break after the case chain');
   assert((sw.match(/DMValue\.In\(__dm_t/g) || []).length === 2, 'switch value single-evaluated (reused in each case cond)');
 
   // Test 42: Plan 09 B2 — continue in a C-style for still runs the increment
@@ -428,9 +428,9 @@ async function runCSharpEmitterTests() {
         continue
       dothings()
 `);
-  assertContains(cforCont, `while (true)\n                {\n                    if (!(DMValue.LessThan(comp.GetVar("i"), DMValue.FromNumber(5))).IsTrue()) break;`, 'C-for condition tested at loop top');
+  assertContains(cforCont, `while (true)\n                    {\n                        if (!(DMValue.LessThan(comp.GetVar("i"), DMValue.FromNumber(5))).IsTrue()) break;`, 'C-for condition tested at loop top');
   assertContains(cforCont, `goto __dmForCont0;`, 'continue in C-for jumps to the increment label');
-  assertContains(cforCont, `__dmForCont0:\n                    comp.SetVar("i", comp.SetVar("i", DMValue.Add(comp.GetVar("i"), DMValue.FromNumber(1))));`, 'increment behind the continue label');
+  assertContains(cforCont, `__dmForCont0:\n                        comp.SetVar("i", comp.SetVar("i", DMValue.Add(comp.GetVar("i"), DMValue.FromNumber(1))));`, 'increment behind the continue label');
   assert(!cforCont.includes('continue;'), 'no plain continue emitted inside the C-for');
 
   // Test 43: Plan 09 B2 — continue inside a switch inside a C-for targets

@@ -508,8 +508,69 @@ namespace SS13.DM.Runtime
 
         public bool MarkedForDeletion { get; private set; }
 
+        // W-H: proc-local scope frames. DM proc params, 'var/x' decls, the
+        // '.' return slot, and for-loop vars are LOCALS — not datum fields.
+        // Before this, SetVar wrote them onto the datum, so a call like
+        // get_airlock_overlay("[material]_open") clobbered the caller's
+        // icon_state field (surfaced by the M2 door slice). Frames are
+        // per-async-flow (AsyncLocal) so procs interleaved by Sleep() on the
+        // same datum stay isolated; locals shadow same-named datum vars the
+        // way BYOND scopes them.
+        private sealed class DMProcFrame
+        {
+            public readonly DMRuntime Owner;
+            public readonly HashSet<string> Locals = new HashSet<string>();
+            public readonly Dictionary<string, DMValue> Vars = new Dictionary<string, DMValue>();
+            public DMProcFrame(DMRuntime owner) { Owner = owner; }
+        }
+        private static readonly System.Threading.AsyncLocal<System.Collections.Generic.List<DMProcFrame>> _dmProcFrames =
+            new System.Threading.AsyncLocal<System.Collections.Generic.List<DMProcFrame>>();
+        private static System.Collections.Generic.List<DMProcFrame> DMLocalFrames
+            => _dmProcFrames.Value ??= new System.Collections.Generic.List<DMProcFrame>();
+
+        /// <summary>Generated procs call this at entry; pairs with PopFrame
+        /// in a finally.</summary>
+        public void PushFrame() => DMLocalFrames.Add(new DMProcFrame(this));
+
+        /// <summary>Pop the innermost frame owned by this datum (tolerant of
+        /// frames a nested async flow pushed above it).</summary>
+        public void PopFrame()
+        {
+            var f = DMLocalFrames;
+            for (var i = f.Count - 1; i >= 0; i--)
+            {
+                if (ReferenceEquals(f[i].Owner, this)) { f.RemoveAt(i); return; }
+            }
+        }
+
+        /// <summary>Declare a proc-local name on the innermost frame owned by
+        /// this datum; later GetVar/SetVar of that name hit the frame. With no
+        /// owned frame the name falls back to the datum var (defensive —
+        /// every generated proc pushes a frame at entry).</summary>
+        public void DeclareLocal(string name)
+        {
+            var f = DMLocalFrames;
+            for (var i = f.Count - 1; i >= 0; i--)
+            {
+                if (ReferenceEquals(f[i].Owner, this)) { f[i].Locals.Add(name); return; }
+            }
+        }
+
+        private DMProcFrame? LocalFrameFor(string name)
+        {
+            var f = DMLocalFrames;
+            for (var i = f.Count - 1; i >= 0; i--)
+            {
+                if (ReferenceEquals(f[i].Owner, this) && f[i].Locals.Contains(name)) return f[i];
+            }
+            return null;
+        }
+
         public DMValue GetVar(string name)
         {
+            var frame = LocalFrameFor(name); // W-H: proc locals shadow datum vars
+            if (frame != null)
+                return frame.Vars.TryGetValue(name, out var lv) ? lv : DMValue.Null;
             return Variables.TryGetValue(name, out var val) ? val : DMValue.Null;
         }
 
@@ -522,6 +583,13 @@ namespace SS13.DM.Runtime
 
         public virtual DMValue SetVar(string name, DMValue val)
         {
+            var frame = LocalFrameFor(name); // W-H: proc locals shadow datum vars
+            if (frame != null)
+            {
+                frame.Vars[name] = val;
+                if (val.Type == DMValueType.List && val.ListValue != null) val.ListValue.RefCount++;
+                return val;
+            }
             if (!InitialValues.ContainsKey(name)) InitialValues[name] = val;
             Variables[name] = val;
             // The variable now also references the list: bump the COW counter.
@@ -534,8 +602,12 @@ namespace SS13.DM.Runtime
         public bool IsType(string typePath)
         {
             // DM type paths are case-insensitive (WS4-1).
+            // W-H: also walk the canonical ancestor chain — sugar paths like
+            // '/obj/machinery/door' don't textually contain '/atom' even
+            // though /obj IS /atom/movable/obj (istype(x, /atom) must be true).
             return string.Equals(typePath, DMTypePath, StringComparison.OrdinalIgnoreCase)
-                || DMTypePath.StartsWith(typePath + "/", StringComparison.OrdinalIgnoreCase);
+                || DMTypePath.StartsWith(typePath + "/", StringComparison.OrdinalIgnoreCase)
+                || ProcRegistry.DMParentPaths(DMTypePath).Contains(typePath, StringComparer.OrdinalIgnoreCase);
         }
 
         public void MarkForDeletion()
@@ -945,11 +1017,10 @@ namespace SS13.DM.Runtime
         public static string[] GetParamNames(string typePath, string procName)
         {
             if (ParamNames.TryGetValue((typePath.ToLowerInvariant(), procName.ToLowerInvariant()), out var names)) return names;
-            var parts = typePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            while (parts.Length > 0)
+            // W-H: canonical ancestor chain (see DMParentPaths) — parent
+            // proc params must bind against the resolved ancestor too.
+            foreach (var candidate in DMParentPaths(typePath))
             {
-                parts = parts[..^1];
-                var candidate = "/" + string.Join("/", parts);
                 if (ParamNames.TryGetValue((candidate.ToLowerInvariant(), procName.ToLowerInvariant()), out names)) return names;
             }
             return null;
@@ -960,13 +1031,43 @@ namespace SS13.DM.Runtime
             return Procs.TryGetValue((typePath.ToLowerInvariant(), procName.ToLowerInvariant()), out handler!);
         }
 
-        public static bool TryGetInherited(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
+        // W-H: BYOND type-path shorthand — '/obj' and '/mob' are really
+        // '/atom/movable/{obj,mob}', '/turf|/area|/image' sit under '/atom',
+        // and '/atom's parent is '/datum'. Segment-stripping a sugar path
+        // never reaches those canonical ancestors, which hid every /atom
+        // proc (update_icon, update_icon_state, attack_hand, ...) from /obj
+        // and /mob children — the paradise door slice needs update_icon
+        // resolved through the real chain.
+        private static readonly Dictionary<string, string[]> DMAliasAncestors = new()
+        {
+            ["obj"] = new[] { "/atom/movable", "/atom", "/datum" },
+            ["mob"] = new[] { "/atom/movable", "/atom", "/datum" },
+            ["turf"] = new[] { "/atom", "/datum" },
+            ["area"] = new[] { "/atom", "/datum" },
+            ["image"] = new[] { "/atom", "/datum" },
+            ["atom"] = new[] { "/datum" },
+        };
+
+        /// <summary>Ancestor type paths in BYOND order (nearest first).</summary>
+        public static IEnumerable<string> DMParentPaths(string typePath)
         {
             var parts = typePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             while (parts.Length > 0)
             {
                 parts = parts[..^1];
-                var candidate = "/" + string.Join("/", parts);
+                yield return "/" + string.Join("/", parts);
+                if (parts.Length == 1) break; // root segment: continue via alias tail
+            }
+            if (parts.Length == 1 && DMAliasAncestors.TryGetValue(parts[0].ToLowerInvariant(), out var tail))
+            {
+                foreach (var p in tail) yield return p;
+            }
+        }
+
+        public static bool TryGetInherited(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
+        {
+            foreach (var candidate in DMParentPaths(typePath))
+            {
                 if (Procs.TryGetValue((candidate.ToLowerInvariant(), procName.ToLowerInvariant()), out handler!)) return true;
             }
             handler = null!;
@@ -982,11 +1083,8 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static bool TryGetInherited(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler, out string? resolvedPath)
         {
-            var parts = typePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            while (parts.Length > 0)
+            foreach (var candidate in DMParentPaths(typePath))
             {
-                parts = parts[..^1];
-                var candidate = "/" + string.Join("/", parts);
                 if (Procs.TryGetValue((candidate.ToLowerInvariant(), procName.ToLowerInvariant()), out handler!))
                 {
                     resolvedPath = candidate;
@@ -1028,17 +1126,17 @@ namespace SS13.DM.Runtime
             var names = new List<string>();
             var seen = new HashSet<string>();
             var path = typePath.ToLowerInvariant();
-            while (true)
+            var pending = new List<string> { path };
+            // W-H: canonical ancestors (sugar /obj -> /atom/movable -> /atom)
+            pending.AddRange(DMParentPaths(typePath));
+            foreach (var candidate in pending)
             {
+                var cand = candidate.ToLowerInvariant();
                 foreach (var kv in Procs)
                 {
-                    if (kv.Key.TypePath != path) continue;
+                    if (kv.Key.TypePath != cand) continue;
                     if (seen.Add(kv.Key.Name)) names.Add(kv.Key.Name);
                 }
-                var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 0) break;
-                parts = parts[..^1];
-                path = "/" + string.Join("/", parts);
             }
             return names;
         }
@@ -1420,6 +1518,27 @@ namespace SS13.DM.Runtime
         /// </summary>
         private static readonly Dictionary<string, (DMRuntime? Datum, string TypePath, string ProcName)> ProcRefs = new();
         private static int _procRefCounter;
+
+        // W-H: initialVars hold RAW DM initializer text (parseInitialValueText
+        // keeps the source verbatim: 'FALSE', 'null', 'list ( MELEE = 30 )',
+        // '( 1 << 8 )'). FromString() stored them as strings, and a non-empty
+        // string is TRUTHY — so 'var/barricaded = FALSE' loaded as truthy and
+        // door's 'if(...||barricaded) return' silently killed the whole click
+        // chain. Coerce the DM literal keywords, plain numerics, and quoted
+        // strings here; anything else keeps string identity exactly as before.
+        public static DMValue ParseInitialVar(string raw)
+        {
+            if (raw == null) return DMValue.Null;
+            var s = raw.Trim();
+            if (string.Equals(s, "null", StringComparison.OrdinalIgnoreCase)) return DMValue.Null;
+            if (string.Equals(s, "TRUE", StringComparison.OrdinalIgnoreCase)) return DMValue.FromNumber(1);
+            if (string.Equals(s, "FALSE", StringComparison.OrdinalIgnoreCase)) return DMValue.FromNumber(0);
+            if (double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n))
+                return DMValue.FromNumber(n);
+            if (s.Length >= 2 && s.StartsWith("\"") && s.EndsWith("\""))
+                return DMValue.FromString(s[1..^1]);
+            return DMValue.FromString(raw);
+        }
 
         private static string MakeProcRefKey(DMRuntime? datum, string typePath, string procName)
         {
@@ -3231,6 +3350,13 @@ namespace SS13.DM.Runtime
                         for (var i = 1; i <= members.PositionalCount; i++)
                             yield return members.Get(i);
                     }
+                    break;
+                // W-H: BYOND 'for (x in null)' iterates ZERO times — the loop
+                // body never runs. Real SS13 relies on this: has_access()
+                // loops over req_access where it is null on no-access
+                // objects and must fall through to 'return 1', not run one
+                // bogus iteration. Null must yield nothing.
+                case DMValueType.Null:
                     break;
                 default:
                     yield return value;
