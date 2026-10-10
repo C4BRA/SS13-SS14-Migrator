@@ -3,19 +3,23 @@ import * as path from 'path';
 import { DMIMetadata, DMIParser } from './dmiParser.js';
 import { decodePNG, encodePNG } from './pngCodec.js';
 
-// Converts a BYOND .dmi into the SS14 RSI directory layout:
+// Converts a BYOND .dmi into the SS14 RSI layout used by the pinned engine
+// (RobustToolbox @ 9cefa116, RSI v1):
 //   <rsi>/
-//     meta.json                  (top-level: version, license, size, states)
-//     <state>/
-//       <dir>.png                (one sprite per direction)
-//       meta.json                (per-state: directions + delays)
+//     meta.json                  (version, license, size, states[])
+//     <stateName>.png            (all dirs*frames cells, DIR-MAJOR)
+//     <stateName>.tile.png       (first cell only — used by dmTile sprites)
 //
-// DMI sheet layout: `dirs` rows of `frames` frames, each cell width x height.
-// SS14 RSI animation frames are stacked VERTICALLY inside the direction png,
-// so frame f of direction d is cropped from sheet cell (f*width, d*height)
-// and placed at y = f*height.
+// The pin's RSI loader reads `data.Path / (state.name + ".png")` and requires
+// the image to be an exact multiple of the declared frame size, cells packed
+// dir-major: for direction d, frame f the cell sits at (f*W, d*H).
 //
-// DMI delay lists cover frames*dirs entries in FRAME-MAJOR order:
+// DMI sheets are FRAME-MAJOR: cell index within a state is `f*dirs + d`,
+// laid out row-major over `gridwidth = sheet.width / icon.width` columns.
+// DMI direction order S,N,E,W,SE,SW,NE,NW is the same order as the pin's
+// RsiDirection enum, so dir indices pass through unremapped.
+//
+// DMI delay lists are also frame-major:
 //   delay[d + f*dirs] = delay of direction d, frame f.
 // SS14 `delays` is one array per direction of per-frame delays.
 
@@ -63,60 +67,86 @@ export class RSIWriter {
     }, null, 2));
 
     if (sheet) {
+      const gridwidth = Math.floor(sheet.width / meta.width);
+      const rows = Math.floor(sheet.height / meta.height);
+      const totalCells = gridwidth * rows;
+      let cellBase = 0;
+
       for (const state of meta.states) {
-        const stateDir = path.join(outputRSIPath, this.sanitizeStateName(state.name));
-        fs.mkdirSync(stateDir, { recursive: true });
+        const cellsNeeded = state.frames * state.dirs;
+        cellBase += cellsNeeded;
+        if (cellsNeeded === 0) continue;
+        if (state.dirs !== 1 && state.dirs !== 4 && state.dirs !== 8) {
+          meta.warnings.push(`state '${state.name}': dirs=${state.dirs} is not 1/4/8 — emitting anyway, engine may reject`);
+        }
         // A sheet smaller than the declared cells would crop out-of-bounds
         // into silent black/garbage pixels — skip with a warning instead.
-        const needW = state.frames * meta.width;
-        const needH = state.dirs * meta.height;
-        if (sheet.width < needW || sheet.height < needH) {
+        if (gridwidth === 0 || cellBase > totalCells) {
           meta.warnings.push(
-            `state '${state.name}': sheet ${sheet.width}x${sheet.height} is smaller than declared ${needW}x${needH} — sprites skipped`
+            `state '${state.name}': sheet ${sheet.width}x${sheet.height} holds ${totalCells} cells but ${cellBase} were needed — sprites skipped`
           );
           continue;
         }
-        for (let d = 0; d < state.dirs; d++) {
-          // DMI 4-dir rows are S,N,E,W; SS14 RSI direction indices are
-          // S,E,N,W (0,1,2,3). Copying rows verbatim swapped North and East
-          // (WS10-1 — color-row probe proof). dirs=8 has no SS14 equivalent
-          // (SS14 supports 1/4); emit with a warning.
-          if (state.dirs === 8) {
-            meta.warnings.push(`state '${state.name}': dirs=8 is not supported by SS14 RSIs (1/4 only) — emitting rows verbatim`);
-          }
-          const ss14Dir = state.dirs === 4 ? [0, 2, 1, 3][d] : d;
-          // Stack all frames of this direction vertically.
-          const stacked = Buffer.alloc(meta.width * meta.height * state.frames * 4);
-          const frameSize = meta.width * meta.height * 4;
-          const sheetStride = sheet.width * 4;
-          const rowBytes = meta.width * 4;
-          for (let f = 0; f < state.frames; f++) {
-            const sx = f * meta.width * 4;
-            const sy = d * meta.height;
-            const destOffset = f * frameSize;
-            const srcRowStart = sy * sheetStride + sx;
-            // Bulk copy entire scanlines instead of per-pixel operations
-            for (let y = 0; y < meta.height; y++) {
-              const srcOffset = srcRowStart + y * sheetStride;
-              const dstOffset = destOffset + y * rowBytes;
-              sheet.rgba.copy(stacked, dstOffset, srcOffset, srcOffset + rowBytes);
-            }
-          }
-          const png = encodePNG({ width: meta.width, height: meta.height * state.frames, rgba: stacked });
-          fs.writeFileSync(path.join(stateDir, `${ss14Dir}.png`), png);
+        const fileName = this.stateFileName(state.name);
+        if (fileName === null) {
+          meta.warnings.push(`state '${state.name}': name is not a safe file name — sprites skipped`);
+          continue;
         }
-        fs.writeFileSync(path.join(stateDir, 'meta.json'), JSON.stringify({
-          version: 1,
-          size: { x: meta.width, y: meta.height },
-          states: [rsiStates.find(s => s.name === state.name)]
-        }, null, 2));
+        const stateBase = cellBase - cellsNeeded;
+
+        // Dir-major flat PNG: cell (d, f) -> (f*W, d*H).
+        const outW = meta.width * state.frames;
+        const outH = meta.height * state.dirs;
+        const packed = Buffer.alloc(outW * outH * 4);
+        for (let d = 0; d < state.dirs; d++) {
+          for (let f = 0; f < state.frames; f++) {
+            const srcCell = stateBase + f * state.dirs + d;
+            const sx = (srcCell % gridwidth) * meta.width;
+            const sy = Math.floor(srcCell / gridwidth) * meta.height;
+            this.blitCell(sheet, sx, sy, meta.width, meta.height, packed, outW, f * meta.width, d * meta.height);
+          }
+        }
+        const pngPath = path.join(outputRSIPath, `${fileName}.png`);
+        fs.mkdirSync(path.dirname(pngPath), { recursive: true });
+        fs.writeFileSync(pngPath, encodePNG({ width: outW, height: outH, rgba: packed }));
+
+        // First-cell crop for ITileDefinition sprites (tiles need W x H,
+        // exactly one cell — BYOND tiles always show dir 0 frame 0).
+        const tile = Buffer.alloc(meta.width * meta.height * 4);
+        const t0x = (stateBase % gridwidth) * meta.width;
+        const t0y = Math.floor(stateBase / gridwidth) * meta.height;
+        this.blitCell(sheet, t0x, t0y, meta.width, meta.height, tile, meta.width, 0, 0);
+        const tilePath = path.join(outputRSIPath, `${fileName}.tile.png`);
+        fs.mkdirSync(path.dirname(tilePath), { recursive: true });
+        fs.writeFileSync(tilePath, encodePNG({ width: meta.width, height: meta.height, rgba: tile }));
       }
     }
 
     return meta;
   }
 
-  private sanitizeStateName(name: string): string {
-    return name.replace(/[\\/]/g, '_').replace(/[^A-Za-z0-9_.-]/g, '_');
+  private blitCell(
+    sheet: { width: number; rgba: Buffer },
+    sx: number, sy: number, w: number, h: number,
+    dst: Buffer, dstWidth: number, dx: number, dy: number
+  ): void {
+    const sheetStride = sheet.width * 4;
+    const rowBytes = w * 4;
+    for (let y = 0; y < h; y++) {
+      const srcOffset = (sy + y) * sheetStride + sx * 4;
+      const dstOffset = (dy + y) * dstWidth * 4 + dx * 4;
+      sheet.rgba.copy(dst, dstOffset, srcOffset, srcOffset + rowBytes);
+    }
+  }
+
+  // The pin's loader resolves `<rsi>/<verbatim state name>.png`, so the file
+  // name must match the meta name exactly. `/` inside a name is honoured as
+  // a subdirectory separator (the loader resolves it the same way); names
+  // that could escape the rsi dir are refused.
+  private stateFileName(name: string): string | null {
+    if (name === '' || name.startsWith('/') || name.includes('..') || name.includes('\\') || name.includes('\0')) {
+      return null;
+    }
+    return name;
   }
 }

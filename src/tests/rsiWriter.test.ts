@@ -25,17 +25,24 @@ function assertEqual(actual: any, expected: any, message: string) {
   }
 }
 
-// Build a DMI PNG: 4x4 RGBA sheet (2 dirs x 2 frames of 2x2 cells) + tEXt
-// metadata. Cell (frame f, dir d) is filled with a distinctive color:
-// r = 10*f, g = 10*d, b = 40.
+// Build a DMI PNG: 4x4 RGBA sheet (4 cells of 2x2) + tEXt metadata.
+// DMI cells are FRAME-MAJOR flat row-major: cell index f*dirs+d maps to
+// (idx%gridwidth, idx/gridwidth) with gridwidth=2. With dirs=2, frames=2:
+//   cell(f0,d0)=idx0@(0,0)  cell(f0,d1)=idx1@(2,0)
+//   cell(f1,d0)=idx2@(0,2)  cell(f1,d1)=idx3@(2,2)
+// Cell color r = 10*colX, g = 10*rowY/2 + 10 (i.e. (10*col, 10*row, 40)).
 function buildSheetPng(): Buffer {
   const W = 2, H = 2, dirs = 2, frames = 2;
-  const rgba = Buffer.alloc(W * frames * H * dirs * 4);
+  const gridwidth = 2;
+  const rgba = Buffer.alloc(W * gridwidth * H * ((dirs * frames) / gridwidth) * 4);
   for (let d = 0; d < dirs; d++) {
     for (let f = 0; f < frames; f++) {
+      const cellIdx = f * dirs + d;
+      const cellX = (cellIdx % gridwidth) * W;
+      const cellY = Math.floor(cellIdx / gridwidth) * H;
       for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
-          const i = ((d * H + y) * (W * frames) + (f * W + x)) * 4;
+          const i = ((cellY + y) * (W * gridwidth) + (cellX + x)) * 4;
           rgba[i] = 10 * f;
           rgba[i + 1] = 10 * d + 10;
           rgba[i + 2] = 40;
@@ -44,7 +51,7 @@ function buildSheetPng(): Buffer {
       }
     }
   }
-  const idatPng = encodePNG({ width: W * frames, height: H * dirs, rgba });
+  const idatPng = encodePNG({ width: W * gridwidth, height: H * ((dirs * frames) / gridwidth), rgba });
 
   // Rebuild the PNG with a tEXt chunk inserted after IHDR.
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -91,20 +98,25 @@ async function runRSIWriterTests() {
   // -> dir 0 = [1,3], dir 1 = [2,4].
   assertEqual(topMeta.states[0].delays, [[1, 3], [2, 4]], 'Frame-major delay slicing per direction');
 
-  // Per-state sprite files: one png per direction, frames stacked vertically.
-  for (const d of [0, 1]) {
-    const sprite = decodePNG(fs.readFileSync(path.join(outDir, 'anim', `${d}.png`)));
-    assertEqual({ w: sprite.width, h: sprite.height }, { w: 2, h: 4 }, `Direction ${d} sprite is width x (frames*height)`);
-    // Pixel (0,0) = frame 0 of dir d; pixel (0,2) = frame 1 of dir d.
-    const rowStride = sprite.width * 4;
-    const f0 = [sprite.rgba[0], sprite.rgba[1], sprite.rgba[2]];
-    const f1 = [sprite.rgba[2 * rowStride], sprite.rgba[2 * rowStride + 1], sprite.rgba[2 * rowStride + 2]];
-    assertEqual(f0, [0, 10 * d + 10, 40], `Direction ${d} frame 0 pixel`);
-    assertEqual(f1, [10, 10 * d + 10, 40], `Direction ${d} frame 1 pixel (vertical stacking)`);
-  }
+  // Pin-format sprite: one flat <state>.png packed DIR-MAJOR — cell (d,f)
+  // sits at (f*W, d*H). Output is frames*W x dirs*H.
+  const sprite = decodePNG(fs.readFileSync(path.join(outDir, 'anim.png')));
+  assertEqual({ w: sprite.width, h: sprite.height }, { w: 4, h: 4 }, 'State sprite is (frames*W) x (dirs*H), dir-major');
+  const px = (x: number, y: number) => {
+    const i = (y * sprite.width + x) * 4;
+    return [sprite.rgba[i], sprite.rgba[i + 1], sprite.rgba[i + 2]];
+  };
+  assertEqual(px(0, 0), [0, 10, 40], 'Dir 0 frame 0 at (0,0)');
+  assertEqual(px(2, 0), [10, 10, 40], 'Dir 0 frame 1 at (f*W,0) — horizontal stacking');
+  assertEqual(px(0, 2), [0, 20, 40], 'Dir 1 frame 0 at (0,d*H)');
+  assertEqual(px(2, 2), [10, 20, 40], 'Dir 1 frame 1 at (f*W,d*H)');
 
-  const stateMeta = JSON.parse(fs.readFileSync(path.join(outDir, 'anim', 'meta.json'), 'utf-8'));
-  assertEqual(stateMeta.states[0].directions, 2, 'Per-state meta directions');
+  // Tile sprite: first cell only (dir 0, frame 0).
+  const tile = decodePNG(fs.readFileSync(path.join(outDir, 'anim.tile.png')));
+  assertEqual({ w: tile.width, h: tile.height }, { w: 2, h: 2 }, 'Tile sprite is a single cell');
+  assertEqual([tile.rgba[0], tile.rgba[1], tile.rgba[2]], [0, 10, 40], 'Tile sprite is dir 0 frame 0');
+
+  assert(!fs.existsSync(path.join(outDir, 'anim', 'meta.json')), 'No per-state subdirectory/meta.json (pin flat layout)');
 
   // Cleanup
   for (const f of [pngPath]) {
@@ -144,8 +156,8 @@ state "big"
   fs.writeFileSync(smallPath, smallDmi);
   const smallOut = path.join(process.cwd(), 'temp_test_small_rsi');
   const smallMeta = writer.convertDMIToRSI(smallPath, smallOut);
-  assert(smallMeta.warnings.some(w => w.includes('smaller than declared')), 'Undersized sheet produces a warning');
-  assert(!fs.existsSync(path.join(smallOut, 'big', '0.png')), 'Undersized sheet skips sprite emission');
+  assert(smallMeta.warnings.some(w => w.includes('cells but') && w.includes('were needed')), 'Undersized sheet produces a warning');
+  assert(!fs.existsSync(path.join(smallOut, 'big.png')), 'Undersized sheet skips sprite emission');
   if (fs.existsSync(smallPath)) fs.unlinkSync(smallPath);
   if (fs.existsSync(smallOut)) fs.rmSync(smallOut, { recursive: true, force: true });
 

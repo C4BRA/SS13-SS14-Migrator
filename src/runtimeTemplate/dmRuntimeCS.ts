@@ -490,6 +490,8 @@ namespace SS13.DM.Runtime
             Variables[name] = val;
             // The variable now also references the list: bump the COW counter.
             if (val.Type == DMValueType.List && val.ListValue != null) val.ListValue.RefCount++;
+            // B-3 (item 71): appearance vars republish to the engine.
+            DMRuntimeHelpers.OnDatumVarChanged(this, name);
             return val;
         }
 
@@ -1607,6 +1609,11 @@ namespace SS13.DM.Runtime
                             var overlays = datum.GetVar("overlays");
                             return overlays.Type == DMValueType.Null ? DMValue.FromList(new DMList()) : overlays;
                         }
+                    case "underlays":
+                        {
+                            var underlays = datum.GetVar("underlays");
+                            return underlays.Type == DMValueType.Null ? DMValue.FromList(new DMList()) : underlays;
+                        }
                 }
                 // world.* statics: game-time values resolve live from
                 // DMTickScheduler (item 70); wall-clock values are computed
@@ -1631,7 +1638,13 @@ namespace SS13.DM.Runtime
                             return DMValue.FromNumber(WorldTickLag());
                     }
                 }
-                return datum.GetVar(name);
+                var storedVar = datum.GetVar(name);
+                if (storedVar.Type != DMValueType.Null) return storedVar;
+                // B-3 (item 71): implicit BYOND defaults for atom appearance
+                // vars — an undeclared appearance var reads as its type
+                // default (alpha 255, mouse_opacity 1, layer by type), not
+                // null. Non-appearance vars still read null.
+                return AppearanceVarDefault(datum, name);
             }
             return DMValue.Null;
         }
@@ -2663,11 +2676,10 @@ namespace SS13.DM.Runtime
 
         // ==== Appearance/UI builtins ====
 
-        // Visual engine integration (animate/flick) is a live-server item
-        // (item 66); their data models are real datums below (item 65) so
-        // the corpus reads vars back instead of Null.
-        public static DMValue Animate(params DMValue[] args) => DMValue.Null;
-        public static DMValue Flick(params DMValue[] args) => DMValue.Null;
+        // animate()/flick() are real now — implemented in the
+        // ==== B-3 appearance ==== region (item 71): datum-side var
+        // animation stepped by DMTickScheduler, pushed to the engine via
+        // the appearance bridge.
         public static DMValue Browse(params DMValue[] args) => DMValue.Null;
         public static DMValue CallExt(params DMValue[] args) => DMValue.Null;
         public static DMValue DetectRustG(params DMValue[] args) => DMValue.FromNumber(0);
@@ -4110,6 +4122,671 @@ namespace SS13.DM.Runtime
                     return a.Type == DMValueType.Null ? DMValue.Null : a;
             }
         }
+
+        // ==== B-3 appearance (item 71) ====
+
+        /// <summary>
+        /// Atom appearance vars that drive the engine appearance channel.
+        /// A write to any of these through SetVar (the single choke point)
+        /// republishes the datum's appearance to its bound entity.
+        /// </summary>
+        private static readonly HashSet<string> AppearanceVarNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "icon", "icon_state", "dir", "color", "alpha",
+            "pixel_x", "pixel_y", "pixel_z", "pixel_w",
+            "layer", "plane", "invisibility", "opacity", "mouse_opacity",
+            "luminosity", "light_color", "light_power", "light_range",
+            "overlays", "underlays", "transform", "appearance",
+            "appearance_flags", "blend_mode", "vis_contents", "vis_locs",
+            "maptext", "maptext_width", "maptext_height", "maptext_x", "maptext_y",
+            "render_target", "render_source", "screen_loc", "base_icon_state",
+            "gender", "suffix", "glide_size", "infra_luminosity"
+        };
+
+        public static bool IsAppearanceVar(string name) => AppearanceVarNames.Contains(name);
+
+        /// <summary>
+        /// Engine hook: the generated system republishes the datum's whole
+        /// appearance into its entity's AppearanceComponent data for
+        /// datum.EntityId. Engine-free (probes): null — vars still read
+        /// correctly, nothing pushed.
+        /// </summary>
+        public static Action<DMRuntime>? EntityAppearanceBridge;
+
+        /// <summary>
+        /// Engine hook: (datum, icon_state) -> decisecond duration of that
+        /// RSI state (sum of dir-0 delays). flick() uses it; engine-free
+        /// falls back to one tick.
+        /// </summary>
+        public static Func<DMRuntime, string, double>? RsiStateDurationDs;
+
+        /// <summary>
+        /// Honest loss counter: animate/flick/overlay requests that could
+        /// not be fully honored (non-LINEAR easing, unsupported flags,
+        /// transform tweening, exotic overlay entries).
+        /// </summary>
+        public static int AppearanceStubCount;
+        private static void AppearanceLoss() => AppearanceStubCount++;
+
+        /// <summary>
+        /// Called from DMRuntime.SetVar — the single write path — so DM
+        /// assignments, initial-var loads and animation steps that touch an
+        /// appearance var republish it. Non-appearance vars cost one
+        /// HashSet probe.
+        /// </summary>
+        internal static void OnDatumVarChanged(DMRuntime datum, string name)
+        {
+            if (EntityAppearanceBridge != null && datum.EntityId != 0 && IsAppearanceVar(name))
+                EntityAppearanceBridge(datum);
+        }
+
+        /// <summary>Force a full appearance republish (bridge may be null).</summary>
+        public static void PushAppearance(DMRuntime datum)
+        {
+            if (EntityAppearanceBridge != null && datum.EntityId != 0)
+                EntityAppearanceBridge(datum);
+        }
+
+        /// <summary>
+        /// /obj and /mob are lexical shorthand for /atom/movable/{obj,mob} —
+        /// the runtime's IsType is a path-prefix check, so the atom kinds
+        /// must be enumerated explicitly.
+        /// </summary>
+        private static bool IsAtomLike(DMRuntime datum)
+        {
+            return datum.IsType("/atom") || datum.IsType("/obj") || datum.IsType("/mob")
+                || datum.IsType("/turf") || datum.IsType("/area")
+                || datum.IsType("/image") || datum.IsType("/icon");
+        }
+
+        /// <summary>
+        /// Implicit BYOND defaults for appearance vars on atom-ish datums.
+        /// Called by DMGetProperty when the var was never assigned.
+        /// </summary>
+        private static DMValue AppearanceVarDefault(DMRuntime datum, string name)
+        {
+            if (!IsAtomLike(datum))
+                return DMValue.Null;
+            switch (name)
+            {
+                case "icon_state": return DMValue.FromString("");
+                case "alpha": return DMValue.FromNumber(255);
+                case "pixel_x": case "pixel_y": case "pixel_z": case "pixel_w":
+                    return DMValue.FromNumber(0);
+                case "layer":
+                    // BYOND ref defaults: /area 0, /turf 1, /obj 3, /mob 4.
+                    if (datum.IsType("/area")) return DMValue.FromNumber(0);
+                    if (datum.IsType("/turf")) return DMValue.FromNumber(1);
+                    if (datum.IsType("/mob")) return DMValue.FromNumber(4);
+                    if (datum.IsType("/image")) return DMValue.FromNumber(-1);
+                    return DMValue.FromNumber(3);
+                case "invisibility": return DMValue.FromNumber(0);
+                case "opacity": return DMValue.FromNumber(0);
+                case "mouse_opacity": return DMValue.FromNumber(1);
+                case "luminosity": case "light_range": return DMValue.FromNumber(0);
+                case "light_power": return DMValue.FromNumber(1);
+                case "plane": return DMValue.FromNumber(0);
+            }
+            return DMValue.Null;
+        }
+
+        /// <summary>
+        /// DM icon var value -> /Textures-relative RSI resource path:
+        /// 'icons/mob/human.dmi' or an /icon datum -> 'icons/mob/human.rsi'.
+        /// null when the value carries no icon path.
+        /// </summary>
+        public static string? IconPathToRsi(DMValue icon)
+        {
+            if (icon.Type == DMValueType.DatumRef && icon.AsDatum() is DMRuntime d)
+                return IconPathToRsi(d.GetVar("icon"));
+            var s = icon.ToString().Trim();
+            if (s.Length == 0 || s == "null") return null;
+            s = s.Trim('\\'', '"').Replace('\\\\', '/').TrimStart('/');
+            if (s.EndsWith(".dmi", StringComparison.OrdinalIgnoreCase))
+                s = s.Substring(0, s.Length - 4) + ".rsi";
+            return s;
+        }
+
+        private static string? VarText(DMRuntime d, string name)
+        {
+            var v = d.GetVar(name);
+            return v.Type == DMValueType.Null ? null : v.ToString();
+        }
+
+        private static double NumVar(DMRuntime d, string name, double fallback)
+        {
+            var v = d.GetVar(name);
+            return v.Type == DMValueType.Number ? v.NumberValue : fallback;
+        }
+
+        /// <summary>
+        /// Serialize an overlays/underlays list for the engine appearance
+        /// channel: one string per entry,
+        /// "rsi|state|dir|layer|pixel_x|pixel_y|color|alpha".
+        /// A text entry is an icon_state on the owner's icon; a datum entry
+        /// (/image, atom) contributes its own icon/state/offset vars, falling
+        /// back to the owner's icon when it has none.
+        /// </summary>
+        public static List<string> SerializeOverlayList(DMRuntime owner, string varName)
+        {
+            var result = new List<string>();
+            var v = owner.GetVar(varName);
+            if (v.Type != DMValueType.List || v.ListValue == null) return result;
+            var list = v.ListValue;
+            for (var i = 1; i <= list.PositionalCount; i++)
+            {
+                var entry = SerializeOverlayEntry(owner, list.Get(i));
+                if (entry != null) result.Add(entry);
+            }
+            return result;
+        }
+
+        private static string? SerializeOverlayEntry(DMRuntime owner, DMValue item)
+        {
+            if (item.Type == DMValueType.String)
+            {
+                var icon = IconPathToRsi(owner.GetVar("icon"));
+                if (icon == null) { AppearanceLoss(); return null; }
+                return icon + "|" + item.StringValue + "|" + ((int)NumVar(owner, "dir", 2)).ToString(CultureInfo.InvariantCulture)
+                    + "|" + NumVar(owner, "layer", 3).ToString(CultureInfo.InvariantCulture) + "|0|0|"
+                    + (VarText(owner, "color") ?? "") + "|" + NumVar(owner, "alpha", 255).ToString(CultureInfo.InvariantCulture);
+            }
+            if (item.Type == DMValueType.DatumRef && item.AsDatum() is DMRuntime d)
+            {
+                var icon = IconPathToRsi(d.GetVar("icon")) ?? IconPathToRsi(owner.GetVar("icon"));
+                if (icon == null) { AppearanceLoss(); return null; }
+                return icon + "|" + (VarText(d, "icon_state") ?? "")
+                    + "|" + ((int)NumVar(d, "dir", 2)).ToString(CultureInfo.InvariantCulture)
+                    + "|" + NumVar(d, "layer", NumVar(owner, "layer", 3)).ToString(CultureInfo.InvariantCulture)
+                    + "|" + NumVar(d, "pixel_x", 0).ToString(CultureInfo.InvariantCulture)
+                    + "|" + NumVar(d, "pixel_y", 0).ToString(CultureInfo.InvariantCulture)
+                    + "|" + (VarText(d, "color") ?? "")
+                    + "|" + NumVar(d, "alpha", 255).ToString(CultureInfo.InvariantCulture);
+            }
+            AppearanceLoss();
+            return null;
+        }
+
+        // ---- animate() / flick() ----
+
+        /// <summary>Marker: a call-site named arg (alpha = 0, time = 5)
+        /// emitted as a 2-element list by the transpiler so the name reaches
+        /// the builtin (item 71).</summary>
+        public static DMValue DMNamedArg(string name, DMValue value)
+        {
+            var l = new DMList();
+            l.Add(DMValue.FromString(name));
+            l.Add(value);
+            return DMValue.FromList(l);
+        }
+
+        private static bool TryUnwrapNamedArg(DMValue arg, out string? name, out DMValue value)
+        {
+            name = null; value = DMValue.Null;
+            if (arg.Type != DMValueType.List || arg.ListValue == null || arg.ListValue.PositionalCount != 2)
+                return false;
+            var k = arg.ListValue.Get(1);
+            if (k.Type != DMValueType.String) return false;
+            name = k.StringValue;
+            value = arg.ListValue.Get(2);
+            return true;
+        }
+
+        private sealed class DMAnimation
+        {
+            public DMRuntime Target = null!;
+            public double StartDs;
+            public double DurationDs;
+            public int LoopsLeft;
+            public Dictionary<string, DMValue> From = new();
+            public Dictionary<string, DMValue> To = new();
+        }
+
+        private static readonly object AnimationSync = new();
+        private static readonly List<DMAnimation> RunningAnimations = new();
+        private static readonly Dictionary<DMRuntime, Queue<DMAnimation>> AnimationQueues = new();
+        private static bool _animPumpRegistered;
+
+        private const int AnimationEndNow = 1;
+        private const int AnimationParallel = 4;
+        private const int AnimationRelative = 16;
+
+        /// <summary>
+        /// Vars that can be interpolated between values per tick. Colors and
+        /// dir are special-cased; everything else applies at segment end
+        /// (BYOND applies non-interpolable vars at the end of the animation).
+        /// </summary>
+        private static readonly HashSet<string> InterpolableVars = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "alpha", "pixel_x", "pixel_y", "pixel_z", "pixel_w", "layer", "plane",
+            "luminosity", "light_power", "light_range", "infra_luminosity",
+            "glide_size", "maptext_width", "maptext_height", "maptext_x", "maptext_y"
+        };
+
+        /// <summary>
+        /// DM animate(target, time, loop, easing, flags, delay, var=val, ...):
+        /// tween appearance vars on the datum over 'time' deciseconds,
+        /// stepped by the DM tick scheduler. Named args arrive as DMNamedArg
+        /// marker lists (call-site 'x = v' parses as an assignment, which the
+        /// emitter rewrites); positional args follow BYOND's control order.
+        /// </summary>
+        public static DMValue Animate(params DMValue[] args)
+        {
+            if (args.Length == 0) return DMValue.Null;
+            var targets = new List<DMRuntime>();
+            CollectAnimateTargets(args[0], targets);
+            if (targets.Count == 0) return DMValue.Null;
+
+            double time = 0, delay = 0;
+            int loops = 0, flags = 0;
+            var namedControl = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var vars = new List<(string Name, DMValue Value)>();
+            var positional = new List<DMValue>();
+            for (var i = 1; i < args.Length; i++)
+            {
+                if (TryUnwrapNamedArg(args[i], out var name, out var value) && name != null)
+                {
+                    switch (name.ToLowerInvariant())
+                    {
+                        case "time": time = value.ToNumber(); namedControl.Add("time"); break;
+                        case "loop": loops = (int)value.ToNumber(); namedControl.Add("loop"); break;
+                        case "easing":
+                            if (value.ToString() != "LINEAR_EASING") AppearanceLoss();
+                            break;
+                        case "flags": flags = (int)value.ToNumber(); namedControl.Add("flags"); break;
+                        case "delay": delay = value.ToNumber(); namedControl.Add("delay"); break;
+                        case "chain": AppearanceLoss(); break;
+                        default:
+                            vars.Add((name.ToLowerInvariant(), value));
+                            break;
+                    }
+                }
+                else
+                {
+                    positional.Add(args[i]);
+                }
+            }
+            if (positional.Count > 0 && !namedControl.Contains("time")) time = positional[0].ToNumber();
+            if (positional.Count > 1 && !namedControl.Contains("loop")) loops = (int)positional[1].ToNumber();
+            if (positional.Count > 3 && !namedControl.Contains("flags")) flags = (int)positional[3].ToNumber();
+            if (positional.Count > 4 && !namedControl.Contains("delay")) delay = positional[4].ToNumber();
+
+            if (vars.Count == 0) return DMValue.Null;
+
+            foreach (var target in targets)
+            {
+                var anim = new DMAnimation
+                {
+                    Target = target,
+                    StartDs = DMTickScheduler.NowDs + Math.Max(0, delay),
+                    DurationDs = Math.Max(time, 0),
+                    LoopsLeft = loops < 0 ? -1 : Math.Max(loops, 1),
+                };
+                foreach (var (name, value) in vars)
+                {
+                    var from = target.GetVar(name);
+                    if (from.Type == DMValueType.Null) from = AppearanceVarDefault(target, name);
+                    anim.From[name] = from;
+                    if ((flags & AnimationRelative) != 0 && from.Type == DMValueType.Number && value.Type == DMValueType.Number)
+                        anim.To[name] = DMValue.FromNumber(from.NumberValue + value.NumberValue);
+                    else
+                        anim.To[name] = value;
+                }
+                EnqueueAnimation(anim, flags);
+            }
+            if (targets.Count > 0) EnsureAnimationPump();
+            return DMValue.Null;
+        }
+
+        private static void CollectAnimateTargets(DMValue arg, List<DMRuntime> targets)
+        {
+            if (arg.Type == DMValueType.DatumRef && arg.AsDatum() is DMRuntime d)
+            {
+                targets.Add(d);
+                return;
+            }
+            if (arg.Type == DMValueType.List && arg.ListValue != null)
+            {
+                for (var i = 1; i <= arg.ListValue.PositionalCount; i++)
+                    CollectAnimateTargets(arg.ListValue.Get(i), targets);
+            }
+        }
+
+        private static void EnqueueAnimation(DMAnimation anim, int flags)
+        {
+            lock (AnimationSync)
+            {
+                if ((flags & AnimationEndNow) != 0)
+                    FinishAnimationsNow(anim.Target);
+                if ((flags & AnimationParallel) != 0)
+                {
+                    RunningAnimations.Add(anim);
+                    return;
+                }
+                // BYOND default: animate() queues behind the target's running
+                // and queued animations.
+                var busy = false;
+                foreach (var a in RunningAnimations)
+                {
+                    if (ReferenceEquals(a.Target, anim.Target)) { busy = true; break; }
+                }
+                if (!busy && AnimationQueues.TryGetValue(anim.Target, out var existing))
+                    busy = existing.Count > 0;
+                if (busy)
+                {
+                    if (!AnimationQueues.TryGetValue(anim.Target, out var q))
+                        AnimationQueues[anim.Target] = q = new Queue<DMAnimation>();
+                    q.Enqueue(anim);
+                }
+                else
+                {
+                    RunningAnimations.Add(anim);
+                }
+            }
+        }
+
+        private static void FinishAnimationsNow(DMRuntime target)
+        {
+            for (var i = RunningAnimations.Count - 1; i >= 0; i--)
+            {
+                var a = RunningAnimations[i];
+                if (!ReferenceEquals(a.Target, target)) continue;
+                ApplyAnimationFinal(a);
+                RunningAnimations.RemoveAt(i);
+            }
+            if (AnimationQueues.TryGetValue(target, out var q))
+            {
+                while (q.Count > 0) ApplyAnimationFinal(q.Dequeue());
+            }
+        }
+
+        private static void EnsureAnimationPump()
+        {
+            if (_animPumpRegistered) return;
+            _animPumpRegistered = true;
+            DMTickScheduler.RegisterTickCallback(() => { PumpAnimations(); return Task.CompletedTask; });
+        }
+
+        private static void PumpAnimations()
+        {
+            var now = DMTickScheduler.NowDs;
+            List<DMAnimation>? finished = null;
+            lock (AnimationSync)
+            {
+                for (var i = RunningAnimations.Count - 1; i >= 0; i--)
+                {
+                    var anim = RunningAnimations[i];
+                    var t = anim.DurationDs <= 0 ? 1.0 : (now - anim.StartDs) / anim.DurationDs;
+                    if (t >= 1.0)
+                    {
+                        ApplyAnimationFinal(anim);
+                        RunningAnimations.RemoveAt(i);
+                        (finished ??= new List<DMAnimation>()).Add(anim);
+                    }
+                    else if (t > 0)
+                    {
+                        ApplyAnimationInterpolated(anim, t);
+                    }
+                }
+            }
+            if (finished == null) return;
+            foreach (var anim in finished)
+            {
+                if (anim.LoopsLeft == -1 || anim.LoopsLeft > 1)
+                {
+                    if (anim.LoopsLeft > 1) anim.LoopsLeft--;
+                    anim.StartDs = now;
+                    lock (AnimationSync) { RunningAnimations.Add(anim); }
+                    continue;
+                }
+                lock (AnimationSync)
+                {
+                    if (AnimationQueues.TryGetValue(anim.Target, out var q) && q.Count > 0)
+                    {
+                        var next = q.Dequeue();
+                        next.StartDs = now;
+                        RunningAnimations.Add(next);
+                    }
+                }
+            }
+        }
+
+        private static void ApplyAnimationInterpolated(DMAnimation anim, double t)
+        {
+            foreach (var kv in anim.To)
+            {
+                var name = kv.Key;
+                if (name == "dir")
+                {
+                    anim.Target.SetVar("dir", DMValue.FromNumber(LerpDir(anim.From[name].ToNumber(), kv.Value.ToNumber(), t)));
+                    continue;
+                }
+                if (name == "color" || name == "light_color")
+                {
+                    var c = LerpColor(VarText(anim.Target, name) ?? anim.From[name].ToString(), kv.Value.ToString(), t);
+                    if (c != null) anim.Target.SetVar(name, DMValue.FromString(c));
+                    continue;
+                }
+                if (!InterpolableVars.Contains(name)) continue;
+                var from = anim.From[name].ToNumber();
+                var to = kv.Value.ToNumber();
+                anim.Target.SetVar(name, DMValue.FromNumber(from + (to - from) * t));
+            }
+        }
+
+        private static void ApplyAnimationFinal(DMAnimation anim)
+        {
+            foreach (var kv in anim.To)
+                anim.Target.SetVar(kv.Key, kv.Value);
+        }
+
+        /// <summary>
+        /// BYOND dir tween: interpolate over the dir angle (E=0, N=90, W=180,
+        /// S=270 + diagonals) shortest-arc, snapping to the nearest of the 8
+        /// BYOND dirs each step.
+        /// </summary>
+        private static double LerpDir(double from, double to, double t)
+        {
+            double Ang(double d) => d switch
+            {
+                4 => 0, 5 => 45, 1 => 90, 9 => 135,
+                8 => 180, 10 => 225, 2 => 270, 6 => 315,
+                _ => 270
+            };
+            var a0 = Ang(from);
+            var diff = ((Ang(to) - a0) + 540) % 360 - 180;
+            var a = a0 + diff * t;
+            var best = 4.0;
+            var bestD = 999.0;
+            foreach (var (dir, ang) in new[] { (4, 0), (5, 45), (1, 90), (9, 135), (8, 180), (10, 225), (2, 270), (6, 315) })
+            {
+                var dd = Math.Abs(((a - ang) + 540) % 360 - 180);
+                if (dd < bestD) { bestD = dd; best = dir; }
+            }
+            return best;
+        }
+
+        /// <summary>Lerp two #RRGGBB[AA] / #RGB color strings; null if
+        /// either fails to parse (the loss is counted once per step).</summary>
+        private static string? LerpColor(string from, string to, double t)
+        {
+            if (!TryParseColor(from, out var f) || !TryParseColor(to, out var e))
+                return null;
+            int C(int a, int b) => (int)Math.Round(a + (b - a) * t);
+            var (r, g, b, a) = (C(f[0], e[0]), C(f[1], e[1]), C(f[2], e[2]), C(f[3], e[3]));
+            return "#" + r.ToString("x2", CultureInfo.InvariantCulture)
+                + g.ToString("x2", CultureInfo.InvariantCulture)
+                + b.ToString("x2", CultureInfo.InvariantCulture)
+                + (a < 255 ? a.ToString("x2", CultureInfo.InvariantCulture) : "");
+        }
+
+        private static bool TryParseColor(string s, out int[] rgba)
+        {
+            rgba = new[] { 255, 255, 255, 255 };
+            s = (s ?? "").Trim();
+            if (!s.StartsWith("#")) return false;
+            s = s.Substring(1);
+            try
+            {
+                if (s.Length == 3 || s.Length == 4)
+                {
+                    for (var i = 0; i < s.Length; i++)
+                        rgba[i] = Convert.ToInt32(new string(s[i], 1) + new string(s[i], 1), 16);
+                }
+                else if (s.Length == 6 || s.Length == 8)
+                {
+                    for (var i = 0; i < s.Length / 2; i++)
+                        rgba[i] = Convert.ToInt32(s.Substring(i * 2, 2), 16);
+                }
+                else return false;
+            }
+            catch { return false; }
+            return true;
+        }
+
+        /// <summary>
+        /// DM flick(icon_or_state, atom): temporarily show a different
+        /// icon_state (string form) or an /image overlay (datum form) for the
+        /// RSI state's animation duration (engine-provided) or one tick
+        /// (engine-free fallback).
+        /// </summary>
+        public static DMValue Flick(params DMValue[] args)
+        {
+            if (args.Length < 2) return DMValue.Null;
+            var target = args[1].AsDatum();
+            if (target == null) return DMValue.Null;
+            var icon = args[0];
+            if (icon.Type == DMValueType.String)
+            {
+                var prev = target.GetVar("icon_state");
+                target.SetVar("icon_state", icon);
+                var dur = ResolveStateDurationDs(target, icon.StringValue);
+                DMTickScheduler.Spawn(dur, () => { target.SetVar("icon_state", prev); return Task.CompletedTask; });
+                return DMValue.Null;
+            }
+            if (icon.Type == DMValueType.DatumRef && icon.AsDatum() is DMRuntime img)
+            {
+                // /image (or any datum) flick: add as an overlay for the
+                // duration. The list is shared — republish manually after
+                // the mutation.
+                var overlays = EnsureOverlayList(target);
+                overlays.Add(icon);
+                PushAppearance(target);
+                var imgState = VarText(img, "icon_state") ?? "";
+                var dur = ResolveStateDurationDs(img, imgState);
+                DMTickScheduler.Spawn(dur, () => { RemoveOverlayValue(target, icon); return Task.CompletedTask; });
+                return DMValue.Null;
+            }
+            AppearanceLoss();
+            return DMValue.Null;
+        }
+
+        private static DMList EnsureOverlayList(DMRuntime target)
+        {
+            var v = target.GetVar("overlays");
+            if (v.Type == DMValueType.List && v.ListValue != null) return v.ListValue;
+            var l = new DMList();
+            target.SetVar("overlays", DMValue.FromList(l));
+            return l;
+        }
+
+        private static void RemoveOverlayValue(DMRuntime target, DMValue item)
+        {
+            var v = target.GetVar("overlays");
+            if (v.Type != DMValueType.List || v.ListValue == null) return;
+            var l = v.ListValue;
+            var nl = new DMList();
+            var removed = false;
+            for (var i = 1; i <= l.PositionalCount; i++)
+            {
+                var e = l.Get(i);
+                if (!removed && e.Type == item.Type && ReferenceEquals(e.DatumRef, item.DatumRef))
+                {
+                    removed = true;
+                    continue;
+                }
+                nl.Add(e);
+            }
+            target.SetVar("overlays", DMValue.FromList(nl));
+        }
+
+        private static double ResolveStateDurationDs(DMRuntime datum, string state)
+        {
+            if (RsiStateDurationDs != null)
+            {
+                var d = RsiStateDurationDs(datum, state);
+                if (d > 0) return d;
+            }
+            return DMTickScheduler.TickLag;
+        }
+
+        /// <summary>
+        /// image() with named args: image(icon, loc, icon_state, layer, dir,
+        /// pixel_x, pixel_y) where any arg may be written 'name = value'.
+        /// The emitter routes calls containing assignments here (item 71);
+        /// the positional-only Image() keeps handling pure-positional calls.
+        /// Named args become real vars on the /image datum.
+        /// </summary>
+        public static DMValue ImageNamed(params DMValue[] args)
+        {
+            var positionalOrder = new[] { "icon", "loc", "icon_state", "layer", "dir", "pixel_x", "pixel_y" };
+            var datum = new DMRuntime { DMTypePath = "/image" };
+            LiveDatums.Add(datum);
+            var posIdx = 0;
+            for (var i = 0; i < args.Length; i++)
+            {
+                if (TryUnwrapNamedArg(args[i], out var name, out var value) && name != null)
+                {
+                    datum.SetVar(name.ToLowerInvariant(), value);
+                    continue;
+                }
+                if (posIdx < positionalOrder.Length)
+                    datum.SetVar(positionalOrder[posIdx], args[i]);
+                posIdx++;
+            }
+            if (datum.GetVar("overlays").Type == DMValueType.Null)
+                datum.SetVar("overlays", DMValue.FromList(new DMList()));
+            if (datum.GetVar("pixel_x").Type == DMValueType.Null)
+                datum.SetVar("pixel_x", DMValue.FromNumber(0));
+            if (datum.GetVar("pixel_y").Type == DMValueType.Null)
+                datum.SetVar("pixel_y", DMValue.FromNumber(0));
+            return DMValue.FromDatum(datum);
+        }
+
+        /// <summary>
+        /// url_encode(url, format): DM accepts an optional second arg
+        /// (URL_ENCODE=1 default). The Tier-4 wave's 1-arg UrlEncode lives
+        /// above; this overload accepts the extra arg so corpus call sites
+        /// like url_encode(u, 1) compile (item 71 build fix).
+        /// </summary>
+        public static DMValue UrlEncode(DMValue value, DMValue format) => UrlEncode(value);
+    }
+
+    /// <summary>
+    /// Appearance data keys published through AppearanceComponent.SetData
+    /// (item 71). Enum order is wire-stable — append only.
+    /// </summary>
+    public enum DMAppearanceKey
+    {
+        Icon,
+        IconState,
+        Dir,
+        Color,
+        Alpha,
+        PixelX,
+        PixelY,
+        PixelZ,
+        Layer,
+        Plane,
+        Invisibility,
+        Opacity,
+        MouseOpacity,
+        Overlays,
+        Underlays,
+        Luminosity,
+        LightColor,
+        LightPower,
+        LightRange
     }
 }
 `      },
