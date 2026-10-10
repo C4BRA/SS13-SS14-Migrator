@@ -65,6 +65,13 @@ async function runTests() {
         var/x = stuff[1]
         var/r = rand()
         return power + x
+
+/turf/simulated/floor
+    name = "Floor"
+
+/turf/simulated/wall
+    name = "Wall"
+    density = 1
 `;
 
   const lexer = new DMLexer(sampleDM);
@@ -288,11 +295,16 @@ state "icon"
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml')), "DMM converted to grid map YAML");
     const dmmMapYaml = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'Maps', 'testmap.yml'), 'utf-8');
    assert(dmmMapYaml.includes('proto: obj_item_weapon_sword'), "DMM item mapped to generated prototype id (item 69)");
-   assert(dmmMapYaml.includes('uid:') && dmmMapYaml.includes('type: MapGrid'), "Map YAML uses uid/type entity schema");
-   assert(dmmMapYaml.includes('tilemap:') && dmmMapYaml.includes('  turf_simulated_floor: turf_simulated_floor'), "Map YAML tilemap references generated turf prototypes (item 69)");
-   assert(dmmMapYaml.includes('    chunks:'), "MapGrid entity has chunked tiles");
-   assert(dmmMapYaml.includes('- 1,1: floor') || dmmMapYaml.includes('- 1,1:'), "Chunk tiles are list items under the chunk key");
-   assert(dmmMapYaml.includes('pos: 2, 2, 1'), "Entity z coordinate taken from grid z (1)");
+   assert(dmmMapYaml.includes('format: 6'), "Map YAML targets engine map format 6 (pin-verified deserializer)");
+   assert(dmmMapYaml.includes('type: Map') && dmmMapYaml.includes('type: MapGrid'), "Map YAML has a map entity plus a MapGrid entity");
+   assert(/tilemap:\n  1: turf_simulated_(floor|wall)/.test(dmmMapYaml) || dmmMapYaml.includes('tilemap:'), "Map YAML tilemap maps numeric tile ids to turf dmTile prototype names (item 69)");
+   assert(dmmMapYaml.includes('      chunks:'), "MapGrid entity has chunked tiles");
+   assert(dmmMapYaml.includes('version: 7') && dmmMapYaml.includes('tiles: "'), "Chunk tiles are packed as format-7 base64 blobs");
+   assert(dmmMapYaml.includes('pos: 1.5, 1.5'), "Entity position is 2D Vector2 at tile center (DM x,y-1 + 0.5)");
+   assert(dmmMapYaml.includes('parent: 2'), "Entities are parented to their z-level grid (multi-z => one grid per z)");
+   const entitiesYaml = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'Prototypes', 'converted_entities.yml'), 'utf-8');
+   assert(entitiesYaml.includes('- type: dmTile') && entitiesYaml.includes('  dmPath: /turf/simulated/floor'), "Turf prototypes emitted as dmTile defs with dmPath (item 69)");
+   assert(entitiesYaml.includes('id: dm_player_mob'), "Player-mob fallback prototype emitted (item 69)");
 
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;

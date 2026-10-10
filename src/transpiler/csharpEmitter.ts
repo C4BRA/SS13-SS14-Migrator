@@ -343,30 +343,66 @@ namespace Content.Server.DM
    */
   public generateSystemCS(): string {
     return `using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
+using Robust.Server.Player;
+using Robust.Shared.ContentPack;
+using Robust.Shared.Enums;
+using Robust.Shared.EntitySerialization.Systems;
 using Robust.Shared.GameObjects;
+using Robust.Shared.IoC;
 using Robust.Shared.Log;
 using Robust.Shared.Map;
+using Robust.Shared.Map.Components;
+using Robust.Shared.Maths;
+using Robust.Shared.Player;
+using Robust.Shared.Prototypes;
+using Robust.Shared.Serialization.Manager.Attributes;
+using Robust.Shared.Utility;
 using SS13.DM.Runtime;
 
 namespace Content.Server.DM
 {
     /// <summary>
-    /// Engine-facing wrapper: wires the transpiled DM proc registry into an
-    /// SS14 EntitySystem, drives New() dispatch on component init, and
-    /// materializes DM atoms (new /obj|/mob|/turf|/area) as real entities
-    /// via the runtime spawn bridge (item 69, B-1).
+    /// Engine-facing wrapper (item 69, B-1): wires the transpiled DM proc
+    /// registry into an SS14 EntitySystem, drives New() dispatch on component
+    /// init, materializes DM atoms as real entities via the spawn bridge,
+    /// mirrors x/y/z + loc writes onto transforms, mints turf datums for
+    /// loaded map tiles, and attaches joining players to a mob.
     /// </summary>
     public sealed class ConvertedDMSystem : EntitySystem
     {
+        [Dependency] private readonly IPrototypeManager _protoMan = default!;
+        [Dependency] private readonly ITileDefinitionManager _tileMan = default!;
+        [Dependency] private readonly IResourceManager _resMan = default!;
+
+        private SharedTransformSystem _xform = default!;
+        private SharedMapSystem _map = default!;
+        private MapLoaderSystem _mapLoader = default!;
+
         private EntityUid _defaultMap;
         private bool _worldInitialized;
+        private bool _tilesRegistered;
+
+        /// <summary>grid uid Id -> DM z-level (from the grid's MetaData name
+        /// "grid_z<N>" emitted by the map converter).</summary>
+        private readonly Dictionary<int, int> _gridZ = new();
+        /// <summary>DM z-level -> grid uid.</summary>
+        private readonly Dictionary<int, EntityUid> _zGrid = new();
 
         public override void Initialize()
         {
             base.Initialize();
             ConvertedDMProcs.RegisterProcs();
+            _xform = EntityManager.System<SharedTransformSystem>();
+            _map = EntityManager.System<SharedMapSystem>();
+            _mapLoader = EntityManager.System<MapLoaderSystem>();
             SubscribeLocalEvent<DMRuntimeComponent, ComponentInit>(OnDMComponentInit);
+            // NB: ComponentInit on MapGridComponent is already owned by
+            // SharedMapSystem — ComponentEvent lifecycle events allow ONE
+            // subscriber per (comp, event) — so turf datums are minted in
+            // StartWorld after the map load instead of via subscription.
 
             // Runtime -> engine bridge: a DM new() on an atom type spawns a
             // real entity carrying a DMRuntimeComponent (the datum itself was
@@ -379,33 +415,176 @@ namespace Content.Server.DM
                     var coords = LocCoords(loc);
                     var uid = EntityManager.SpawnEntity(protoId, coords);
                     datum.EntityId = (ulong)uid.Id;
-                    datum.SetVar("loc", loc);
-                    Logger.InfoS("dm", "Spawned {Proto} as entity {Uid} (loc {Loc})", protoId, uid, loc.ToString());
+                    SyncVarsFromTransform(uid, datum);
+                    Logger.InfoS("dm", "Spawned {Proto} as entity {Uid}", protoId, uid);
                 }
                 catch (Exception ex)
                 {
                     Logger.ErrorS("dm", "Entity spawn failed for {Type}: {Ex}", typePath, ex.Message);
                 }
             };
+
+            // x/y/z var writes -> transform move (item 69, B-1).
+            DMRuntimeHelpers.EntityMoveBridge = (datum, x, y, z) =>
+            {
+                if (datum.EntityId == 0) return;
+                try
+                {
+                    var uid = new EntityUid((int)datum.EntityId);
+                    if (!EntityManager.EntityExists(uid)) return;
+                    var zi = (int)Math.Round(z);
+                    var parent = _zGrid.TryGetValue(zi, out var g) ? g
+                        : EntityManager.GetComponent<TransformComponent>(uid).ParentUid;
+                    _xform.SetCoordinates(uid, new EntityCoordinates(parent, new Vector2((float)(x - 0.5), (float)(y - 0.5))));
+                }
+                catch (Exception ex)
+                {
+                    Logger.ErrorS("dm", "Entity move failed: {Ex}", ex.Message);
+                }
+            };
+
+            // Transform -> x/y/z var reads (item 69, B-1).
+            DMRuntimeHelpers.EntityCoordBridge = (datum, axis) =>
+            {
+                if (datum.EntityId == 0) return null;
+                var uid = new EntityUid((int)datum.EntityId);
+                if (!EntityManager.TryGetComponent(uid, out TransformComponent? xf)) return null;
+                if (axis == "z")
+                    return _gridZ.TryGetValue(xf.ParentUid.Id, out var z) ? (double)z : 1;
+                var pos = xf.LocalPosition;
+                var v = axis == "x" ? Math.Floor(pos.X) + 1 : Math.Floor(pos.Y) + 1;
+                return v;
+            };
+
+            // loc writes -> reparent (item 69, B-1).
+            DMRuntimeHelpers.EntityAttachBridge = (datum, newLoc) =>
+            {
+                if (datum.EntityId == 0) return;
+                try
+                {
+                    var uid = new EntityUid((int)datum.EntityId);
+                    if (!EntityManager.EntityExists(uid)) return;
+                    if (newLoc.Type == DMValueType.DatumRef && newLoc.DatumRef is DMRuntime container && container.EntityId != 0)
+                    {
+                        var parentUid = new EntityUid((int)container.EntityId);
+                        _xform.SetParent(uid, parentUid);
+                        _xform.SetLocalPosition(uid, Vector2.Zero);
+                    }
+                    else
+                    {
+                        // Turf loc or null: stay on the grid/map at the
+                        // current position (loc var records the truth).
+                        _xform.AttachToGridOrMap(uid);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.ErrorS("dm", "Entity attach failed: {Ex}", ex.Message);
+                }
+            };
         }
 
         /// <summary>
         /// World bootstrap, called once by the content EntryPoint after the
-        /// entity manager is up (PostInit): creates a default map for atom
-        /// spawns and runs DM world/New() (item 69, B-1).
+        /// entity manager is up (PostInit): registers converted tile defs,
+        /// loads the first converted map (or creates a default map), then runs
+        /// DM world/New() (item 69, B-1).
         /// </summary>
         public void StartWorld()
         {
             if (_worldInitialized) return;
             _worldInitialized = true;
 
-            _defaultMap = EntityManager.System<SharedMapSystem>().CreateMap(out _);
-            Logger.InfoS("dm", "World init: map {Map} created", _defaultMap);
+            RegisterTileDefs();
+
+            var loaded = false;
+            try
+            {
+                foreach (var file in _resMan.ContentFindFiles("/Maps").OrderBy(f => f.ToString()))
+                {
+                    if (!file.Filename.EndsWith(".yml") && !file.Filename.EndsWith(".yaml")) continue;
+                    if (_mapLoader.TryLoadMap(file, out var map, out var grids))
+                    {
+                        _defaultMap = map!.Value.Owner;
+                        loaded = true;
+                        Logger.InfoS("dm", "World init: loaded map {File} ({Map}, {Count} grids)", file, _defaultMap, grids?.Count ?? 0);
+                        if (grids != null)
+                        {
+                            foreach (var gridEnt in grids)
+                                RegisterGrid(gridEnt.Owner);
+                        }
+                        break;
+                    }
+                    Logger.ErrorS("dm", "World init: map {File} failed to load", file);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.ErrorS("dm", "World init: map load threw {Ex}", ex.Message);
+            }
+            if (!loaded)
+            {
+                _defaultMap = _map.CreateMap(out _);
+                Logger.InfoS("dm", "World init: no converted map — created default map {Map}", _defaultMap);
+            }
+
             if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum)
             {
                 _ = worldDatum.CallProc("New");
             }
             Logger.InfoS("dm", "World init: DM world/New() complete");
+        }
+
+        /// <summary>
+        /// The converted /turf prototypes (type: dmTile) become real engine
+        /// tile definitions so converted map YAML can reference them by name.
+        /// </summary>
+        private void RegisterTileDefs()
+        {
+            if (_tilesRegistered) return;
+            _tilesRegistered = true;
+            var count = 0;
+            foreach (var tileProto in _protoMan.EnumeratePrototypes<DMTilePrototype>())
+            {
+                _tileMan.Register(tileProto);
+                count++;
+            }
+            Logger.InfoS("dm", "Registered {Count} converted tile definitions", count);
+        }
+
+        /// <summary>
+        /// Every loaded grid mints a DMRuntime datum per non-empty tile so
+        /// turf.contents/loc/type work datum-side (item 69). Called from
+        /// StartWorld for each loaded grid (the ComponentInit slot for
+        /// MapGridComponent belongs to SharedMapSystem).
+        /// </summary>
+        private void RegisterGrid(EntityUid uid)
+        {
+            if (!EntityManager.TryGetComponent(uid, out MapGridComponent? grid)) return;
+            var z = 1;
+            if (EntityManager.TryGetComponent(uid, out MetaDataComponent? meta))
+            {
+                var name = meta.EntityName ?? "";
+                if (name.StartsWith("grid_z") && int.TryParse(name.Substring(6), out var parsed))
+                    z = parsed;
+            }
+            _gridZ[uid.Id] = z;
+            _zGrid[z] = uid;
+
+            foreach (var tileRef in _map.GetAllTiles(uid, grid, ignoreEmpty: true))
+            {
+                var dmPath = "/turf";
+                if (_tileMan.TryGetDefinition((int)tileRef.Tile.TypeId, out var def)
+                    && def is DMTilePrototype dmProto)
+                    dmPath = dmProto.DMPath;
+                var datum = new DMRuntime { DMTypePath = dmPath };
+                datum.SetVar("x", DMValue.FromNumber(tileRef.GridIndices.X + 1));
+                datum.SetVar("y", DMValue.FromNumber(tileRef.GridIndices.Y + 1));
+                datum.SetVar("z", DMValue.FromNumber(z));
+                DMRuntimeHelpers.LiveDatums.Add(datum);
+                _ = datum.CallProc("New");
+            }
+            Logger.InfoS("dm", "Grid {Uid} (z={Z}): minted turf datums", uid, z);
         }
 
         /// <summary>
@@ -419,13 +598,21 @@ namespace Content.Server.DM
 
         private EntityCoordinates LocCoords(DMValue loc)
         {
-            if (loc.Type == DMValueType.DatumRef && loc.DatumRef is DMRuntime datum && datum.EntityId != 0)
+            if (loc.Type == DMValueType.DatumRef && loc.DatumRef is DMRuntime datum)
             {
-                var locUid = new EntityUid((int)datum.EntityId);
-                return EntityManager.GetComponent<TransformComponent>(locUid).Coordinates;
+                if (datum.EntityId != 0)
+                {
+                    var locUid = new EntityUid((int)datum.EntityId);
+                    return EntityManager.GetComponent<TransformComponent>(locUid).Coordinates;
+                }
+                // A datum-side loc (e.g. a turf datum): resolve its coords on
+                // the z-level's grid (item 69).
+                var lx = datum.GetVar("x").ToNumber();
+                var ly = datum.GetVar("y").ToNumber();
+                var lz = (int)Math.Round(datum.GetVar("z").ToNumber());
+                if (lx >= 1 && ly >= 1 && _zGrid.TryGetValue(lz == 0 ? 1 : lz, out var grid))
+                    return new EntityCoordinates(grid, new Vector2((float)(lx - 0.5), (float)(ly - 0.5)));
             }
-            // The default map created in Initialize; a loc-less spawn lands
-            // at its origin.
             return new EntityCoordinates(_defaultMap, Vector2.Zero);
         }
 
@@ -437,13 +624,67 @@ namespace Content.Server.DM
             {
                 comp.Runtime.SetVar(k, DMValue.FromString(v));
             }
+            SyncVarsFromTransform(uid, comp.Runtime);
+            DMRuntimeHelpers.LiveDatums.Add(comp.Runtime);
             ExecuteNew(uid, comp);
+        }
+
+        /// <summary>
+        /// Mirror the entity's transform into the datum's x/y/z vars (DM tile
+        /// coords: floor(localPos) + 1; z from the parent grid's z-level).
+        /// </summary>
+        private void SyncVarsFromTransform(EntityUid uid, DMRuntime datum)
+        {
+            if (!EntityManager.TryGetComponent(uid, out TransformComponent? xf)) return;
+            var pos = xf.LocalPosition;
+            datum.SetVar("x", DMValue.FromNumber(Math.Floor(pos.X) + 1));
+            datum.SetVar("y", DMValue.FromNumber(Math.Floor(pos.Y) + 1));
+            datum.SetVar("z", DMValue.FromNumber(_gridZ.TryGetValue(xf.ParentUid.Id, out var z) ? z : 1));
         }
 
         public void ExecuteNew(EntityUid uid, DMRuntimeComponent comp)
         {
             _ = comp.Runtime.CallProc("New");
         }
+    }
+
+    /// <summary>
+    /// Converted /turf type as an engine tile definition (item 69, B-1):
+    /// emitted prototypes (type: dmTile) register into ITileDefinitionManager
+    /// so converted map YAML tiles resolve by name. dmPath carries the DM
+    /// type path so loaded tiles mint their turf datums.
+    /// </summary>
+    [Prototype("dmTile")]
+    public sealed partial class DMTilePrototype : ITileDefinition
+    {
+        [IdDataField]
+        public string ID { get; private set; } = "";
+
+        [DataField("dmPath")]
+        public string DMPath { get; private set; } = "/turf";
+
+        [DataField("name")]
+        public string? NameField { get; private set; }
+
+        public string Name => NameField ?? ID;
+
+        [DataField("sprite")]
+        public ResPath? Sprite { get; private set; }
+
+        public Dictionary<Direction, ResPath> EdgeSprites { get; } = new();
+
+        [DataField("edgeSpritePriority")]
+        public int EdgeSpritePriority { get; private set; }
+
+        [DataField("friction")]
+        public float Friction { get; private set; } = 0.2f;
+
+        [DataField("variants")]
+        public byte Variants { get; private set; } = 1;
+
+        public ushort TileId { get; private set; }
+
+        public void AssignTileId(ushort id) => TileId = id;
     }
 }
 `;
