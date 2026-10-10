@@ -491,6 +491,25 @@ async function runCSharpEmitterTests() {
   assertContains(systemCS, 'DMVerbRuntime.CallVerbAsUsr(mob, mob, args[0]', 'dmverb dispatches src=usr=mob');
   assertContains(systemCS, 'ProcRegistry.EnumerateProcs', 'dmverbs lists registered procs');
 
+  // Test 47: W-E subsystem thread-safety — the emitted subsystem
+  // registration must not escape the IoC thread. The old Task.Run pushed
+  // DMNew+New() onto a thread-pool thread where EntityManager/IoCManager
+  // thread-check asserts threw, faulting the task before the cadence
+  // callback registered (unobserved-exception spam, silently-dead
+  // subsystems). The registration is now an async chain started on the
+  // calling (main) thread so awaits marshal back through the engine's
+  // RobustSynchronizationContext. Leaf-declared fire/process resolves via
+  // TryGet (TryGetInherited only walks ancestors and missed leaves).
+  assert(!systemCS.includes('Task.Run('), 'system CS has no Task.Run call (all DM dispatch stays on the IoC thread)');
+  assertContains(systemCS, 'private async Task RegisterSubsystemsAsync(', 'subsystem registration is an async on-thread chain');
+  assertContains(systemCS, '_ = RegisterSubsystemsAsync(worldDatum);', 'RegisterSubsystems starts the chain on the calling thread');
+  assertContains(systemCS, 'await DMRuntimeHelpers.DMNew(worldDatum, typePath)', 'subsystem DMNew is awaited on the calling thread');
+  assertContains(systemCS, 'ProcRegistry.TryGet(typePath, "fire"', 'leaf-declared fire() resolves via TryGet');
+  assertContains(systemCS, 'ProcRegistry.TryGet(typePath, "process"', 'leaf-declared process() resolves via TryGet');
+  assertContains(systemCS, 'TryGetInherited(typePath, "fire"', 'inherited fire() still resolves (SS13 /datum/controller/subsystem shape)');
+  assertContains(systemCS, 'DM subsystem {Type} on the tick loop', 'subsystem registration still logs');
+  assertContains(systemCS, 'DM subsystem {Type} init failed', 'a failing subsystem New() logs instead of silently faulting');
+
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }
 

@@ -493,6 +493,13 @@ namespace SS13.DM.Runtime
         public string DMTypePath { get; set; } = "/datum";
         public Dictionary<string, DMValue> Variables { get; } = new();
 
+        // W-F new: depth-of-chain cursor for BYOND's implicit New() ..()
+        // chain — the ancestor path whose New most recently ran on THIS
+        // datum's construction. An instance field (not AsyncLocal): a body
+        // that explicitly calls ..() must advance the OUTER chain's cursor,
+        // and AsyncLocal writes inside an awaited call never flow back up.
+        internal string? NewChainCursor = null;
+
         /// <summary>
         /// The SS14 entity this datum is materialized on (item 69, B-1):
         /// 0 = datum-only (no server, or a pure /datum type).
@@ -597,6 +604,31 @@ namespace SS13.DM.Runtime
         /// </summary>
         public async Task<DMValue> CallParentProc(string definingTypePath, string procName, params DMValue[] args)
         {
+            // ==== W-F new ====
+            // BYOND New() always runs the WHOLE ancestor chain: each New body
+            // gets an implicit ..() appended. When a body DOES call ..()
+            // explicitly, BYOND continues the chain from the resolved parent
+            // downward — it does not restart it. Looping here lets a mid-chain
+            // explicit ..() run every remaining ancestor exactly once;
+            // NewChainCursor records how deep the chain already advanced on
+            // this datum's construction.
+            if (string.Equals(procName, "new", StringComparison.OrdinalIgnoreCase))
+            {
+                var cursor = definingTypePath;
+                var chainArgs = args;
+                var first = true;
+                var result = DMValue.Null;
+                while (ProcRegistry.TryGetInherited(cursor, procName, out var chainHandler, out var chainPath))
+                {
+                    NewChainCursor = chainPath;
+                    var bound = BindParentCallArgs(chainPath!, procName, chainArgs);
+                    var r = await chainHandler(this, bound);
+                    if (first) { result = r; first = false; }
+                    chainArgs = bound;
+                    cursor = NewChainCursor!;
+                }
+                return result;
+            }
             if (ProcRegistry.TryGetInherited(definingTypePath, procName, out var handler, out var resolvedPath))
             {
                 return await handler(this, BindParentCallArgs(resolvedPath!, procName, args));
@@ -689,6 +721,59 @@ namespace SS13.DM.Runtime
             Array.Copy(bound, all, bound.Length);
             extras.CopyTo(all, bound.Length);
             return all;
+        }
+
+        // ==== W-F new ====
+        /// <summary>
+        /// BYOND New() dispatch: runs the declared New on this datum, then
+        /// every ancestor's New — derived first — even when a body never
+        /// calls ..() (BYOND appends an implicit ..() to each New). An
+        /// explicit ..() inside a body is the same chain continued, so the
+        /// ancestors below it do not run a second time. NewChainCursor — an
+        /// instance field on this datum — tracks how deep the chain has
+        /// advanced; a new nested inside a New body constructs a DIFFERENT
+        /// datum with its own cursor, so chains never interfere.
+        /// Each hop re-binds the forwarded arguments against that ancestor's
+        /// declared parameters (named markers by name, positionals in order),
+        /// matching the BYOND rule that implicit ..() forwards the arguments
+        /// the current proc received.
+        /// </summary>
+        public async Task CallNewChain(DMValue[] args)
+        {
+            Func<DMRuntime, DMValue[], Task<DMValue>>? handler;
+            string? resolved;
+            if (ProcRegistry.TryGet(DMTypePath, "new", out var own))
+            {
+                handler = own;
+                resolved = DMTypePath;
+            }
+            else if (ProcRegistry.TryGetInherited(DMTypePath, "new", out var inherited, out var inheritedPath))
+            {
+                handler = inherited;
+                resolved = inheritedPath;
+            }
+            else
+            {
+                return;
+            }
+            var chainArgs = args;
+            while (handler != null)
+            {
+                NewChainCursor = resolved;
+                var bound = BindParentCallArgs(resolved!, "new", chainArgs);
+                await InvokeWithUsr(handler, bound);
+                var last = NewChainCursor!;
+                if (ProcRegistry.TryGetInherited(last, "new", out var next, out var nextPath))
+                {
+                    handler = next;
+                    resolved = nextPath;
+                    chainArgs = bound;
+                }
+                else
+                {
+                    handler = null;
+                }
+            }
         }
 
         /// <summary>
@@ -913,6 +998,23 @@ namespace SS13.DM.Runtime
             return false;
         }
 
+        // ==== W-F new ====
+        // Field var initializers that are new expressions
+        // (var/x = new /path on a type) get a per-type seeder emitted by the
+        // transpiler; DMNew runs it before the New() chain so the field holds
+        // a real datum (BYOND: field initializers evaluate at construction).
+        private static readonly Dictionary<string, Func<DMRuntime, DMValue[], Task<DMValue>>> VarInits = new();
+
+        public static void RegisterVarInit(string typePath, Func<DMRuntime, DMValue[], Task<DMValue>> handler)
+        {
+            VarInits[typePath.ToLowerInvariant()] = handler;
+        }
+
+        public static bool TryGetVarInit(string typePath, out Func<DMRuntime, DMValue[], Task<DMValue>> handler)
+        {
+            return VarInits.TryGetValue(typePath.ToLowerInvariant(), out handler!);
+        }
+
         // ==== B-4 verbs/input (item 72) ====
 
         /// <summary>
@@ -991,6 +1093,15 @@ namespace SS13.DM.Runtime
         }
 
         private static readonly object Sync = new();
+        // W-E subsystem thread-safety: serializes whole Pump bodies. On a
+        // live server Pump is driven only by ConvertedDMSystem.Update on
+        // the main (IoC) thread; engine-free it is driven only by the
+        // wall-clock fallback thread — but the two can overlap for one
+        // iteration while the ExternalDriver handoff settles (the fallback
+        // loop notices the flag between pumps). The gate keeps due drains
+        // and per-tick callbacks single-threaded so DM state is never
+        // mutated on two threads at once.
+        private static readonly object PumpGate = new();
         // Min-heap on (DueDs, Seq): same-due callbacks fire in call order.
         private static readonly PriorityQueue<Entry, (double Due, long Seq)> Pending = new();
         // Per-DM-tick callbacks (subsystem registry); invoked once per
@@ -1085,46 +1196,52 @@ namespace SS13.DM.Runtime
         public static void Pump(double elapsedDs)
         {
             if (elapsedDs < 0) elapsedDs = 0;
-            lock (Sync) { _clockDs += elapsedDs; }
-
-            // Drain due entries. New entries enqueued due-now while draining
-            // (sleep(0)/spawn(0) style yields) run at the end of this same
-            // pass — BYOND's "end of the current scheduler" semantics.
-            while (true)
+            // PumpGate: whole pumps serialize (see the field note) — DM proc
+            // dispatch stays on one thread even if an external and a
+            // fallback driver overlap.
+            lock (PumpGate)
             {
-                List<Entry> due = null;
+                lock (Sync) { _clockDs += elapsedDs; }
+
+                // Drain due entries. New entries enqueued due-now while draining
+                // (sleep(0)/spawn(0) style yields) run at the end of this same
+                // pass — BYOND's "end of the current scheduler" semantics.
+                while (true)
+                {
+                    List<Entry> due = null;
+                    lock (Sync)
+                    {
+                        while (Pending.Count > 0 && Pending.Peek().DueDs <= _clockDs)
+                            (due ??= new List<Entry>()).Add(Pending.Dequeue());
+                    }
+                    if (due == null) break;
+                    foreach (var e in due)
+                    {
+                        try { _ = e.Callback(); }
+                        catch { /* callback threw synchronously; keep scheduling */ }
+                    }
+                }
+
+                int boundaries;
                 lock (Sync)
                 {
-                    while (Pending.Count > 0 && Pending.Peek().DueDs <= _clockDs)
-                        (due ??= new List<Entry>()).Add(Pending.Dequeue());
+                    var idx = BoundaryIndex();
+                    boundaries = (int)Math.Max(0, idx - _lastBoundary);
+                    _lastBoundary = idx;
                 }
-                if (due == null) break;
-                foreach (var e in due)
+                if (boundaries <= 0) return;
+                List<Func<Task>> cbs;
+                lock (Sync) { cbs = new List<Func<Task>>(TickCallbacks.Values); }
+                for (var i = 0; i < boundaries; i++)
                 {
-                    try { _ = e.Callback(); }
-                    catch { /* callback threw synchronously; keep scheduling */ }
-                }
-            }
-
-            int boundaries;
-            lock (Sync)
-            {
-                var idx = BoundaryIndex();
-                boundaries = (int)Math.Max(0, idx - _lastBoundary);
-                _lastBoundary = idx;
-            }
-            if (boundaries <= 0) return;
-            List<Func<Task>> cbs;
-            lock (Sync) { cbs = new List<Func<Task>>(TickCallbacks.Values); }
-            for (var i = 0; i < boundaries; i++)
-            {
-                foreach (var cb in cbs)
-                {
-                    try { _ = cb(); } catch { }
-                }
-                if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime w && w.CanCallProc("tick"))
-                {
-                    try { _ = w.CallProc("tick"); } catch { }
+                    foreach (var cb in cbs)
+                    {
+                        try { _ = cb(); } catch { }
+                    }
+                    if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime w && w.CanCallProc("tick"))
+                    {
+                        try { _ = w.CallProc("tick"); } catch { }
+                    }
                 }
             }
         }
@@ -1402,6 +1519,11 @@ namespace SS13.DM.Runtime
             // are case-insensitive) so IsType/registry lookups match the
             // emitted registrations (WS4-1). A bare new is /datum (item 62).
             var normalized = (typePath.Length == 0 ? "/datum" : typePath).ToLowerInvariant();
+            // ==== W-F new ====
+            // new /list produces a DM list, not a datum (corpus
+            // new /list() sites would otherwise mint a dead datum).
+            if (normalized == "/list")
+                return DMValue.FromList(new DMList());
             var datum = new DMRuntime { DMTypePath = normalized };
             LiveDatums.Add(datum);
             // W-G input: seed the datum's vars from the type's declared
@@ -1414,13 +1536,35 @@ namespace SS13.DM.Runtime
             // loc (a stray var write would be harmless, but they must not
             // be split from their New signature).
             var isAtom = IsAtomPath(normalized);
+            // W-F new: named args (k = v) arrive as DMNamedArg markers. An
+            // atom's loc is the first POSITIONAL argument; when every arg is
+            // named, a "loc" marker supplies it. Markers stay in the array —
+            // the New() chain binds them by name to the resolved New's
+            // declared parameters.
+            DMValue? locArg = null;
             if (args.Length > 0 && isAtom)
+            {
+                foreach (var a in args)
+                {
+                    if (TryUnwrapNamedArg(a, out var markerName, out var markerValue))
+                    {
+                        if (!locArg.HasValue && string.Equals(markerName, "loc", StringComparison.OrdinalIgnoreCase))
+                            locArg = markerValue;
+                    }
+                    else
+                    {
+                        if (!locArg.HasValue) locArg = a;
+                        break;
+                    }
+                }
+            }
+            if (locArg.HasValue && isAtom)
             {
                 // Containment (item 69, B-1): placing the atom in a loc goes
                 // through the real move path — container contents membership
                 // derives from loc, and Enter/Entered hooks fire when the
                 // registry defines them.
-                await MoveAtomTo(datum, args[0]);
+                await MoveAtomTo(datum, locArg.Value);
             }
             // Entity integration (item 69, B-1): on the server the engine
             // adapter registers a spawn bridge — new() on an ATOM type then
@@ -1429,10 +1573,64 @@ namespace SS13.DM.Runtime
             // and keep the datum-only path.
             if (isAtom && EntitySpawnBridge != null)
             {
-                EntitySpawnBridge(normalized, args.Length > 0 ? args[0] : DMValue.Null, datum);
+                EntitySpawnBridge(normalized, locArg ?? DMValue.Null, datum);
             }
-            await datum.CallProc("New", args);
+            // W-F new: field var/x = new /path initializers seed real
+            // datums before New() runs (BYOND: field initializers evaluate
+            // at construction, so New() already sees them).
+            if (ProcRegistry.TryGetVarInit(normalized, out var varInit))
+            {
+                await varInit(datum, System.Array.Empty<DMValue>());
+            }
+            // W-F new: BYOND runs the whole New() ancestor chain — an
+            // implicit ..() at the end of each body — not a single CallProc
+            // hop.
+            await datum.CallNewChain(args);
             return DMValue.FromDatum(datum);
+        }
+
+        // ==== W-F new ====
+        /// <summary>
+        /// new x on a single-segment path: DM resolves the VAR x first —
+        /// the corpus idiom new spawn_type(loc) reads a var holding a
+        /// typepath. The parser cannot tell new x (var) from new /x
+        /// (literal root path), so the emitter passes the var's value here:
+        /// a path-shaped value wins, otherwise the literal path stands.
+        /// (Rooted new /x together with a shadowing x var in scope is
+        /// the one case this resolves differently — see docs/plans/27.)
+        /// </summary>
+        public static Task<DMValue> DMNewPath(DMRuntime comp, DMValue typeExpr, string literalPath, params DMValue[] args)
+        {
+            var resolved = ResolveNewPathExpr(typeExpr);
+            return DMNew(comp, resolved ?? literalPath, args);
+        }
+
+        private static string? ResolveNewPathExpr(DMValue v)
+        {
+            if (v.Type == DMValueType.Path)
+                return v.StringValue;
+            if (v.Type == DMValueType.String && LooksLikeTypePath(v.StringValue ?? ""))
+                return v.StringValue;
+            return null;
+        }
+
+        /// <summary>
+        /// DM typepath shape: /seg/seg with alnum-or-underscore segments
+        /// (a resource path like /icon/x.dmi is not a typepath).
+        /// </summary>
+        private static bool LooksLikeTypePath(string s)
+        {
+            if (s.Length < 2 || s[0] != '/') return false;
+            var segs = s.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segs.Length == 0) return false;
+            foreach (var seg in segs)
+            {
+                foreach (var c in seg)
+                {
+                    if (!char.IsLetterOrDigit(c) && c != '_') return false;
+                }
+            }
+            return true;
         }
 
         /// <summary>

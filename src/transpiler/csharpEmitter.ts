@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { DMIRType } from '../ir/dmIRGenerator.js';
-import { DMGlobalVarDeclNode, ExpressionNode } from '../parser/dmParser.js';
+import { DMGlobalVarDeclNode, DMParser, ExpressionNode } from '../parser/dmParser.js';
+import { DMLexer } from '../parser/dmLexer.js';
+import { DiagnosticCollector } from '../diagnostics.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
 import { SymbolTable } from '../ir/symbolTable.js';
 
@@ -345,6 +347,39 @@ namespace Content.Server.DM
         sinks.pair(procRegs[regIndex++], member);
       }
     }
+
+    // ==== W-F new ====
+    // Field var initializers that are `new` expressions: a type-level
+    // `var/x = new /path` reaches the IR only as raw text in customVars
+    // (field inits carry no expression AST). Re-parsing the text recovers
+    // the `new` node so DMNew can seed the field with a real datum before
+    // New() runs — matching BYOND, where field initializers evaluate at
+    // construction time. Types with no procs at all (the common case for
+    // pure data/leaf types) emit one VarInit member + registration.
+    // The declared var TYPE is dropped upstream of the IR, so bare
+    // `= new`/`= new()` inits stay /datum — see docs/plans/27.
+    for (const [pathKey, irType] of irMap.entries()) {
+      const initStatements: string[] = [];
+      this.currentTypePath = pathKey;
+      this.currentProcName = '';
+      this.currentProcArgs = [];
+      for (const [varName, raw] of irType.customVars.entries()) {
+        const expr = this.parseNewInitializer(raw);
+        if (!expr) continue;
+        initStatements.push(`            comp.SetVar("${this.escapeString(varName)}", ${this.transpileExpression(expr)});\n`);
+      }
+      if (initStatements.length === 0) continue;
+      const className = this.pathToClassName(pathKey);
+      const reg = `            ProcRegistry.RegisterVarInit("${this.escapeString(pathKey)}", VarInit_${className});`;
+      const member = `        // W-F: field var/x = new initializers for ${pathKey}
+        public static async Task<DMValue> VarInit_${className}(DMRuntime comp, DMValue[] args)
+        {
+${initStatements.join('')}            return DMValue.Null;
+        }
+`;
+      sinks.pair(reg, member);
+    }
+
     // Closes RegisterProcs(); the class close + GlobalVars follow (tail).
     sinks.close();
     sinks.tail(`    }
@@ -723,7 +758,8 @@ namespace Content.Server.DM
 
             if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum)
             {
-                _ = worldDatum.CallProc("New");
+                // W-F new: world/New runs BYOND's full ancestor chain.
+                _ = worldDatum.CallNewChain(System.Array.Empty<DMValue>());
             }
             Logger.InfoS("dm", "World init: DM world/New() complete");
             RegisterSubsystems();
@@ -774,17 +810,46 @@ namespace Content.Server.DM
         {
             var worldDatum = DMRuntimeHelpers.WorldValue.DatumRef as DMRuntime;
             if (worldDatum == null) return;
-            foreach (var typePath in ProcRegistry.RegisteredPaths)
+            // ==== W-E subsystem thread-safety ====
+            // The whole registration runs on the CALLING thread. StartWorld
+            // is invoked by the content EntryPoint on the server's main
+            // (IoC) thread — where the engine's RobustSynchronizationContext
+            // is installed — so every await inside RegisterSubsystemsAsync
+            // (DMNew, the subsystem's own New(), any sleep/spawn inside it)
+            // resumes on the main thread too, and the cadence callback's
+            // fire/process CallProc later fires inside Pump from Update on
+            // that same thread. The old Task.Run pushed DMNew + New() onto
+            // a thread-pool thread: EntityManager's ThreadCheck and
+            // IoCManager.Resolve's context assert threw ("IoC has no context
+            // on this thread"), faulting the task — unobserved-exception
+            // spam — BEFORE the tick callback was ever registered, so
+            // subsystems went silently dead while shared datum state was
+            // mutated off the IoC thread.
+            _ = RegisterSubsystemsAsync(worldDatum);
+        }
+
+        /// <summary>
+        /// Sequential subsystem construction (W-E): each /datum/controller
+        /// type is DMNew'd one at a time on the IoC thread — matching
+        /// BYOND's in-order boot — and a failing New() is logged and
+        /// skipped instead of silently faulting a fire-and-forget task.
+        /// </summary>
+        private async Task RegisterSubsystemsAsync(DMRuntime worldDatum)
+        {
+            foreach (var typePath in new List<string>(ProcRegistry.RegisteredPaths))
             {
                 if (!typePath.StartsWith("/datum/controller", StringComparison.OrdinalIgnoreCase)) continue;
                 string procName;
-                if (ProcRegistry.TryGetInherited(typePath, "fire", out _)) procName = "fire";
-                else if (ProcRegistry.TryGetInherited(typePath, "process", out _)) procName = "process";
+                // TryGet first: a fire/process declared on the leaf type wins;
+                // TryGetInherited only walks ancestors (the SS13
+                // /datum/controller/subsystem shape) and missed leaf decls.
+                if (ProcRegistry.TryGet(typePath, "fire", out _) || ProcRegistry.TryGetInherited(typePath, "fire", out _)) procName = "fire";
+                else if (ProcRegistry.TryGet(typePath, "process", out _) || ProcRegistry.TryGetInherited(typePath, "process", out _)) procName = "process";
                 else continue;
-                _ = Task.Run(async () =>
+                try
                 {
                     var datum = await DMRuntimeHelpers.DMNew(worldDatum, typePath);
-                    if (datum.DatumRef is not DMRuntime subsystem) return;
+                    if (datum.DatumRef is not DMRuntime subsystem) continue;
                     double nextFireDs = 0;
                     DMTickScheduler.RegisterTickCallback(async () =>
                     {
@@ -798,7 +863,11 @@ namespace Content.Server.DM
                         await subsystem.CallProc(procName, DMValue.FromNumber(DMTickScheduler.TickLag));
                     });
                     Logger.InfoS("dm", "DM subsystem {Type} on the tick loop ({Proc})", typePath, procName);
-                });
+                }
+                catch (Exception ex)
+                {
+                    Logger.ErrorS("dm", "DM subsystem {Type} init failed: {Ex}", typePath, ex.Message);
+                }
             }
         }
 
@@ -849,7 +918,10 @@ namespace Content.Server.DM
                 datum.SetVar("y", DMValue.FromNumber(tileRef.GridIndices.Y + 1));
                 datum.SetVar("z", DMValue.FromNumber(z));
                 DMRuntimeHelpers.LiveDatums.Add(datum);
-                _ = datum.CallProc("New");
+                // W-F new: field new initializers + the full New() chain.
+                if (ProcRegistry.TryGetVarInit(datum.DMTypePath, out var turfInit))
+                    _ = turfInit(datum, System.Array.Empty<DMValue>());
+                _ = datum.CallNewChain(System.Array.Empty<DMValue>());
             }
             Logger.InfoS("dm", "Grid {Uid} (z={Z}): minted turf datums", uid, z);
         }
@@ -974,7 +1046,12 @@ namespace Content.Server.DM
 
         public void ExecuteNew(EntityUid uid, DMRuntimeComponent comp)
         {
-            _ = comp.Runtime.CallProc("New");
+            // W-F new: field var/x = new initializers seed real datums
+            // (the InitialVars loop above stores them as strings), then
+            // BYOND's full New() ancestor chain runs.
+            if (ProcRegistry.TryGetVarInit(comp.DMTypePath, out var varInit))
+                _ = varInit(comp.Runtime, System.Array.Empty<DMValue>());
+            _ = comp.Runtime.CallNewChain(System.Array.Empty<DMValue>());
         }
 
         // ==== B-3 (item 71): appearance bridge + sprite helpers ====
@@ -1941,11 +2018,48 @@ namespace Content.Server.DM
         return this.transpileUnary(node);
       case 'call':
         return this.transpileCall(node);
-      case 'new':
+      case 'new': {
+        // ==== W-F new ====
         // Parenthesized: member access binds tighter than await, so callers
         // appending .IsTrue() etc. must bind to the DMValue, not the Task.
         // Global initializers have no comp; DMNew ignores the datum argument.
-        return `(await DMNew(${this.globalsMode ? 'null' : 'comp'}, "${this.normalizeTypePath(node.typePath)}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''}))`;
+        const newTypePath = this.escapeString(this.normalizeTypePath(node.typePath));
+        const compExpr = this.globalsMode ? 'null' : 'comp';
+        const newArgs: any[] = node.arguments;
+        let argTail = '';
+        // W-F: `new T(arglist(L))` spreads L's elements; mixing arglist with
+        // plain args concatenates the segments (same rule as call sites).
+        if (newArgs.some((a: any) => a.type === 'call' && a.name === 'arglist')) {
+          argTail = `, DMRuntimeHelpers.DMArgsConcat(${newArgs.map((a: any) =>
+            a.type === 'call' && a.name === 'arglist'
+              ? `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a.arguments[0])})`
+              : `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a)})`
+          ).join(', ')})`;
+        } else if (newArgs.length > 0) {
+          // W-F: `new T(k = v)` parses as an assignment node; emit a named-arg
+          // marker so the runtime binds it to New()'s declared params instead
+          // of writing the caller's `k` var.
+          argTail = ', ' + newArgs.map((a: any) =>
+            a.type === 'assignment' && typeof a.target === 'string'
+              ? `DMRuntimeHelpers.DMNamedArg("${this.escapeString(a.target)}", ${this.transpileExpression(a.value)})`
+              : this.transpileExpression(a)
+          ).join(', ');
+        }
+        const segs = this.normalizeTypePath(node.typePath).split('/').filter(Boolean);
+        if (segs.length === 1) {
+          // W-F: `new x` — a single-segment path is ambiguous in DM: when a
+          // var `x` in scope holds a typepath the var wins (new spawn_type(loc)
+          // is the common corpus idiom); otherwise the literal one-segment
+          // path stands. The AST loses the rooted/unrooted distinction, so the
+          // runtime resolves it: DMNewPath reads the var, and a path-valued
+          // result wins over the literal.
+          const varRead = this.globalsMode
+            ? `(await GlobalVars.Get("${this.escapeString(segs[0])}"))`
+            : `comp.GetVar("${this.escapeString(segs[0])}")`;
+          return `(await DMNewPath(${compExpr}, ${varRead}, "${newTypePath}"${argTail}))`;
+        }
+        return `(await DMNew(${compExpr}, "${newTypePath}"${argTail}))`;
+      }
       case 'ternary':
         return this.transpileTernary(node);
       case 'property':
@@ -2057,6 +2171,38 @@ namespace Content.Server.DM
 
   private normalizeTypePath(p: string): string {
     return (p || '').replace(/\/+$/, '');
+  }
+
+  // ==== W-F new ====
+  /** Field var initializers arrive as raw text (`var/x = new /path` →
+   *  customVars["x"] = "new /path"): re-lex/parse the text and return the
+   *  expression AST when it is (or starts with) a `new`, else null. Any
+   *  parse failure yields null so the initializer keeps its existing
+   *  string-value fallback. */
+  private parseNewInitializer(raw: any): ExpressionNode | null {
+    if (typeof raw !== 'string' || !/^\s*new\b/.test(raw)) return null;
+    try {
+      const tokens = new DMLexer(raw).tokenize();
+      const sub = new DMParser(tokens, new DiagnosticCollector());
+      const expr = sub.parseExpression() as ExpressionNode | null;
+      if (expr && expr.type === 'new') return expr;
+      // Postfix forms (`new /path (...)`, `new /path {…}`) wrap the `new`
+      // node — accept those as well.
+      if (expr && this.containsNew(expr)) return expr;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private containsNew(node: any): boolean {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'new') return true;
+    for (const key of Object.keys(node)) {
+      const v = node[key];
+      if (Array.isArray(v) ? v.some(n => this.containsNew(n)) : this.containsNew(v)) return true;
+    }
+    return false;
   }
 
   private referencesIdentifier(node: any, name: string): boolean {
