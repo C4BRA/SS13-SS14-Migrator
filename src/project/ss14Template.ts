@@ -812,6 +812,48 @@ namespace Content.Client.DM
 - function: dmclickpick
   key: MouseLeft
   type: Command
+# W-G input: standard text-editing binds so the debug console LineEdit
+# actually works — Return submits, arrows edit/history, Tab completes.
+# Up/Down/Left/Right co-exist with the movement binds: while a LineEdit
+# holds focus the movement Command binds are suppressed by
+# commandWhenUIFocused:false and these Function binds route to the
+# focused control; with no focused control the Function binds no-op.
+- function: TextSubmit
+  key: Return
+  type: Function
+- function: TextSubmit
+  key: NumpadEnter
+  type: Function
+- function: TextReleaseFocus
+  key: Escape
+  type: Function
+- function: TextTabComplete
+  key: Tab
+  type: Function
+- function: TextHistoryPrev
+  key: Up
+  type: Function
+- function: TextHistoryNext
+  key: Down
+  type: Function
+- function: TextBackspace
+  key: BackSpace
+  type: Function
+- function: TextDelete
+  key: Delete
+  type: Function
+- function: TextCursorLeft
+  key: Left
+  type: Function
+- function: TextCursorRight
+  key: Right
+  type: Function
+- function: TextCursorBegin
+  key: Home
+  type: Function
+- function: TextCursorEnd
+  key: End
+  type: Function
 `, 'utf-8');
 
     // The engine's content mounts resolve <solution>/RobustToolbox relative

@@ -388,6 +388,8 @@ state "icon"
     assert(keybinds.includes('function: dmverb step_south') && keybinds.includes('key: Down'), "Arrow keys bound too (W-G input)");
     assert(keybinds.includes('commandWhenUIFocused: false'), "Movement binds suppressed while UI/console has focus (W-G input)");
     assert(keybinds.includes('function: dmclickpick') && keybinds.includes('key: MouseLeft'), "MouseLeft bound to dmclickpick (W-G input)");
+    assert(keybinds.includes('function: TextSubmit') && keybinds.includes('key: Return'), "Return submits typed console lines (W-G input)");
+    assert(keybinds.includes('function: TextBackspace') && keybinds.includes('function: TextTabComplete'), "Console LineEdit editing keys bound (W-G input)");
     assert(dmClientInput.includes('class DMClickPickCommand') && dmClientInput.includes('dmclick {hx}'), "Client resolves clicked atom -> dmclick tile coords (W-G input)");
     assert(dmClientInput.includes('MouseGetControl'), "UI clicks skip the world pick (W-G input)");
     assert(dmClientInput.includes('MainViewportContainer'), "Viewport container doesn't count as a UI click (W-G input)");

@@ -117,7 +117,16 @@ declared default — more correct than the first-write approximation.
 (WASD/arrows move, left-click clicks, Tilde console) and points at
 `dmverbs` — the server-side listing already reaches the client's console
 via the shell binding, so a command listing satisfies the "reachable"
-requirement cheaply.
+requirement cheaply. For that to be *actionable* the emitted
+`keybinds.yml` now also carries the standard text-editing binds
+(`Return`/`NumpadEnter` → `TextSubmit`, `Escape` → `TextReleaseFocus`,
+`Tab` → `TextTabComplete`, Up/Down history, BackSpace/Delete, cursor
+keys, Home/End) — without them the console accepts typed text but can
+never submit it (found by the recorded E2E pass). Arrow text binds
+co-exist with the movement binds: while a LineEdit holds focus the
+movement `Command` binds are suppressed by `commandWhenUIFocused:false`
+and the `Function` binds route to the focused control; with nothing
+focused the Function binds no-op and movement runs.
 
 ## Verification
 
