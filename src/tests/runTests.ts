@@ -213,6 +213,63 @@ async function runTests() {
     gui.stop();
   }
 
+  // W-J (Plan 30): GUI polish endpoints — output browser confinement, SSE
+  // auth, cancel semantics. Own server instance so this block stays additive.
+  {
+    const { GUIServer } = await import('../gui/server.js');
+    const net = await import('net');
+    const freePort = await new Promise<number>((resolve) => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address() as any;
+        srv.close(() => resolve(addr.port));
+      });
+    });
+    const gui = new GUIServer(freePort);
+    gui.start();
+    await new Promise(r => setTimeout(r, 300));
+
+    const rawRequest = (raw: string) => new Promise<string>((resolve) => {
+      const sock = net.createConnection(freePort, '127.0.0.1', () => sock.write(raw));
+      let data = '';
+      sock.on('data', d => { data += d.toString(); });
+      sock.on('end', () => resolve(data));
+      sock.on('error', () => resolve(data));
+    });
+
+    const index = await rawRequest(`GET / HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+    const token = index.match(/AUTH_TOKEN = "([0-9a-f]+)"/)![1];
+    const homeRoot = process.env.HOME || '/tmp';
+    const browseDir = fs.mkdtempSync(path.join(homeRoot, 'dm2ss14-gui-browse-'));
+    try {
+      fs.writeFileSync(path.join(browseDir, 'a.txt'), 'hello');
+      fs.mkdirSync(path.join(browseDir, 'sub'));
+
+      const treeNoToken = await rawRequest(`GET /api/tree?root=${browseDir} HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeNoToken.includes('403'), "Tree without session token rejected (403)");
+      const treeOutside = await rawRequest(`GET /api/tree?token=${token}&root=/etc HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeOutside.includes('403'), "Tree root outside home rejected (403)");
+      const treeOk = await rawRequest(`GET /api/tree?token=${token}&root=${browseDir} HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeOk.includes(' 200 ') && treeOk.includes('"a.txt"') && treeOk.includes('"sub"'), "Tree lists dir entries for a valid root");
+      const treeEscape = await rawRequest(`GET /api/tree?token=${token}&root=${browseDir}&path=.. HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeEscape.includes('403'), "Tree path escaping the browse root rejected (403)");
+
+      const fileOk = await rawRequest(`GET /api/file?token=${token}&root=${browseDir}&path=a.txt HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(fileOk.includes('hello'), "File preview returns text content");
+      const fileMissing = await rawRequest(`GET /api/file?token=${token}&root=${browseDir}&path=nope.txt HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(fileMissing.includes('403'), "Missing file path rejected (403, no existence oracle)");
+
+      const eventsNoToken = await rawRequest(`GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(eventsNoToken.includes('403'), "SSE stream without token rejected (403)");
+
+      const cancelIdle = await rawRequest(`POST /api/cancel HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nX-Auth-Token: ${token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+      assert(cancelIdle.includes('409'), "Cancel with no in-flight convert returns 409");
+    } finally {
+      fs.rmSync(browseDir, { recursive: true, force: true });
+      gui.stop();
+    }
+  }
+
   // Test 5: End-to-End Transpilation to temporary directory
   const tmpInputDir = path.join(process.cwd(), 'temp_test_ss13');
   const tmpOutputDir = path.join(process.cwd(), 'temp_test_ss14');
@@ -368,6 +425,33 @@ state "icon"
     assert(dmTileDefs.includes('ValidateTileSprite'), "Sprite validation lives in shared code — identical effective defs both sides (W-C client tiles)");
     assert(systemCs.includes('DMTileDefs.EnsureRegistered()'), "Server delegates tile-def registration to the shared registrar (W-C client tiles)");
     assert(!systemCs.includes('partial class DMTilePrototype'), "DMTilePrototype no longer emitted server-side (moved to Content.Shared)");
+
+    // W-G input (docs/plans/28): type var defaults + client input.
+    const procsCs = fs.readdirSync(path.join(tmpOutputDir, 'Content.Server', 'DM'))
+      .filter(f => /^ConvertedDMProcs(_\d+)?\.cs$/.test(f))
+      .map(f => fs.readFileSync(path.join(tmpOutputDir, 'Content.Server', 'DM', f), 'utf-8'))
+      .join('\n');
+    const runtimeCs = fs.readFileSync(path.join(tmpOutputDir, 'SS13.DM.Runtime', 'DMRuntimeHelpers.cs'), 'utf-8');
+    const dmClientInput = fs.readFileSync(path.join(tmpOutputDir, 'Content.Client', 'DM', 'DMClientInput.cs'), 'utf-8');
+    assert(runtimeCs.includes('TypeVarInits') && runtimeCs.includes('ApplyTypeVarInits'), "Runtime carries the TypeVarInits registry + ApplyTypeVarInits walk (W-G input)");
+    assert(procsCs.includes('DMRuntimeHelpers.TypeVarInits["/obj/item/weapon/sword"]'), "Emitters register each type's var-init action (W-G input)");
+    assert(procsCs.includes('SeedVar(c, "name", DMValue.FromString("Energy Sword"))'), "Declared name default emitted into TypeVarInits (W-G input)");
+    assert(procsCs.includes('SeedVar(c, "desc", DMValue.FromString("A sharp energy blade."))'), "Declared desc default emitted into TypeVarInits (W-G input)");
+    assert(procsCs.includes('SeedVar(c, "custom_power", DMValue.FromNumber(100))'), "Scalar custom var default emitted into TypeVarInits (W-G input)");
+    assert(!procsCs.includes('SeedVar(c, "effects"'), "Expression/list initializers stay unseeded (W-G input)");
+    assert(systemCs.includes('ApplyTypeVarInits(comp.Runtime)'), "Component init seeds type var defaults before initialVars/New (W-G input)");
+    assert(runtimeCs.includes('ApplyTypeVarInits(datum)') && runtimeCs.includes('var datum = new DMRuntime { DMTypePath = normalized }'), "DMNew seeds type var defaults before loc/New (W-G input)");
+    assert(keybinds.includes('function: dmverb step_north') && keybinds.includes('key: W'), "WASD keybind emits dmverb step_north on W (W-G input)");
+    assert(keybinds.includes('function: dmverb step_south') && keybinds.includes('key: Down'), "Arrow keys bound too (W-G input)");
+    assert(keybinds.includes('commandWhenUIFocused: false'), "Movement binds suppressed while UI/console has focus (W-G input)");
+    assert(keybinds.includes('function: dmclickpick') && keybinds.includes('key: MouseLeft'), "MouseLeft bound to dmclickpick (W-G input)");
+    assert(keybinds.includes('function: TextSubmit') && keybinds.includes('key: Return'), "Return submits typed console lines (W-G input)");
+    assert(keybinds.includes('function: TextBackspace') && keybinds.includes('function: TextTabComplete'), "Console LineEdit editing keys bound (W-G input)");
+    assert(dmClientInput.includes('class DMClickPickCommand') && dmClientInput.includes('dmclick {hx}'), "Client resolves clicked atom -> dmclick tile coords (W-G input)");
+    assert(dmClientInput.includes('MouseGetControl'), "UI clicks skip the world pick (W-G input)");
+    assert(dmClientInput.includes('MainViewportContainer'), "Viewport container doesn't count as a UI click (W-G input)");
+    assert(dmClientInput.includes('CalculateBounds'), "Sprite hit-test uses renderer bounds (W-G input)");
+    assert(dmClientInput.includes('class DMControlsCommand') && dmClientInput.includes('dmverbs'), "dmcontrols lists controls + points at dmverbs (W-G input)");
 
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;

@@ -1,7 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { DMIRType } from '../ir/dmIRGenerator.js';
-import { DMGlobalVarDeclNode, ExpressionNode } from '../parser/dmParser.js';
+import { DMGlobalVarDeclNode, DMParser, ExpressionNode } from '../parser/dmParser.js';
+import { DMLexer } from '../parser/dmLexer.js';
+import { DiagnosticCollector } from '../diagnostics.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
 import { SymbolTable } from '../ir/symbolTable.js';
 
@@ -257,6 +259,14 @@ namespace Content.Server.DM
     // (no proc member); proc registrations pair with their members in
     // pass 2's order.
     for (const [pathKey, irType] of irMap.entries()) {
+      // ==== W-G input (docs/plans/28): datum type var defaults ====
+      // Every type gets a TypeVarInits registration carrying its declared
+      // var defaults (own vars + BYOND-inherited name/desc resolution);
+      // DMRuntimeHelpers.ApplyTypeVarInits walks the path ancestors at
+      // datum creation and applies them root-first.
+      const typeInit = this.typeVarInitRegistration(irMap, pathKey, irType);
+      if (typeInit) pathRegs.push(typeInit);
+
       if (irType.procs.size === 0) {
         // Var-only types still register their path so typesof() enumerates
         // them (WS9-4).
@@ -337,6 +347,39 @@ namespace Content.Server.DM
         sinks.pair(procRegs[regIndex++], member);
       }
     }
+
+    // ==== W-F new ====
+    // Field var initializers that are `new` expressions: a type-level
+    // `var/x = new /path` reaches the IR only as raw text in customVars
+    // (field inits carry no expression AST). Re-parsing the text recovers
+    // the `new` node so DMNew can seed the field with a real datum before
+    // New() runs — matching BYOND, where field initializers evaluate at
+    // construction time. Types with no procs at all (the common case for
+    // pure data/leaf types) emit one VarInit member + registration.
+    // The declared var TYPE is dropped upstream of the IR, so bare
+    // `= new`/`= new()` inits stay /datum — see docs/plans/27.
+    for (const [pathKey, irType] of irMap.entries()) {
+      const initStatements: string[] = [];
+      this.currentTypePath = pathKey;
+      this.currentProcName = '';
+      this.currentProcArgs = [];
+      for (const [varName, raw] of irType.customVars.entries()) {
+        const expr = this.parseNewInitializer(raw);
+        if (!expr) continue;
+        initStatements.push(`            comp.SetVar("${this.escapeString(varName)}", ${this.transpileExpression(expr)});\n`);
+      }
+      if (initStatements.length === 0) continue;
+      const className = this.pathToClassName(pathKey);
+      const reg = `            ProcRegistry.RegisterVarInit("${this.escapeString(pathKey)}", VarInit_${className});`;
+      const member = `        // W-F: field var/x = new initializers for ${pathKey}
+        public static async Task<DMValue> VarInit_${className}(DMRuntime comp, DMValue[] args)
+        {
+${initStatements.join('')}            return DMValue.Null;
+        }
+`;
+      sinks.pair(reg, member);
+    }
+
     // Closes RegisterProcs(); the class close + GlobalVars follow (tail).
     sinks.close();
     sinks.tail(`    }
@@ -393,6 +436,87 @@ namespace Content.Server.DM
     }
 }
 `);
+  }
+
+  // ==== W-G input (docs/plans/28): datum type var defaults ==============
+  // BYOND semantics: a fresh datum's vars start at the type's declared
+  // defaults — inherited from ancestors unless overridden — applied before
+  // loc assignment and New() dispatch. This emits one TypeVarInits action
+  // per type carrying that type's effective defaults; the runtime applies
+  // the whole ancestor chain root->leaf at datum creation (DMNew, engine
+  // component init, grid turf datums).
+  //
+  // Only unambiguous values are seeded: the identity vars (name/desc —
+  // always text in DM), icon/icon_state, and custom vars whose IR-
+  // normalized initializer is a scalar literal (number, bool literal,
+  // /path, or identifier-safe text — gender is forced to text). Expression
+  // initializers (list(), new, calls, arithmetic) are skipped: the IR's
+  // normalized text can't distinguish a quoted string from an identifier
+  // or expression, and a mis-seeded string is worse than an unseeded var.
+  private typeVarInitRegistration(irMap: Map<string, DMIRType>, pathKey: string, irType: DMIRType): string | null {
+    const sets: string[] = [];
+    const basename = (p: string) => {
+      const seg = p.split('/').filter(Boolean);
+      return seg.length > 0 ? seg[seg.length - 1] : 'object';
+    };
+    // BYOND name resolution: an atom's effective name is its own declared
+    // name, else the nearest ancestor's declared name, else the type
+    // basename. IR's name field is declared-or-basename; a declared name
+    // equal to the basename is indistinguishable from undeclared
+    // (documented approximation — same emitted value either way).
+    let effName = irType.name;
+    if (effName === basename(pathKey)) {
+      let p = irType.parentPath;
+      while (p) {
+        const par = irMap.get(p);
+        if (!par) break;
+        if (par.name !== basename(par.path)) { effName = par.name; break; }
+        p = par.parentPath;
+      }
+    }
+    if (effName && effName !== 'null' && effName !== '') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "name", DMValue.FromString("${this.escapeString(effName)}"));`);
+    }
+    if (irType.desc && irType.desc !== 'null') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "desc", DMValue.FromString("${this.escapeString(irType.desc)}"));`);
+    }
+    if (irType.icon && irType.icon !== 'null') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "icon", DMValue.FromString("${this.escapeString(irType.icon)}"));`);
+    }
+    if (irType.iconState && irType.iconState !== 'null') {
+      sets.push(`DMRuntimeHelpers.SeedVar(c, "icon_state", DMValue.FromString("${this.escapeString(irType.iconState)}"));`);
+    }
+    // Structural bool vars are inherited in IR like custom vars; emit the
+    // effective value so a datum's density/anchored/opacity reads back.
+    if (irType.density) sets.push('DMRuntimeHelpers.SeedVar(c, "density", DMValue.FromNumber(1));');
+    if (irType.anchored) sets.push('DMRuntimeHelpers.SeedVar(c, "anchored", DMValue.FromNumber(1));');
+    if (irType.opacity) sets.push('DMRuntimeHelpers.SeedVar(c, "opacity", DMValue.FromNumber(1));');
+    for (const [k, v] of irType.customVars) {
+      const init = this.scalarVarInit(k, v);
+      if (init) sets.push(`DMRuntimeHelpers.SeedVar(c, "${this.escapeString(k)}", ${init});`);
+    }
+    if (sets.length === 0) return null;
+    return `            DMRuntimeHelpers.TypeVarInits["${this.escapeString(pathKey)}"] = c => { ${sets.join(' ')} };`;
+  }
+
+  /// W-G input: custom-var initializers we can seed without an expression
+  /// evaluator — numeric, DM truth literals, and /type paths map 1:1 to
+  /// DMValue factories; identifier-safe bare text seeds as a string (the
+  /// overwhelmingly common case: quoted literals, which normalize to bare
+  /// text). Returns the C# initializer expression, or null when the
+  /// normalized text is an expression initializer (unseeded, documented).
+  private scalarVarInit(name: string, v: any): string | null {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (s === '' || s.toLowerCase() === 'null') return null;
+    if (name === 'gender') return `DMValue.FromString("${this.escapeString(s)}")`;
+    if (/^[+-]?\d+$/.test(s)) return `DMValue.FromNumber(${s})`;
+    if (/^[+-]?\d*\.\d+$/.test(s)) return `DMValue.FromNumber(${s}, true)`;
+    if (/^(true|yes|on)$/i.test(s)) return 'DMValue.FromNumber(1)';
+    if (/^(false|no|off)$/i.test(s)) return 'DMValue.FromNumber(0)';
+    if (s.startsWith('/')) return `DMValue.FromPath("${this.escapeString(s)}")`;
+    if (/^[A-Za-z_][A-Za-z0-9_ ]*$/.test(s)) return `DMValue.FromString("${this.escapeString(s)}")`;
+    return null;
   }
 
   /**
@@ -634,7 +758,8 @@ namespace Content.Server.DM
 
             if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum)
             {
-                _ = worldDatum.CallProc("New");
+                // W-F new: world/New runs BYOND's full ancestor chain.
+                _ = worldDatum.CallNewChain(System.Array.Empty<DMValue>());
             }
             Logger.InfoS("dm", "World init: DM world/New() complete");
             RegisterSubsystems();
@@ -786,11 +911,17 @@ namespace Content.Server.DM
                     && def is DMTilePrototype dmProto)
                     dmPath = dmProto.DMPath;
                 var datum = new DMRuntime { DMTypePath = dmPath };
+                // W-G input: turf datums get the same type-default seeding
+                // (name/desc of the turf type) before positional vars.
+                DMRuntimeHelpers.ApplyTypeVarInits(datum);
                 datum.SetVar("x", DMValue.FromNumber(tileRef.GridIndices.X + 1));
                 datum.SetVar("y", DMValue.FromNumber(tileRef.GridIndices.Y + 1));
                 datum.SetVar("z", DMValue.FromNumber(z));
                 DMRuntimeHelpers.LiveDatums.Add(datum);
-                _ = datum.CallProc("New");
+                // W-F new: field new initializers + the full New() chain.
+                if (ProcRegistry.TryGetVarInit(datum.DMTypePath, out var turfInit))
+                    _ = turfInit(datum, System.Array.Empty<DMValue>());
+                _ = datum.CallNewChain(System.Array.Empty<DMValue>());
             }
             Logger.InfoS("dm", "Grid {Uid} (z={Z}): minted turf datums", uid, z);
         }
@@ -884,6 +1015,10 @@ namespace Content.Server.DM
         {
             comp.Runtime.DMTypePath = comp.DMTypePath;
             comp.Runtime.EntityId = (ulong)uid.Id;
+            // W-G input: seed the type's declared var defaults (name/desc/
+            // gender/scalars) BEFORE the prototype's initialVars so the
+            // proto's explicit values still win, and before New().
+            DMRuntimeHelpers.ApplyTypeVarInits(comp.Runtime);
             foreach (var (k, v) in comp.InitialVars)
             {
                 comp.Runtime.SetVar(k, DMValue.FromString(v));
@@ -911,7 +1046,12 @@ namespace Content.Server.DM
 
         public void ExecuteNew(EntityUid uid, DMRuntimeComponent comp)
         {
-            _ = comp.Runtime.CallProc("New");
+            // W-F new: field var/x = new initializers seed real datums
+            // (the InitialVars loop above stores them as strings), then
+            // BYOND's full New() ancestor chain runs.
+            if (ProcRegistry.TryGetVarInit(comp.DMTypePath, out var varInit))
+                _ = varInit(comp.Runtime, System.Array.Empty<DMValue>());
+            _ = comp.Runtime.CallNewChain(System.Array.Empty<DMValue>());
         }
 
         // ==== B-3 (item 71): appearance bridge + sprite helpers ====
@@ -1878,11 +2018,48 @@ namespace Content.Server.DM
         return this.transpileUnary(node);
       case 'call':
         return this.transpileCall(node);
-      case 'new':
+      case 'new': {
+        // ==== W-F new ====
         // Parenthesized: member access binds tighter than await, so callers
         // appending .IsTrue() etc. must bind to the DMValue, not the Task.
         // Global initializers have no comp; DMNew ignores the datum argument.
-        return `(await DMNew(${this.globalsMode ? 'null' : 'comp'}, "${this.normalizeTypePath(node.typePath)}"${node.arguments.length > 0 ? ', ' + node.arguments.map((a: any) => this.transpileExpression(a)).join(', ') : ''}))`;
+        const newTypePath = this.escapeString(this.normalizeTypePath(node.typePath));
+        const compExpr = this.globalsMode ? 'null' : 'comp';
+        const newArgs: any[] = node.arguments;
+        let argTail = '';
+        // W-F: `new T(arglist(L))` spreads L's elements; mixing arglist with
+        // plain args concatenates the segments (same rule as call sites).
+        if (newArgs.some((a: any) => a.type === 'call' && a.name === 'arglist')) {
+          argTail = `, DMRuntimeHelpers.DMArgsConcat(${newArgs.map((a: any) =>
+            a.type === 'call' && a.name === 'arglist'
+              ? `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a.arguments[0])})`
+              : `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a)})`
+          ).join(', ')})`;
+        } else if (newArgs.length > 0) {
+          // W-F: `new T(k = v)` parses as an assignment node; emit a named-arg
+          // marker so the runtime binds it to New()'s declared params instead
+          // of writing the caller's `k` var.
+          argTail = ', ' + newArgs.map((a: any) =>
+            a.type === 'assignment' && typeof a.target === 'string'
+              ? `DMRuntimeHelpers.DMNamedArg("${this.escapeString(a.target)}", ${this.transpileExpression(a.value)})`
+              : this.transpileExpression(a)
+          ).join(', ');
+        }
+        const segs = this.normalizeTypePath(node.typePath).split('/').filter(Boolean);
+        if (segs.length === 1) {
+          // W-F: `new x` — a single-segment path is ambiguous in DM: when a
+          // var `x` in scope holds a typepath the var wins (new spawn_type(loc)
+          // is the common corpus idiom); otherwise the literal one-segment
+          // path stands. The AST loses the rooted/unrooted distinction, so the
+          // runtime resolves it: DMNewPath reads the var, and a path-valued
+          // result wins over the literal.
+          const varRead = this.globalsMode
+            ? `(await GlobalVars.Get("${this.escapeString(segs[0])}"))`
+            : `comp.GetVar("${this.escapeString(segs[0])}")`;
+          return `(await DMNewPath(${compExpr}, ${varRead}, "${newTypePath}"${argTail}))`;
+        }
+        return `(await DMNew(${compExpr}, "${newTypePath}"${argTail}))`;
+      }
       case 'ternary':
         return this.transpileTernary(node);
       case 'property':
@@ -1994,6 +2171,38 @@ namespace Content.Server.DM
 
   private normalizeTypePath(p: string): string {
     return (p || '').replace(/\/+$/, '');
+  }
+
+  // ==== W-F new ====
+  /** Field var initializers arrive as raw text (`var/x = new /path` →
+   *  customVars["x"] = "new /path"): re-lex/parse the text and return the
+   *  expression AST when it is (or starts with) a `new`, else null. Any
+   *  parse failure yields null so the initializer keeps its existing
+   *  string-value fallback. */
+  private parseNewInitializer(raw: any): ExpressionNode | null {
+    if (typeof raw !== 'string' || !/^\s*new\b/.test(raw)) return null;
+    try {
+      const tokens = new DMLexer(raw).tokenize();
+      const sub = new DMParser(tokens, new DiagnosticCollector());
+      const expr = sub.parseExpression() as ExpressionNode | null;
+      if (expr && expr.type === 'new') return expr;
+      // Postfix forms (`new /path (...)`, `new /path {…}`) wrap the `new`
+      // node — accept those as well.
+      if (expr && this.containsNew(expr)) return expr;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private containsNew(node: any): boolean {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'new') return true;
+    for (const key of Object.keys(node)) {
+      const v = node[key];
+      if (Array.isArray(v) ? v.some(n => this.containsNew(n)) : this.containsNew(v)) return true;
+    }
+    return false;
   }
 
   private referencesIdentifier(node: any, name: string): boolean {
