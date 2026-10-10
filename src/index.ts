@@ -152,14 +152,16 @@ export class DM2SS14Transpiler {
       if (globals.length > 0) {
         console.log(`      Collected ${globals.length} /global/var/ declarations.`);
       }
+      // Corpus-wide symbol table for emit-time call-target resolution (item 64).
+      // Build BEFORE releasing the ASTs — iterating an emptied array yields an
+      // empty table and silently disables symbol resolution.
+      const symbols = new SymbolTable();
+      for (const node of allASTNodes) symbols.addTypeDecls([node]);
+
       // The parsed ASTs are only needed for IR generation — release them before
       // emission so the YAML + C# outputs (which are large at corpus scale)
       // fit in the heap alongside the IR (item 66 full-corpus boot).
       allASTNodes.length = 0;
-
-      // Corpus-wide symbol table for emit-time call-target resolution (item 64).
-      const symbols = new SymbolTable();
-      for (const node of allASTNodes) symbols.addTypeDecls([node]);
       let unresolvedCallNames = 0;
       const emitterWarn = console.warn.bind(console);
       console.warn = (msg: string) => {
