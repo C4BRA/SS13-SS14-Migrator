@@ -314,10 +314,22 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       additionally verified: real GL window, connect screen, two-sided attach.
       Known limits: headless needs `--cvar res.texturepreloadingenabled=false`;
       builtin debug connect screen only, no lobby UI (docs/plans/20-b5-client.md).
-74. [ ] **B-6 — M1 gate: minimum playable demo.** One converted map, a player mob that
-      spawns, moves, and interacts with one object, visibly rendered — the north-star
-      acceptance test for B-1..B-5.
-75. [~] **B-7 — Fidelity + loss reduction.** Scoreboard REFRESHED on 5 corpora
+74. [x] **B-6 — M1 gate: minimum playable demo.** DONE — **5/5 PASS** on merged
+      master via `scripts/m1-gate.sh` over `tests/m1-demo/`: map loads (E1
+      `dm_space` tilemap-0 fix — every converted map crashed on load without it),
+      client connects InGame/Full-GameState + mob attach (E2), sprite/appearance
+      resolves client-side with zero missing-texture errors (E3 — windowed pixel
+      evidence captured on sibling run), mob moves via dmverb with `dmloc` coords
+      changing (E4), `dmclick /obj/m1_button` fires Click() → `M1-CLICK:` in both
+      server log and client console (E5). Headless command channel = generated
+      client reads `Resources/autocmds.txt` and fires each line via
+      IClientConsoleHost once InGame (keybinds.yml emitted too). Known limits:
+      dmTile client-side atlas is engine-internal (floors draw error-tiles
+      windowed), `..()` re-resolution stack overflow + off-thread
+      RegisterSubsystems are pre-existing blockers, usr.name unseeded on spawned
+      datums, ~24% paradise dmTiles exceed the 32px atlas rule, no ambient light
+      (docs/plans/21-b6-m1-gate.md).
+75. [x] **B-7 — Fidelity + loss reduction.** Scoreboard REFRESHED on 5 corpora
       (Oct-2026 heads, baystation onboarded — see AUDIT.md): bay parse 259 errors → 0
       (7 lexer/parser/preprocessor gaps fixed — slash-regex literals, operator-overload
       procs, wrong-arity macro expansion, etc.) which collapsed its unresolved bucket
