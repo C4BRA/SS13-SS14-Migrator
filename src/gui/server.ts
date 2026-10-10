@@ -3,8 +3,27 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { Worker } from 'worker_threads';
 import AdmZip from 'adm-zip';
-import { DM2SS14Transpiler } from '../index.js';
+import { renderPage } from './page.js';
+
+// W-J: the convert runs on a worker thread (see convertWorker.ts) so the page
+// gets a live log stream even during the synchronous emit stages and a real
+// cancel (worker.terminate), while this server stays responsive.
+
+interface LogEvent { seq: number; level: 'log' | 'warn' | 'error'; line: string }
+
+interface ConvertSummary {
+  dmFiles?: number; dmiFiles?: number; dmmFiles?: number;
+  types?: number; globals?: number; procs?: number;
+  prototypeFiles?: number; csFiles?: number; rsiDirs?: number; mapFiles?: number;
+  outputBytes?: number; unresolvedCalls?: number; warnings?: number; errors?: number;
+  timings?: string; wallSeconds?: number;
+}
+
+const MAX_LOG_EVENTS = 5000;       // replay buffer for SSE clients
+const MAX_FILE_PREVIEW = 256 * 1024; // output-browser file preview cap
+const MAX_TREE_ENTRIES = 5000;
 
 export class GUIServer {
   private port: number;
@@ -12,12 +31,28 @@ export class GUIServer {
   private convertInFlight = false;
   private server: http.Server | null = null;
 
+  // In-flight conversion state (at most one — the 429 guard is unchanged).
+  private worker: Worker | null = null;
+  private cancelled = false;
+  private logEvents: LogEvent[] = [];
+  private logSeq = 0;
+  private sseClients = new Set<http.ServerResponse>();
+  private lastDone: Record<string, unknown> | null = null; // replayed to late SSE joins
+
   constructor(port: number = 3456) {
     this.port = port;
     this.authToken = crypto.randomBytes(32).toString('hex');
   }
 
   public stop(): void {
+    if (this.worker) {
+      this.worker.terminate().catch(() => undefined);
+      this.worker = null;
+    }
+    for (const res of this.sseClients) {
+      try { res.end(); } catch { /* already gone */ }
+    }
+    this.sseClients.clear();
     if (this.server) {
       this.server.close();
       this.server = null;
@@ -27,13 +62,71 @@ export class GUIServer {
   public start(): void {
     const server = http.createServer(async (req, res) => {
       const url = req.url || '/';
-      if (req.method === 'GET' && (url === '/' || url === '/index.html')) {
+      const pathname = url.split('?')[0];
+
+      if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(this.getHTMLContent(this.authToken));
+        res.end(renderPage({
+          authToken: this.authToken,
+          defaultOutputPath: path.join(process.env.HOME || '', 'Downloads', 'SS14-Converted-Server'),
+          cores: os.availableParallelism()
+        }));
         return;
       }
 
-      if (req.method === 'POST' && url === '/api/convert') {
+      // Live log stream for the page (SSE). Read-only: the session token
+      // arrives as ?token= because EventSource cannot set headers.
+      if (req.method === 'GET' && pathname === '/api/events') {
+        if (!this.isAuthorizedRead(req)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden' }));
+          return;
+        }
+        this.handleEvents(res);
+        return;
+      }
+
+      // Output-browser endpoints (read-only, token + $HOME-confined).
+      if (req.method === 'GET' && pathname === '/api/tree') {
+        if (!this.isAuthorizedRead(req)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden' }));
+          return;
+        }
+        this.handleTree(url, res);
+        return;
+      }
+      if (req.method === 'GET' && pathname === '/api/file') {
+        if (!this.isAuthorizedRead(req)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden' }));
+          return;
+        }
+        this.handleFile(url, res);
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/cancel') {
+        if (!this.isAuthorized(req)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden: invalid Host/Origin or missing session token.' }));
+          return;
+        }
+        if (!this.convertInFlight || !this.worker) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No conversion in progress.' }));
+          return;
+        }
+        this.cancelled = true;
+        // The pending /api/convert response resolves as {cancelled:true} from
+        // the worker 'exit' handler — terminate() is the real abort path.
+        this.worker.terminate().catch(() => undefined);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ cancelled: true }));
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/convert') {
         if (!this.isAuthorized(req)) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Forbidden: invalid Host/Origin or missing session token.' }));
@@ -49,6 +142,7 @@ export class GUIServer {
           await this.handleConvertRequest(req, res);
         } finally {
           this.convertInFlight = false;
+          this.worker = null;
         }
         return;
       }
@@ -78,11 +172,7 @@ export class GUIServer {
   // (a hostile website can fire a cross-site POST at localhost:3456, but it
   // cannot read the token to pass the X-Auth-Token check).
   private isAuthorized(req: http.IncomingMessage): boolean {
-    const host = req.headers.host || '';
-    const hostOk =
-      host === `localhost:${this.port}` || host === `127.0.0.1:${this.port}` ||
-      host === 'localhost' || host === '127.0.0.1';
-    if (!hostOk) return false;
+    if (!this.hostAllowed(req)) return false;
 
     const origin = req.headers.origin;
     if (origin) {
@@ -91,9 +181,32 @@ export class GUIServer {
       if (!originOk) return false;
     }
 
+    return this.tokenOk(req);
+  }
+
+  // Read-only GET endpoints (SSE, output browser): same loopback Host rule +
+  // the session token, which may arrive via ?token= since EventSource cannot
+  // set headers.
+  private isAuthorizedRead(req: http.IncomingMessage): boolean {
+    return this.hostAllowed(req) && this.tokenOk(req);
+  }
+
+  private hostAllowed(req: http.IncomingMessage): boolean {
+    const host = req.headers.host || '';
+    return (
+      host === `localhost:${this.port}` || host === `127.0.0.1:${this.port}` ||
+      host === 'localhost' || host === '127.0.0.1'
+    );
+  }
+
+  private tokenOk(req: http.IncomingMessage): boolean {
     const token = req.headers['x-auth-token'];
     const tokenStr = Array.isArray(token) ? token[0] : token;
-    return tokenStr === this.authToken;
+    if (tokenStr === this.authToken) return true;
+    const q = (req.url || '').split('?')[1];
+    if (!q) return false;
+    const params = new URLSearchParams(q);
+    return params.get('token') === this.authToken;
   }
 
   // Restrict output paths to the user's home directory so a crafted
@@ -133,9 +246,196 @@ export class GUIServer {
     return resolved;
   }
 
+  // ---- Live log / SSE -----------------------------------------------------
+
+  private pushLog(level: LogEvent['level'], line: string): void {
+    const ev: LogEvent = { seq: this.logSeq++, level, line };
+    this.logEvents.push(ev);
+    if (this.logEvents.length > MAX_LOG_EVENTS) this.logEvents.shift();
+    // Preserve the server-side log the CLI/headless flows already rely on.
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.log(line);
+    this.broadcast({ t: 'log', level, line });
+  }
+
+  private broadcast(payload: unknown): void {
+    const data = `data: ${JSON.stringify(payload)}\n\n`;
+    for (const res of this.sseClients) {
+      try {
+        res.write(data);
+      } catch {
+        this.sseClients.delete(res);
+      }
+    }
+  }
+
+  private handleEvents(res: http.ServerResponse): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+    res.write(': connected\n\n');
+    // Replay the buffer so a page that connects mid-convert catches up, then
+    // a terminal event if the last run already finished. A 'start' marker
+    // first lets the client tell replayed history from live lines.
+    res.write(`data: ${JSON.stringify({ t: 'start', replay: true })}\n\n`);
+    for (const ev of this.logEvents) {
+      res.write(`data: ${JSON.stringify({ t: 'log', level: ev.level, line: ev.line })}\n\n`);
+    }
+    if (this.lastDone) {
+      res.write(`data: ${JSON.stringify({ t: 'done', ...this.lastDone })}\n\n`);
+    }
+    this.sseClients.add(res);
+    const heartbeat = setInterval(() => {
+      try { res.write(': ping\n\n'); } catch { /* gone */ }
+    }, 15000);
+    res.on('close', () => {
+      clearInterval(heartbeat);
+      this.sseClients.delete(res);
+    });
+  }
+
+  // ---- Output browser -----------------------------------------------------
+
+  private readQuery(url: string): URLSearchParams {
+    const q = url.split('?')[1] || '';
+    return new URLSearchParams(q);
+  }
+
+  private json(res: http.ServerResponse, code: number, payload: unknown): void {
+    res.writeHead(code, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  }
+
+  // Resolve `rel` inside `root` with symlink confinement: both must already
+  // exist (browsing is for real output dirs) and the real path must stay
+  // under the real root — same hardening posture as validateOutputPath.
+  private confine(root: string, rel: string): { real: string; relPosix: string } | null {
+    const validated = GUIServer.validateOutputPath(root);
+    if (validated === null) return null;
+    let realRoot: string;
+    try {
+      const st = fs.statSync(validated);
+      if (!st.isDirectory()) return null;
+      realRoot = fs.realpathSync(validated);
+    } catch {
+      return null;
+    }
+    const abs = path.resolve(realRoot, rel || '.');
+    let real: string;
+    try {
+      real = fs.realpathSync(abs);
+    } catch {
+      return null;
+    }
+    if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
+    const relPosix = path.relative(realRoot, real).split(path.sep).join('/');
+    return { real, relPosix };
+  }
+
+  private handleTree(url: string, res: http.ServerResponse): void {
+    const q = this.readQuery(url);
+    const root = q.get('root') || '';
+    const rel = q.get('path') || '';
+    if (!root) {
+      this.json(res, 400, { error: 'Missing root parameter.' });
+      return;
+    }
+    const c = this.confine(root, rel);
+    if (!c) {
+      this.json(res, 403, { error: 'Path must exist and stay inside the browsed directory.' });
+      return;
+    }
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(c.real, { withFileTypes: true });
+    } catch {
+      this.json(res, 400, { error: 'Not a directory.' });
+      return;
+    }
+    const entries: { name: string; dir: boolean; size: number }[] = [];
+    for (const d of dirents) {
+      let isDir = d.isDirectory();
+      let size = 0;
+      if (d.isSymbolicLink()) {
+        try {
+          const st = fs.statSync(path.join(c.real, d.name));
+          isDir = st.isDirectory();
+          size = st.size;
+        } catch { continue; } // broken symlink
+      } else if (!isDir) {
+        try { size = fs.statSync(path.join(c.real, d.name)).size; } catch { size = 0; }
+      }
+      entries.push({ name: d.name, dir: isDir, size });
+    }
+    entries.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+    const truncated = entries.length > MAX_TREE_ENTRIES;
+    this.json(res, 200, {
+      root,
+      path: c.relPosix,
+      entries: truncated ? entries.slice(0, MAX_TREE_ENTRIES) : entries,
+      truncated
+    });
+  }
+
+  private handleFile(url: string, res: http.ServerResponse): void {
+    const q = this.readQuery(url);
+    const root = q.get('root') || '';
+    const rel = q.get('path') || '';
+    if (!root || !rel) {
+      this.json(res, 400, { error: 'Missing root or path parameter.' });
+      return;
+    }
+    const c = this.confine(root, rel);
+    if (!c) {
+      this.json(res, 403, { error: 'Path must exist and stay inside the browsed directory.' });
+      return;
+    }
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(c.real);
+    } catch {
+      this.json(res, 404, { error: 'File not found.' });
+      return;
+    }
+    if (!st.isFile()) {
+      this.json(res, 400, { error: 'Not a file.' });
+      return;
+    }
+    let fd: number;
+    try {
+      fd = fs.openSync(c.real, 'r');
+    } catch {
+      this.json(res, 403, { error: 'Cannot read file.' });
+      return;
+    }
+    try {
+      const cap = Math.min(st.size, MAX_FILE_PREVIEW);
+      const buf = Buffer.alloc(cap);
+      const read = fs.readSync(fd, buf, 0, cap, 0);
+      const head = buf.subarray(0, Math.min(read, 8192));
+      const binary = head.includes(0);
+      this.json(res, 200, {
+        name: path.basename(c.real),
+        path: c.relPosix,
+        size: st.size,
+        truncated: st.size > MAX_FILE_PREVIEW,
+        binary,
+        text: binary ? '' : buf.subarray(0, read).toString('utf-8')
+      });
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  // ---- Conversion ---------------------------------------------------------
+
   private static readonly MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
   private static readonly MAX_ZIP_ENTRIES = 50000;
   private static readonly MAX_ZIP_UNCOMPRESSED = 4 * 1024 * 1024 * 1024; // 4 GiB
+  private static readonly MAX_JOBS = 64;
 
   private async handleConvertRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const chunks: Buffer[] = [];
@@ -172,8 +472,7 @@ export class GUIServer {
     let tempInputDir: string | null = null;
     try {
       if (oversized) {
-        res.writeHead(413, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Upload exceeds the 2 GiB size limit.' }));
+        this.json(res, 413, { error: 'Upload exceeds the 2 GiB size limit.' });
         return;
       }
       const body = Buffer.concat(chunks);
@@ -181,6 +480,7 @@ export class GUIServer {
 
       let zipBuffer: Buffer | null = null;
       let outputDirPath = path.join(process.env.HOME || '/tmp', 'Downloads', 'SS14-Converted-Server');
+      let jobs: number | undefined;
 
       if (contentType.includes('multipart/form-data')) {
         const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
@@ -190,23 +490,35 @@ export class GUIServer {
 
           const filePart = parts.find(p => p.filename);
           const outputPart = parts.find(p => p.name === 'outputPath');
+          const jobsPart = parts.find(p => p.name === 'jobs');
 
           if (filePart) zipBuffer = filePart.data;
           if (outputPart) {
             const candidate = GUIServer.validateOutputPath(outputPart.data.toString('utf-8').trim() || outputDirPath);
             if (!candidate) {
-              res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'Invalid outputPath: must resolve inside your home directory.' }));
+              this.json(res, 400, { error: 'Invalid outputPath: must resolve inside your home directory.' });
               return;
             }
             outputDirPath = candidate;
+          }
+          if (jobsPart) {
+            const raw = jobsPart.data.toString('utf-8').trim();
+            if (raw === '' || raw === 'auto' || raw === '0') {
+              jobs = undefined; // auto
+            } else {
+              const parsed = Number(raw);
+              if (!Number.isInteger(parsed) || parsed < 0 || parsed > GUIServer.MAX_JOBS) {
+                this.json(res, 400, { error: `Invalid jobs: expected an integer 0-${GUIServer.MAX_JOBS} (0 = auto).` });
+                return;
+              }
+              jobs = parsed;
+            }
           }
         }
       }
 
       if (!zipBuffer) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'No zip file provided.' }));
+        this.json(res, 400, { error: 'No zip file provided.' });
         return;
       }
 
@@ -220,10 +532,20 @@ export class GUIServer {
       for (const entry of entries) {
         totalUncompressed += entry.header.size;
         if (entries.length > GUIServer.MAX_ZIP_ENTRIES || totalUncompressed > GUIServer.MAX_ZIP_UNCOMPRESSED) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Archive rejected: too many entries or total size exceeds limits.' }));
+          this.json(res, 400, { error: 'Archive rejected: too many entries or total size exceeds limits.' });
           return;
         }
+      }
+
+      // Input file counts for the fidelity summary — from the archive's own
+      // entry list so they are independent of the transpiler's log lines.
+      const inputCounts = { dm: 0, dmi: 0, dmm: 0 };
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        const lower = entry.entryName.toLowerCase();
+        if (lower.endsWith('.dm')) inputCounts.dm++;
+        else if (lower.endsWith('.dmi')) inputCounts.dmi++;
+        else if (lower.endsWith('.dmm')) inputCounts.dmm++;
       }
 
       // Unpredictable temp dir under os.tmpdir(): a predictable cwd-relative
@@ -244,34 +566,159 @@ export class GUIServer {
           if (st.isDirectory()) stack.push(p);
           else extractedBytes += st.size;
           if (extractedBytes > GUIServer.MAX_ZIP_UNCOMPRESSED) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Archive rejected: extracted size exceeds limits.' }));
+            this.json(res, 400, { error: 'Archive rejected: extracted size exceeds limits.' });
             return;
           }
         }
       }
 
-      const transpiler = new DM2SS14Transpiler();
-      await transpiler.transpile({
-        inputDir: tempInputDir,
-        outputDir: outputDirPath
-      });
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        success: true,
-        outputDir: outputDirPath,
-        message: 'Transpilation completed successfully!'
-      }));
+      // Fresh run state, then the first line of this run's log. The 'start'
+      // marker tells already-connected SSE clients to drop the previous
+      // run's replayed lines before this run's lines arrive.
+      this.cancelled = false;
+      this.lastDone = null;
+      this.logEvents = [];
+      this.broadcast({ t: 'start' });
+      this.pushLog('log', `[dm2ss14] Queued: ${inputCounts.dm} .dm / ${inputCounts.dmi} .dmi / ${inputCounts.dmm} .dmm input file(s).`);
+      await this.runConvertWorker(tempInputDir, outputDirPath, jobs, inputCounts, res);
     } catch {
       // Do not leak server-side paths/error internals to the client (WS12-3).
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Transpilation failed.' }));
+      if (!res.writableEnded) this.json(res, 500, { error: 'Transpilation failed.' });
     } finally {
       if (tempInputDir && fs.existsSync(tempInputDir)) {
         fs.rmSync(tempInputDir, { recursive: true, force: true });
       }
     }
+  }
+
+  // Run transpile() on a worker thread; resolve the HTTP response when it
+  // posts its result, errors, or exits (cancel -> terminated).
+  private runConvertWorker(
+    inputDir: string,
+    outputDir: string,
+    jobs: number | undefined,
+    inputCounts: { dm: number; dmi: number; dmm: number },
+    res: http.ServerResponse
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const worker = new Worker(path.join(__dirname, 'convertWorker.js'), {
+      workerData: { inputDir, outputDir, jobs }
+    });
+    this.worker = worker;
+
+    return new Promise<void>(resolve => {
+      let settled = false;
+      const finish = (payload: Record<string, unknown>) => {
+        if (settled) return;
+        settled = true;
+        this.lastDone = payload;
+        this.broadcast({ t: 'done', ...payload });
+        if (!res.writableEnded) {
+          this.json(res, (payload.success || payload.cancelled) ? 200 : 500, payload);
+        }
+        resolve();
+      };
+
+      worker.on('message', (msg: any) => {
+        if (msg && msg.type === 'log') {
+          this.pushLog(msg.level === 'warn' || msg.level === 'error' ? msg.level : 'log', String(msg.line));
+          return;
+        }
+        if (msg && msg.type === 'result') {
+          if (msg.ok) {
+            const summary = this.buildSummary(outputDir, inputCounts, startedAt);
+            finish({ success: true, outputDir, summary, message: 'Transpilation completed successfully!' });
+          } else {
+            finish({ success: false, cancelled: this.cancelled, error: this.cancelled ? 'Conversion cancelled.' : 'Transpilation failed: ' + String(msg.error) });
+          }
+        }
+      });
+      worker.on('error', () => {
+        finish({ success: false, cancelled: this.cancelled, error: this.cancelled ? 'Conversion cancelled.' : 'Conversion worker crashed.' });
+      });
+      worker.on('exit', code => {
+        // terminate() (cancel) or an unhandled crash both land here when no
+        // result message was delivered first.
+        finish(this.cancelled
+          ? { success: false, cancelled: true, error: 'Conversion cancelled.' }
+          : { success: false, error: `Conversion worker exited unexpectedly (code ${code}).` });
+      });
+    });
+  }
+
+  // Fidelity summary card data: metrics parsed from the transpiler's own log
+  // lines plus real counts walked from the emitted output tree — nothing is
+  // invented: a metric that is not observed is simply absent from the card.
+  private buildSummary(
+    outputDir: string,
+    inputCounts: { dm: number; dmi: number; dmm: number },
+    startedAt: number
+  ): ConvertSummary {
+    const s: ConvertSummary = {
+      dmFiles: inputCounts.dm,
+      dmiFiles: inputCounts.dmi,
+      dmmFiles: inputCounts.dmm,
+      warnings: 0,
+      errors: 0,
+      wallSeconds: Math.round((Date.now() - startedAt) / 100) / 10
+    };
+    for (const ev of this.logEvents) {
+      const line = ev.line;
+      let m = line.match(/Resolved (\d+) DM types/);
+      if (m) { s.types = Number(m[1]); continue; }
+      m = line.match(/Collected (\d+) \/global\/var/);
+      if (m) { s.globals = Number(m[1]); continue; }
+      m = line.match(/Symbol pass: (\d+) unresolved call names/);
+      if (m) { s.unresolvedCalls = Number(m[1]); continue; }
+      if (line.includes('all bare/method call targets resolved')) { s.unresolvedCalls = 0; continue; }
+      if (line.startsWith('[dm2ss14] warning:')) { s.warnings!++; continue; }
+      if (line.startsWith('[dm2ss14] error:')) { s.errors!++; continue; }
+      m = line.match(/Timings:\s*(.*)/);
+      if (m) { s.timings = m[1].trim(); continue; }
+    }
+
+    // Emitted-artifact counts from the output tree itself.
+    let bytes = 0;
+    const stack = [outputDir];
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      let list: string[];
+      try { list = fs.readdirSync(dir); } catch { continue; }
+      for (const name of list) {
+        const p = path.join(dir, name);
+        let st: fs.Stats;
+        try { st = fs.lstatSync(p); } catch { continue; }
+        // Generated trees contain a RobustToolbox *symlink* into the engine
+        // checkout — don't follow it or the card reports the engine's size,
+        // not the emitted output's.
+        if (st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          if (name.endsWith('.rsi')) s.rsiDirs = (s.rsiDirs || 0) + 1;
+          stack.push(p);
+          continue;
+        }
+        bytes += st.size;
+        const rel = path.relative(outputDir, p);
+        if (name.endsWith('.cs')) {
+          s.csFiles = (s.csFiles || 0) + 1;
+          // Registered procs: one ProcRegistry.Register(...) line per emitted
+          // DM proc — counting them gives the real "procs emitted" number.
+          try {
+            const text = fs.readFileSync(p, 'utf-8');
+            s.procs = (s.procs || 0) + text.split('ProcRegistry.Register(').length - 1;
+          } catch { /* unreadable file — count stays honest */ }
+        } else if (name.endsWith('.yml') || name.endsWith('.yaml')) {
+          const under = rel.split(path.sep).slice(0, 2).join('/');
+          if (under === path.join('Resources', 'Prototypes').split(path.sep).join('/')) {
+            s.prototypeFiles = (s.prototypeFiles || 0) + 1;
+          } else if (under === path.join('Resources', 'Maps').split(path.sep).join('/')) {
+            s.mapFiles = (s.mapFiles || 0) + 1;
+          }
+        }
+      }
+    }
+    s.outputBytes = bytes;
+    return s;
   }
 
   private parseMultipart(body: Buffer, boundary: string): { name?: string; filename?: string; data: Buffer }[] {
@@ -304,238 +751,5 @@ export class GUIServer {
     }
 
     return parts;
-  }
-
-  private getHTMLContent(authToken: string): string {
-    const defaultOutputPath = path.join(process.env.HOME || '', 'Downloads', 'SS14-Converted-Server');
-    const lines = [
-'<!DOCTYPE html>',
-'<html lang="en">',
-'<head>',
-'<meta charset="UTF-8">',
-'<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-'<title>dm2ss14 Desktop App</title>',
-'<style>',
-':root {',
-'  --bg: #0d1117; --card-bg: #161b22; --border: #30363d;',
-'  --accent: #58a6ff; --accent-glow: rgba(88,166,255,0.25);',
-'  --success: #3fb950; --text: #c9d1d9; --text-heading: #f0f6fc;',
-'}',
-'* { box-sizing: border-box; margin: 0; padding: 0; }',
-'body {',
-'  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;',
-'  background: var(--bg); color: var(--text);',
-'  display: flex; justify-content: center; align-items: center;',
-'  min-height: 100vh; padding: 20px;',
-'}',
-'.app-container {',
-'  width: 100%; max-width: 680px; background: var(--card-bg);',
-'  border: 1px solid var(--border); border-radius: 16px;',
-'  box-shadow: 0 12px 40px rgba(0,0,0,0.6); overflow: hidden;',
-'  display: flex; flex-direction: column;',
-'}',
-'.app-header {',
-'  background: rgba(255,255,255,0.03); padding: 24px 32px;',
-'  border-bottom: 1px solid var(--border);',
-'  display: flex; align-items: center; justify-content: space-between;',
-'}',
-'.app-title h1 { font-size: 22px; font-weight: 700; color: var(--text-heading); letter-spacing: -0.5px; }',
-'.app-title p { font-size: 13px; color: #8b949e; margin-top: 4px; }',
-'.status-badge {',
-'  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--success);',
-'  background: rgba(63,185,80,0.1); padding: 6px 12px; border-radius: 20px;',
-'  border: 1px solid rgba(63,185,80,0.3);',
-'}',
-'.status-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; box-shadow: 0 0 8px var(--success); }',
-'.app-body { padding: 32px; display: flex; flex-direction: column; gap: 24px; }',
-'.dropzone {',
-'  border: 2px dashed #30363d; border-radius: 12px; padding: 40px 20px;',
-'  text-align: center; background: rgba(0,0,0,0.2); cursor: pointer;',
-'  transition: all 0.2s ease; display: flex; flex-direction: column;',
-'  align-items: center; gap: 12px;',
-'}',
-'.dropzone:hover, .dropzone.dragover { border-color: var(--accent); background: var(--accent-glow); }',
-'.dropzone * { pointer-events: none; }',
-'.dropzone-icon { font-size: 40px; }',
-'.dropzone-text { font-size: 15px; color: var(--text-heading); font-weight: 600; }',
-'.dropzone-sub { font-size: 12px; color: #8b949e; }',
-'.field-group { display: flex; flex-direction: column; gap: 8px; }',
-'.field-label { font-size: 13px; font-weight: 600; color: var(--text-heading); }',
-'.field-input {',
-'  background: #0d1117; border: 1px solid var(--border); border-radius: 8px;',
-'  padding: 12px 14px; color: #f0f6fc; font-size: 14px; width: 100%;',
-'  outline: none; transition: border-color 0.2s;',
-'}',
-'.field-input:focus { border-color: var(--accent); }',
-'.btn-convert {',
-'  background: var(--accent); color: #0d1117; font-size: 15px; font-weight: 700;',
-'  padding: 14px; border: none; border-radius: 8px; cursor: pointer;',
-'  transition: all 0.2s; display: flex; justify-content: center; align-items: center; gap: 8px;',
-'}',
-'.btn-convert:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 16px var(--accent-glow); }',
-'.btn-convert:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; transform: none; box-shadow: none; }',
-'.log-box {',
-'  background: #090d11; border: 1px solid var(--border); border-radius: 8px; padding: 16px;',
-'  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;',
-'  font-size: 13px; color: #7ee787; height: 160px; overflow-y: auto; display: none;',
-'  white-space: pre-wrap; word-break: break-word;',
-'}',
-'.success-card {',
-'  background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3);',
-'  border-radius: 8px; padding: 16px; display: none; flex-direction: column; gap: 8px;',
-'}',
-'.success-title { font-size: 15px; font-weight: 700; color: var(--success); }',
-'.success-cmd {',
-'  background: #0d1117; padding: 10px; border-radius: 6px;',
-'  font-family: monospace; font-size: 13px; color: #f0f6fc; border: 1px solid var(--border);',
-'}',
-'</style>',
-'</head>',
-'<body>',
-'<div class="app-container">',
-'  <div class="app-header">',
-'    <div class="app-title">',
-'      <h1>dm2ss14 Transpiler</h1>',
-'      <p>Convert any SS13 repository .zip into a compilable SS14 server solution</p>',
-'    </div>',
-'    <div class="status-badge"><div class="status-dot"></div>Ready</div>',
-'  </div>',
-'  <div class="app-body">',
-'    <input type="file" id="fileInput" accept=".zip" style="display:none">',
-'    <div class="dropzone" id="dropzone">',
-'      <div class="dropzone-icon">\uD83D\uDCE6</div>',
-'      <div class="dropzone-text" id="dropzoneText">Drop your SS13 repository .zip file here</div>',
-'      <div class="dropzone-sub">or click to browse from Finder</div>',
-'    </div>',
-'    <div class="field-group">',
-'      <label class="field-label">Output Save Destination Path:</label>',
-'      <input type="text" id="outputPath" class="field-input" value="' + defaultOutputPath + '">',
-'    </div>',
-'    <button class="btn-convert" id="convertBtn" disabled>Convert to SS14 Solution</button>',
-'    <div class="log-box" id="logBox"></div>',
-'    <div class="success-card" id="successCard">',
-'      <div class="success-title">\uD83C\uDF89 Conversion Complete!</div>',
-'      <div>Your converted SS14 C# Solution is ready at:</div>',
-'      <div class="success-cmd" id="successPath"></div>',
-'      <div>To launch the converted SS14 server:</div>',
-'      <div class="success-cmd">dotnet run --project Content.Server</div>',
-'    </div>',
-'  </div>',
-'</div>',
-'<script>',
-'(function() {',
-'  var AUTH_TOKEN = "' + authToken + '";',
-'  var dropzone = document.getElementById("dropzone");',
-'  var fileInput = document.getElementById("fileInput");',
-'  var dropzoneText = document.getElementById("dropzoneText");',
-'  var convertBtn = document.getElementById("convertBtn");',
-'  var outputPath = document.getElementById("outputPath");',
-'  var logBox = document.getElementById("logBox");',
-'  var successCard = document.getElementById("successCard");',
-'  var successPath = document.getElementById("successPath");',
-'  var selectedFile = null;',
-'  var dragCounter = 0;',
-'',
-'  dropzone.addEventListener("click", function(e) {',
-'    e.preventDefault();',
-'    e.stopPropagation();',
-'    fileInput.click();',
-'  });',
-'',
-'  fileInput.addEventListener("change", function(e) {',
-'    if (e.target.files && e.target.files.length > 0) {',
-'      selectedFile = e.target.files[0];',
-'      showSelected();',
-'    }',
-'  });',
-'',
-'  dropzone.addEventListener("dragenter", function(e) {',
-'    e.preventDefault();',
-'    e.stopPropagation();',
-'    dragCounter++;',
-'    dropzone.classList.add("dragover");',
-'  });',
-'',
-'  dropzone.addEventListener("dragover", function(e) {',
-'    e.preventDefault();',
-'    e.stopPropagation();',
-'  });',
-'',
-'  dropzone.addEventListener("dragleave", function(e) {',
-'    e.preventDefault();',
-'    e.stopPropagation();',
-'    dragCounter--;',
-'    if (dragCounter <= 0) { dragCounter = 0; dropzone.classList.remove("dragover"); }',
-'  });',
-'',
-'  dropzone.addEventListener("drop", function(e) {',
-'    e.preventDefault();',
-'    e.stopPropagation();',
-'    dragCounter = 0;',
-'    dropzone.classList.remove("dragover");',
-'    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {',
-'      selectedFile = e.dataTransfer.files[0];',
-'      showSelected();',
-'    }',
-'  });',
-'',
-'  document.addEventListener("dragover", function(e) { e.preventDefault(); });',
-'  document.addEventListener("drop", function(e) { e.preventDefault(); });',
-'',
-'  function showSelected() {',
-'    if (selectedFile) {',
-'      dropzoneText.textContent = "\\u2705 Selected: " + selectedFile.name;',
-'      convertBtn.disabled = false;',
-'    }',
-'  }',
-'',
-'  convertBtn.addEventListener("click", async function() {',
-'    if (!selectedFile) return;',
-'    convertBtn.disabled = true;',
-'    convertBtn.textContent = "Transpiling... Please wait";',
-'    logBox.style.display = "block";',
-'    successCard.style.display = "none";',
-'    logBox.textContent = "";',
-'',
-'    function log(msg) { logBox.textContent += msg + "\\n"; logBox.scrollTop = logBox.scrollHeight; }',
-'',
-'    log("[1/5] Extracting SS13 .zip archive...");',
-'',
-'    var formData = new FormData();',
-'    formData.append("file", selectedFile);',
-'    formData.append("outputPath", outputPath.value);',
-'',
-'    try {',
-'      log("[2/5] Parsing DM source code...");',
-'      log("[3/5] Emitting SS14 YAML Prototypes & C# ECS Systems...");',
-'      log("[4/5] Converting DMI icon assets to RSI...");',
-'      log("[5/5] Building SS14 Grid maps & SS13.DM.Runtime...");',
-'',
-'      var res = await fetch("/api/convert", { method: "POST", headers: { "X-Auth-Token": AUTH_TOKEN }, body: formData });',
-'      var data = await res.json();',
-'',
-'      if (data.success) {',
-'        log("");',
-'        log("[SUCCESS] Transpilation complete! Output saved.");',
-'        successCard.style.display = "flex";',
-'        successPath.textContent = data.outputDir;',
-'      } else {',
-'        log("");',
-'        log("[ERROR] " + (data.error || "Failed"));',
-'      }',
-'    } catch (err) {',
-'      log("");',
-'      log("[ERROR] " + err.message);',
-'    } finally {',
-'      convertBtn.disabled = false;',
-'      convertBtn.textContent = "Convert to SS14 Solution";',
-'    }',
-'  });',
-'})();',
-'</script>',
-'</body>',
-'</html>',
-    ];
-    return lines.join('\n');
   }
 }
