@@ -14,6 +14,10 @@ export class CSharpEmitter {
   private symbols: SymbolTable | null = null;
   private warnedCalls = new Set<string>();
   private currentTypePath = '';
+  // W-A parent-call (item 22): declared parameter names of the proc body
+  // being emitted — a no-arg ..() forwards their CURRENT values to the
+  // parent implementation (BYOND arg pass-through).
+  private currentProcArgs: string[] = [];
   private loopDepth = 0;
   private switchDepth = 0;
   private lambdaDepth = 0;
@@ -309,6 +313,7 @@ namespace Content.Server.DM
         });
 
         this.currentProcName = procName;
+        this.currentProcArgs = procNode.args.map((a: any) => a.name as string); // W-A parent-call
         this.labelNameCounts.clear();
         this.labelStack.length = 0;
 
@@ -625,6 +630,8 @@ namespace Content.Server.DM
                 _defaultMap = _map.CreateMap(out _);
                 Logger.InfoS("dm", "World init: no converted map — created default map {Map}", _defaultMap);
             }
+
+            SeedAmbientLight(); // W-B light (item 75)
 
             if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum)
             {
@@ -981,9 +988,12 @@ namespace Content.Server.DM
         /// <summary>
         /// dmTile sprites must be a plain PNG whose height is the tile size
         /// (32px) and whose width is 32*Variants — the pin's tile atlas
-        /// builder throws otherwise. .tile.png crops written by the RSI
-        /// converter are always 32x32; anything else is dropped to a blank
-        /// tile with a warning rather than crashing the client.
+        /// builder throws otherwise. Protos point at .tile32.png files
+        /// written by the RSI converter (W-B tiles, item 75): identical to
+        /// the first-cell crop for 32x32 sources and nearest-resampled for
+        /// free-sized BYOND cells, so they satisfy the rule by construction;
+        /// anything still non-conforming is dropped to a blank tile with a
+        /// warning rather than crashing the client.
         /// </summary>
         private void ValidateTileSprite(DMTilePrototype proto)
         {
@@ -1017,6 +1027,38 @@ namespace Content.Server.DM
             {
                 Logger.WarningS("dm", "tile {Id}: sprite check failed ({Ex}) — blank tile", proto.ID, ex.Message);
                 proto.Sprite = null;
+            }
+        }
+
+        // ==== W-B light (item 75): ambient-light baseline ================
+        /// <summary>
+        /// Converted worlds have no ported lighting controller, so the
+        /// pin's default ambient (MapLightComponent.AmbientLightColor =
+        /// black) leaves every unlit region invisible — BYOND turf icons
+        /// are drawn to be read fullbright. Seed a dim neutral ambient on
+        /// the world map so unlit tiles still read; PointLight components
+        /// (luminosity>0 protos) brighten on top of it via additive light.
+        /// AmbientLightColor is a LINEAR-light DataField and the component
+        /// is networked — SharedMapSystem.SetAmbientLight converts nothing
+        /// itself, so pass Color.FromSrgb and let it dirty+replicate.
+        /// sRGB 0xB0 keeps floors/walls clearly readable while leaving
+        /// headroom for point lights to matter; tune here if a codebase
+        /// wants a darker baseline.
+        /// </summary>
+        private static readonly Color DmAmbientSrgb = new Color(0xB0, 0xB0, 0xB0);
+
+        private void SeedAmbientLight()
+        {
+            try
+            {
+                var mapId = EntityManager.GetComponent<MapComponent>(_defaultMap).MapId;
+                var color = Color.FromSrgb(DmAmbientSrgb);
+                _map.SetAmbientLight(mapId, color);
+                Logger.InfoS("dm", "World init: ambient light {Color} (srgb {Srgb}) on map {Map}", color, DmAmbientSrgb, mapId);
+            }
+            catch (Exception ex)
+            {
+                Logger.ErrorS("dm", "Ambient light seed failed: {Ex}", ex.Message);
             }
         }
 
@@ -2160,13 +2202,40 @@ namespace Content.Server.DM
     if (builtin !== null) {
       return builtin;
     }
-    // DM "..()" — dispatch to the parent type's implementation of the
-    // currently executing proc.
+    // ==== W-A parent-call (item 22) ====
+    // DM "..()" — invoke the DEFINING type's parent implementation of the
+    // currently executing proc. The declaring type path is baked into the
+    // call site: resolving from the concrete instance's DMTypePath re-found
+    // the same body whenever a subtype overrode or inherited it, looping
+    // the override back into itself until stack overflow (the old
+    // single-argument CallParentProc's bug).
+    // No-arg ..() forwards the CURRENT values of this proc's declared
+    // parameters — BYOND passes the same arguments the current proc
+    // received; explicit args (incl. named x = v, emitted as DMNamedArg
+    // markers bound to the resolved ancestor's params) pass through as-is.
     if (node.name === '..') {
-      if (!args) {
-        return `(await comp.CallParentProc("${this.currentProcName}"))`;
+      if (this.globalsMode || !this.currentTypePath || this.currentTypePath.toLowerCase() === '/proc') {
+        // Global procs and global initializers have no parent body: BYOND
+        // has no ..() there at all. Await-wrapped so the 'call' emission is
+        // still a valid expression-statement (a bare DMValue.Null is not).
+        return '(await Task.FromResult(DMValue.Null))';
       }
-      return `(await comp.CallParentProc("${this.currentProcName}", ${args}))`;
+      let argTail = '';
+      if (hasArglist) {
+        argTail = `, ${args}`; // a DMValue[] expression (DMArgsConcat)
+      } else if (node.arguments.length === 0) {
+        argTail = this.currentProcArgs.length > 0
+          ? `, ${this.currentProcArgs.map((n) => `comp.GetVar("${this.escapeString(n)}")`).join(', ')}`
+          : '';
+      } else {
+        const pargs = node.arguments.map((a: any) =>
+          a.type === 'assignment' && typeof a.target === 'string'
+            ? `DMRuntimeHelpers.DMNamedArg("${this.escapeString(a.target)}", ${this.transpileExpression(a.value)})`
+            : this.transpileExpression(a)
+        ).join(', ');
+        argTail = `, ${pargs}`;
+      }
+      return `(await comp.CallParentProc("${this.escapeString(this.currentTypePath)}", "${this.escapeString(this.currentProcName)}"${argTail}))`;
     }
     // User-defined proc - call through runtime. In a global initializer there
     // is no current datum, so route through the GlobalVars bridge. The

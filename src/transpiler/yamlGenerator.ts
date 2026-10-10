@@ -162,8 +162,13 @@ export class YAMLGenerator {
         // writer emits <state>.tile.png (dir 0 frame 0) next to every
         // state sprite for exactly this purpose; the server validates
         // size/existence in RegisterTileDefs before registering.
+        // W-B tiles/light (item 75): protos now point at <state>.tile32.png,
+        // the writer's always-32x32 variant — free-sized BYOND cells (walls
+        // 32x40, floors 50x50, undersized icons) are nearest-resampled
+        // instead of failing the engine's 32h x (32*Variants)w rule and
+        // blanking the tile (was ~24% of paradise dmTiles).
         if (irType.icon && irType.iconState) {
-          tileFields.sprite = `/Textures/${YAMLGenerator.iconToRsiResource(irType.icon)}/${irType.iconState}.tile.png`;
+          tileFields.sprite = `/Textures/${YAMLGenerator.iconToRsiResource(irType.icon)}/${irType.iconState}.tile32.png`;
         }
         prototypes.push({
           type: 'dmTile',

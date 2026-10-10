@@ -580,19 +580,133 @@ namespace SS13.DM.Runtime
             return reordered;
         }
 
+        // ==== W-A parent-call (item 22): defining-type plumbing ====
+
         /// <summary>
-        /// DM "..()" dispatch: invoke the parent type's implementation of the
-        /// current proc (the nearest ancestor that defines it), skipping this
-        /// type's own override to avoid recursion.
+        /// DM "..()" dispatch: invoke the implementation of the current proc
+        /// on the type STRICTLY ABOVE the one that declares the executing
+        /// body. The emitter bakes the declaring path into the call site;
+        /// resolving from the concrete DMTypePath re-found the same body
+        /// whenever a subtype overrode or inherited it — the override looped
+        /// back into itself until stack overflow (the old single-argument
+        /// CallParentProc's bug).
+        ///
+        /// usr is deliberately NOT rebound: BYOND propagates the caller's usr
+        /// into the supercall (a verb's ..() on another atom keeps the mob
+        /// that ran it). InvokeWithUsr would relabel usr = src.
         /// </summary>
-        public async Task<DMValue> CallParentProc(string procName, params DMValue[] args)
+        public async Task<DMValue> CallParentProc(string definingTypePath, string procName, params DMValue[] args)
         {
-            if (ProcRegistry.TryGetInherited(DMTypePath, procName, out var handler)
-                || ProcRegistry.TryGet("/proc", procName, out handler))
+            if (ProcRegistry.TryGetInherited(definingTypePath, procName, out var handler, out var resolvedPath))
             {
-                return await InvokeWithUsr(handler, args);
+                return await handler(this, BindParentCallArgs(resolvedPath!, procName, args));
+            }
+            if (ProcRegistry.TryGet("/proc", procName, out handler))
+            {
+                return await handler(this, BindParentCallArgs("/proc", procName, args));
             }
             return DMValue.Null;
+        }
+
+        /// <summary>
+        /// Binds "..()" arguments against the RESOLVED ancestor's declared
+        /// parameters (not the concrete instance type's): DMNamedArg markers
+        /// ('..'(x = v)) bind by name, positional args fill the remaining
+        /// slots in order, and a single assoc list gets the arglist-style
+        /// named binding DMRuntime.CallProc applies.
+        /// </summary>
+        private static DMValue[] BindParentCallArgs(string resolvedPath, string procName, DMValue[] args)
+        {
+            var names = ProcRegistry.GetParamNames(resolvedPath, procName);
+            var hasMarkers = false;
+            foreach (var a in args)
+            {
+                if (TryUnwrapParentNamedArg(a, out _, out _)) { hasMarkers = true; break; }
+            }
+            if (!hasMarkers)
+            {
+                // arglist-style single assoc list binds entries by name —
+                // the same rule CallProc's ReorderNamedArgs applies.
+                if (args.Length == 1 && args[0].Type == DMValueType.List && args[0].ListValue != null
+                    && args[0].ListValue.AssocEntries.Count > 0 && names != null && names.Length > 0)
+                {
+                    var list = args[0].ListValue;
+                    var reordered = new DMValue[names.Length];
+                    for (var i = 0; i < reordered.Length; i++) reordered[i] = DMValue.Null;
+                    for (var i = 1; i <= list.PositionalCount && i <= names.Length; i++) reordered[i - 1] = list.Get(i);
+                    foreach (var kv in list.AssocEntries)
+                    {
+                        for (var i = 0; i < names.Length; i++)
+                        {
+                            if (string.Equals(names[i], kv.Key, StringComparison.OrdinalIgnoreCase))
+                            {
+                                reordered[i] = kv.Value;
+                                break;
+                            }
+                        }
+                    }
+                    return reordered;
+                }
+                return args;
+            }
+            if (names == null || names.Length == 0)
+            {
+                // No declared parameters on the resolved body: degrade
+                // markers to their values and keep argument order.
+                var flat = new DMValue[args.Length];
+                for (var i = 0; i < args.Length; i++)
+                {
+                    flat[i] = TryUnwrapParentNamedArg(args[i], out _, out var v) ? v : args[i];
+                }
+                return flat;
+            }
+            var bound = new DMValue[names.Length];
+            for (var i = 0; i < bound.Length; i++) bound[i] = DMValue.Null;
+            var extras = new List<DMValue>();
+            var pos = 0;
+            foreach (var a in args)
+            {
+                if (TryUnwrapParentNamedArg(a, out var n, out var v))
+                {
+                    for (var i = 0; i < names.Length; i++)
+                    {
+                        if (string.Equals(names[i], n, StringComparison.OrdinalIgnoreCase)) { bound[i] = v; break; }
+                    }
+                    // An unmatched name would be a BYOND bad-arg error; it
+                    // is dropped here rather than misfilled positionally.
+                }
+                else if (pos < names.Length)
+                {
+                    bound[pos++] = a;
+                }
+                else
+                {
+                    extras.Add(a);
+                }
+            }
+            if (extras.Count == 0) return bound;
+            var all = new DMValue[bound.Length + extras.Count];
+            Array.Copy(bound, all, bound.Length);
+            extras.CopyTo(all, bound.Length);
+            return all;
+        }
+
+        /// <summary>
+        /// DMNamedArg marker check — mirrors DMRuntimeHelpers.TryUnwrapNamedArg
+        /// (a 2-element positional list whose first element is a string).
+        /// Local so CallParentProc can bind '..'(x = v) without touching the
+        /// shared helper surface.
+        /// </summary>
+        private static bool TryUnwrapParentNamedArg(DMValue arg, out string? name, out DMValue value)
+        {
+            name = null; value = DMValue.Null;
+            if (arg.Type != DMValueType.List || arg.ListValue == null || arg.ListValue.PositionalCount != 2)
+                return false;
+            var k = arg.ListValue.Get(1);
+            if (k.Type != DMValueType.String) return false;
+            name = k.StringValue;
+            value = arg.ListValue.Get(2);
+            return true;
         }
 
         private async Task<DMValue> InvokeWithUsr(Func<DMRuntime, DMValue[], Task<DMValue>> handler, DMValue[] args)
@@ -771,6 +885,31 @@ namespace SS13.DM.Runtime
                 if (Procs.TryGetValue((candidate.ToLowerInvariant(), procName.ToLowerInvariant()), out handler!)) return true;
             }
             handler = null!;
+            return false;
+        }
+
+        // ==== W-A parent-call (item 22): defining-type plumbing ====
+
+        /// <summary>
+        /// TryGetInherited that also reports the ancestor path the proc was
+        /// found on — "..()" binds arguments against the RESOLVED ancestor's
+        /// declared parameter names, not the concrete instance type's.
+        /// </summary>
+        public static bool TryGetInherited(string typePath, string procName, out Func<DMRuntime, DMValue[], Task<DMValue>> handler, out string? resolvedPath)
+        {
+            var parts = typePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            while (parts.Length > 0)
+            {
+                parts = parts[..^1];
+                var candidate = "/" + string.Join("/", parts);
+                if (Procs.TryGetValue((candidate.ToLowerInvariant(), procName.ToLowerInvariant()), out handler!))
+                {
+                    resolvedPath = candidate;
+                    return true;
+                }
+            }
+            handler = null!;
+            resolvedPath = null;
             return false;
         }
 

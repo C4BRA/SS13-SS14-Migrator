@@ -161,6 +161,88 @@ state "big"
   if (fs.existsSync(smallPath)) fs.unlinkSync(smallPath);
   if (fs.existsSync(smallOut)) fs.rmSync(smallOut, { recursive: true, force: true });
 
+  // ==== W-B tiles (item 75): always-32x32 tile32 variant ================
+  {
+    const { resampleNearest, toTileImage32, TILE_PX } = await import('../dmi/imageScale.js');
+    assertEqual(TILE_PX, 32, 'Tile size constant is the engine tile size (item 75)');
+
+    // resampleNearest downscale: 4x4 gradient -> 2x2 picks floor(x*2,y*2).
+    const src4 = Buffer.alloc(4 * 4 * 4);
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
+      const i = (y * 4 + x) * 4;
+      src4[i] = x * 60; src4[i + 1] = y * 60; src4[i + 2] = 9; src4[i + 3] = 255;
+    }
+    const down = resampleNearest({ width: 4, height: 4, rgba: src4 }, 2, 2);
+    const dpx = (x: number, y: number) => [down[(y * 2 + x) * 4], down[(y * 2 + x) * 4 + 1]];
+    assertEqual(dpx(0, 0), [0, 0], 'Nearest downsample picks top-left source pixel (item 75)');
+    assertEqual(dpx(1, 0), [120, 0], 'Nearest downsample x maps to floor(x*srcW/dstW) (item 75)');
+    assertEqual(dpx(0, 1), [0, 120], 'Nearest downsample y maps to floor(y*srcH/dstH) (item 75)');
+    assertEqual(dpx(1, 1), [120, 120], 'Nearest downsample bottom-right source pixel (item 75)');
+
+    // resampleNearest upscale: 2x2 -> 4x4 pixel-doubles (nearest = chunky).
+    const src2 = Buffer.alloc(2 * 2 * 4);
+    for (let i = 0; i < 4; i++) { src2[i * 4] = i * 80; src2[i * 4 + 3] = 255; }
+    const up = resampleNearest({ width: 2, height: 2, rgba: src2 }, 4, 4);
+    assertEqual(up[(1 * 4 + 1) * 4], 0, 'Nearest upscale pixel-doubles top-left (item 75)');
+    assertEqual(up[(1 * 4 + 2) * 4], 80, 'Nearest upscale next quad starts at x=2 (item 75)');
+    assertEqual(up[(3 * 4 + 3) * 4], 240, 'Nearest upscale bottom-right = src(1,1) (item 75)');
+
+    // toTileImage32: 32x32 pass-through returns the same buffer.
+    const exact = Buffer.alloc(32 * 32 * 4, 7);
+    assert(toTileImage32({ width: 32, height: 32, rgba: exact }).rgba === exact, '32x32 cell passes through unresampled (item 75)');
+
+    // toTileImage32: 32x40 wall cell -> 32x32 (aspect squash, keeps top+bottom).
+    const wall = Buffer.alloc(32 * 40 * 4);
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 32; x++) {
+      const i = (y * 32 + x) * 4; wall[i] = y * 6; wall[i + 3] = 255;
+    }
+    const wallTile = toTileImage32({ width: 32, height: 40, rgba: wall });
+    assertEqual({ w: wallTile.width, h: wallTile.height }, { w: 32, h: 32 }, '32x40 wall resampled to 32x32 (item 75)');
+    assertEqual(wallTile.rgba[0], 0, 'squashed tile keeps source top row (item 75)');
+    const lastI = (31 * 32 + 0) * 4;
+    assertEqual(wallTile.rgba[lastI], Math.floor(31 * 40 / 32) * 6, 'squashed tile bottom row maps nearest source row (item 75)');
+
+    // toTileImage32: 16x16 -> 32x32 upscale for undersized legacy icons.
+    const small16 = toTileImage32({ width: 16, height: 16, rgba: Buffer.alloc(16 * 16 * 4, 5) });
+    assertEqual({ w: small16.width, h: small16.height }, { w: 32, h: 32 }, '16x16 icon upscaled to 32x32 (item 75)');
+  }
+
+  // Integration: a declared 4x3-cell DMI still yields a 32x32 tile32.png,
+  // while .tile.png keeps the native crop for non-atlas consumers.
+  {
+    const cellW = 4, cellH = 3;
+    const sheetBuf = Buffer.alloc(cellW * cellH * 4);
+    for (let y = 0; y < cellH; y++) for (let x = 0; x < cellW; x++) {
+      const i = (y * cellW + x) * 4;
+      sheetBuf[i] = x * 30; sheetBuf[i + 1] = y * 30; sheetBuf[i + 2] = 200; sheetBuf[i + 3] = 255;
+    }
+    const sheetPng = encodePNG({ width: cellW, height: cellH, rgba: sheetBuf });
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const dmiText = `# BEGIN DMI\nversion = 4.0\nwidth = ${cellW}\nheight = ${cellH}\nstate "odd"\n  dirs = 1\n  frames = 1\n# END DMI`;
+    const td = Buffer.concat([Buffer.from('DMI'), Buffer.from([0]), Buffer.from(dmiText, 'latin1')]);
+    const tc = Buffer.alloc(4); tc.writeUInt32BE(crc32(Buffer.concat([Buffer.from('tEXt'), td])), 0);
+    const tChunk = Buffer.concat([Buffer.alloc(4), Buffer.from('tEXt'), td, tc]);
+    tChunk.writeUInt32BE(td.length, 0);
+    const ihdrLen = sheetPng.readUInt32BE(8);
+    const at = 8 + 12 + ihdrLen;
+    const oddPath = path.join(process.cwd(), 'temp_test_odd.dmi');
+    fs.writeFileSync(oddPath, Buffer.concat([sig, sheetPng.subarray(8, at), tChunk, sheetPng.subarray(at)]));
+    const oddOut = path.join(process.cwd(), 'temp_test_odd_rsi');
+    if (fs.existsSync(oddOut)) fs.rmSync(oddOut, { recursive: true, force: true });
+    writer.convertDMIToRSI(oddPath, oddOut);
+
+    const oddTile = decodePNG(fs.readFileSync(path.join(oddOut, 'odd.tile.png')));
+    assertEqual({ w: oddTile.width, h: oddTile.height }, { w: cellW, h: cellH }, '.tile.png stays the native first-cell crop (item 75)');
+    const odd32 = decodePNG(fs.readFileSync(path.join(oddOut, 'odd.tile32.png')));
+    assertEqual({ w: odd32.width, h: odd32.height }, { w: 32, h: 32 }, '.tile32.png is always 32x32 — the atlas rule (item 75)');
+    // 4x3 -> 32x32 upscale: output (0,0) and (31,31) sample src (0,0)/(3,2).
+    const o32 = (x: number, y: number) => { const i = (y * 32 + x) * 4; return [odd32.rgba[i], odd32.rgba[i + 1], odd32.rgba[i + 2]]; };
+    assertEqual(o32(0, 0), [0, 0, 200], 'upscaled tile32 top-left = src(0,0) (item 75)');
+    assertEqual(o32(31, 31), [90, 60, 200], 'upscaled tile32 bottom-right = src(3,2) (item 75)');
+    if (fs.existsSync(oddPath)) fs.unlinkSync(oddPath);
+    if (fs.existsSync(oddOut)) fs.rmSync(oddOut, { recursive: true, force: true });
+  }
+
   console.log("\n✅ ALL RSI WRITER TESTS PASSED!");
 }
 

@@ -174,8 +174,10 @@ async function runCSharpEmitterTests() {
     ..(5)
     return ..()
 `);
-  assertContains(paren, `await comp.CallParentProc("run", DMValue.FromNumber(5))`, 'Parent call with args');
-  assertContains(paren, `await comp.CallParentProc("run")`, 'Parent call zero-arg');
+  // W-A parent-call (item 22): ..() carries the DEFINING type path so the
+  // runtime resolves the parent of the declaring type, not the instance's.
+  assertContains(paren, `await comp.CallParentProc("/obj/foo", "run", DMValue.FromNumber(5))`, 'Parent call with args');
+  assertContains(paren, `await comp.CallParentProc("/obj/foo", "run")`, 'Parent call zero-arg');
 
   // Test 21: Modulo / bitwise ops parse
   const mod = transpileProc(`/obj/foo/proc/run()
