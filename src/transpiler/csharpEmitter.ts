@@ -626,6 +626,8 @@ namespace Content.Server.DM
                 Logger.InfoS("dm", "World init: no converted map — created default map {Map}", _defaultMap);
             }
 
+            SeedAmbientLight(); // W-B light (item 75)
+
             if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum)
             {
                 _ = worldDatum.CallProc("New");
@@ -981,9 +983,12 @@ namespace Content.Server.DM
         /// <summary>
         /// dmTile sprites must be a plain PNG whose height is the tile size
         /// (32px) and whose width is 32*Variants — the pin's tile atlas
-        /// builder throws otherwise. .tile.png crops written by the RSI
-        /// converter are always 32x32; anything else is dropped to a blank
-        /// tile with a warning rather than crashing the client.
+        /// builder throws otherwise. Protos point at .tile32.png files
+        /// written by the RSI converter (W-B tiles, item 75): identical to
+        /// the first-cell crop for 32x32 sources and nearest-resampled for
+        /// free-sized BYOND cells, so they satisfy the rule by construction;
+        /// anything still non-conforming is dropped to a blank tile with a
+        /// warning rather than crashing the client.
         /// </summary>
         private void ValidateTileSprite(DMTilePrototype proto)
         {
@@ -1017,6 +1022,38 @@ namespace Content.Server.DM
             {
                 Logger.WarningS("dm", "tile {Id}: sprite check failed ({Ex}) — blank tile", proto.ID, ex.Message);
                 proto.Sprite = null;
+            }
+        }
+
+        // ==== W-B light (item 75): ambient-light baseline ================
+        /// <summary>
+        /// Converted worlds have no ported lighting controller, so the
+        /// pin's default ambient (MapLightComponent.AmbientLightColor =
+        /// black) leaves every unlit region invisible — BYOND turf icons
+        /// are drawn to be read fullbright. Seed a dim neutral ambient on
+        /// the world map so unlit tiles still read; PointLight components
+        /// (luminosity>0 protos) brighten on top of it via additive light.
+        /// AmbientLightColor is a LINEAR-light DataField and the component
+        /// is networked — SharedMapSystem.SetAmbientLight converts nothing
+        /// itself, so pass Color.FromSrgb and let it dirty+replicate.
+        /// sRGB 0xB0 keeps floors/walls clearly readable while leaving
+        /// headroom for point lights to matter; tune here if a codebase
+        /// wants a darker baseline.
+        /// </summary>
+        private static readonly Color DmAmbientSrgb = new Color(0xB0, 0xB0, 0xB0);
+
+        private void SeedAmbientLight()
+        {
+            try
+            {
+                var mapId = EntityManager.GetComponent<MapComponent>(_defaultMap).MapId;
+                var color = Color.FromSrgb(DmAmbientSrgb);
+                _map.SetAmbientLight(mapId, color);
+                Logger.InfoS("dm", "World init: ambient light {Color} (srgb {Srgb}) on map {Map}", color, DmAmbientSrgb, mapId);
+            }
+            catch (Exception ex)
+            {
+                Logger.ErrorS("dm", "Ambient light seed failed: {Ex}", ex.Message);
             }
         }
 

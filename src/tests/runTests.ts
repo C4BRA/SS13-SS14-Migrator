@@ -335,6 +335,26 @@ state "icon"
     const keybinds = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'keybinds.yml'), 'utf-8');
     assert(keybinds.includes('function: ShowDebugConsole') && keybinds.includes('type: State'), "keybinds.yml emitted — windowed debug console is unopenable without it (item 74)");
 
+    // W-B tiles/light (item 75): the writer emits an always-32x32
+    // .tile32.png variant (the fixture's 1x1 DMI also exercises upscale),
+    // dmTile protos point at it, and the generated system seeds a
+    // networked ambient-light baseline.
+    assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Textures', 'icon.rsi', 'icon.tile32.png')), ".tile32.png emitted next to the RSI state (item 75)");
+    assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'Textures', 'icon.rsi', 'icon.tile.png')), "native first-cell .tile.png still emitted for other consumers (item 75)");
+    {
+      const tileYamlDir = path.join(process.cwd(), 'temp_test_tileyaml');
+      fs.rmSync(tileYamlDir, { recursive: true, force: true });
+      const tileDM = `/turf/simulated/floor\n    name = "Floor"\n    icon = 'icon.dmi'\n    icon_state = "icon"`;
+      const tileIR = irGen.generateIR(new DMParser(new DMLexer(tileDM).tokenize()).parse());
+      new YAMLGenerator().generateYAMLPrototypes(tileIR, tileYamlDir);
+      const tileYaml = fs.readFileSync(path.join(tileYamlDir, 'converted_entities.yml'), 'utf-8');
+      assert(tileYaml.includes('icon.rsi/icon.tile32.png'), "dmTile sprite points at the always-32x32 .tile32.png variant (item 75)");
+      assert(!tileYaml.includes('icon.rsi/icon.tile.png'), "no dmTile sprite keeps the native-size .tile.png path (item 75)");
+      fs.rmSync(tileYamlDir, { recursive: true, force: true });
+    }
+    assert(systemCs.includes('SeedAmbientLight') && systemCs.includes('SetAmbientLight'), "ConvertedDMSystem seeds ambient light via SharedMapSystem.SetAmbientLight (item 75)");
+    assert(systemCs.includes('FromSrgb'), "ambient color converted srgb -> linear-light per the pin's DataField contract (item 75)");
+
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;
     const testZipPath = path.join(process.cwd(), 'temp_test_repo.zip');
