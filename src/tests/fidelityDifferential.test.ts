@@ -898,6 +898,55 @@ const PROBES: Probe[] = [
     name: 'stack_trace returns null',
     dm: `/datum/probe/proc/run()\n\treturn stack_trace("x")`,
     expected: 'null' // debug aid; Null in the engine-free runtime
+  },
+
+  // --- Plan 16 B-2: world/tick/time layer (item 70) ---
+  {
+    name: 'sleep(n) waits n deciseconds on the world clock',
+    dm: `/datum/probe/proc/run()\n\tvar/t0 = world.time\n\tsleep(3)\n\treturn world.time - t0`,
+    expected: '3' // DM: world.time = server ticks × tick_lag (0.3s game time)
+  },
+  {
+    name: 'world.time stays on the tick grid',
+    dm: `/datum/probe/proc/run()\n\tsleep(1)\n\treturn world.time`,
+    expected: '1' // tick_lag 1: wake fires on the first tick boundary, time=1
+  },
+  {
+    name: 'spawn body runs after its delay',
+    dm: `/datum/probe/proc/run()\n\tvar/x = 0\n\tspawn(2)\n\t\tx = 1\n\tsleep(4)\n\treturn x`,
+    expected: '1' // spawn(2) fires ~0.2s in; sleep(4) outlasts it
+  },
+  {
+    name: 'same-tick spawns run in call order (FIFO)',
+    dm: `/datum/probe/proc/run()\n\tvar/x = 0\n\tspawn(1)\n\t\tx += 2\n\tspawn(1)\n\t\tx *= 10\n\tsleep(3)\n\treturn x`,
+    expected: '20' // BYOND wakes same-tick procs in sleep order: +2 then *10
+  },
+  {
+    name: 'spawn(0) runs before a sleep(1) finishes',
+    dm: `/datum/probe/proc/run()\n\tvar/x = 0\n\tspawn(0)\n\t\tx = 1\n\tsleep(1)\n\treturn x`,
+    expected: '1' // DM: spawn(0) queues at the end of the current scheduler pass
+  },
+  {
+    name: 'sleep is deciseconds not ticks (tick_lag conversion)',
+    dm: `/datum/probe/proc/run()\n\tworld.tick_lag = 0.5\n\tsleep(1)\n\treturn world.time`,
+    expected: '1' // sleep(1) = 1ds = 2 ticks at lag 0.5; world.time = 2×0.5 = 1
+  },
+  {
+    name: 'world.fps and world.tick_lag are linked',
+    dm: `/datum/probe/proc/run()\n\tworld.tick_lag = 0.5\n\treturn world.fps`,
+    expected: '20' // BYOND: fps = 10/tick_lag
+  },
+  {
+    name: 'world.realtime is ds since the BYOND era',
+    dm: `/datum/probe/proc/run()\n\treturn isnum(world.realtime) && world.realtime > 1000000`,
+    expected: '1' // BYOND era: deciseconds since 2000-01-01 00:00:00 GMT
+  },
+  {
+    name: 'world.Tick() fires once per world tick',
+    dm: `/global/var/ticks = 0\n/world/proc/Tick()\n\tGLOB.ticks += 1\n/datum/probe/proc/run()\n\tsleep(3)\n\treturn GLOB.ticks`,
+    expected: '2' // BYOND 515+: world.Tick() runs at the END of each tick — a
+    // proc woken at tick 3's boundary reads ticks=2 (tick 3's Tick has not
+    // fired yet); verified ordering: wakes happen before the same tick's Tick()
   }
 ];
 

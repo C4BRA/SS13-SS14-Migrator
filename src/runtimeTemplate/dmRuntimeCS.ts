@@ -484,7 +484,7 @@ namespace SS13.DM.Runtime
         /// </summary>
         public Dictionary<string, DMValue> InitialValues { get; } = new();
 
-        public DMValue SetVar(string name, DMValue val)
+        public virtual DMValue SetVar(string name, DMValue val)
         {
             if (!InitialValues.ContainsKey(name)) InitialValues[name] = val;
             Variables[name] = val;
@@ -749,54 +749,317 @@ namespace SS13.DM.Runtime
       {
         filename: 'DMTickScheduler.cs',
         content: `using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SS13.DM.Runtime
 {
+    /// <summary>
+    /// DM world-tick scheduler (PLAN item 70, B-2).
+    ///
+    /// DM measures time in deciseconds (1/10 s). world.time is "the number of
+    /// server ticks that have passed multiplied by world.tick_lag" — game
+    /// time, not real time — so a paused or playerless server does not
+    /// advance it. sleep/spawn delays are deciseconds too; per the DM
+    /// reference, event durations are rounded to whole ticks ("sleep(1)
+    /// still means sleep for 1/10s" whatever tick_lag/fps is), so a due time
+    /// is computed by rounding the delay UP onto the tick grid.
+    ///
+    /// The scheduler is engine-free: the clock only advances when somebody
+    /// calls Pump(elapsedDs). On a live server the generated
+    /// Content.Server.DM.ConvertedDMSystem pumps it every engine tick with
+    /// the simulated frame time (ExternalDriver = true — the engine's
+    /// EntitySystemManager calls Update on systems that override it, and the
+    /// server's game loop supplies TickPeriod seconds). Without a driver a
+    /// wall-clock fallback thread starts lazily on the first scheduled
+    /// callback and advances the DM clock in whole tick_lag quanta, so
+    /// probes observe the same tick-aligned times as on the engine.
+    ///
+    /// Wake ordering: callbacks due at the same instant fire in the order
+    /// they were scheduled (DM: "in the order in which the procedures were
+    /// originally put to sleep"). Callbacks scheduled with a zero/negative
+    /// delay while the queue drains (DM sleep(0), spawn(0)) run at the end of
+    /// the same pass — BYOND's "end of the current scheduler" yield.
+    /// </summary>
     public static class DMTickScheduler
     {
+        private sealed class Entry
+        {
+            public double DueDs;
+            public long Seq;
+            public Func<Task> Callback = () => Task.CompletedTask;
+        }
+
+        private static readonly object Sync = new();
+        // Min-heap on (DueDs, Seq): same-due callbacks fire in call order.
+        private static readonly PriorityQueue<Entry, (double Due, long Seq)> Pending = new();
+        // Per-DM-tick callbacks (subsystem registry); invoked once per
+        // world-tick boundary crossed, in registration order.
+        private static readonly Dictionary<long, Func<Task>> TickCallbacks = new();
+        private static double _clockDs;
+        private static long _lastBoundary;
+        private static long _seq;
+        private static long _tickCallbackSeq;
+        private static bool _externalDriver;
+        private static Thread _driverThread;
+        private static readonly object DriverSync = new();
+        private static long _driverLastTicks;
+        private static double _driverRemainderDs;
+
+        /// <summary>
+        /// Deciseconds per world tick — DM's world.tick_lag (default 1).
+        /// Read live from the world datum every call so DM writes to
+        /// world.tick_lag / world.fps take effect on the next pump.
+        /// </summary>
+        public static double TickLag
+        {
+            get
+            {
+                var lag = DMRuntimeHelpers.WorldTickLag();
+                return lag > 0 ? lag : 1;
+            }
+        }
+
+        /// <summary>Deciseconds of DM game time elapsed (unquantized clock).</summary>
+        public static double NowDs
+        {
+            get { lock (Sync) { return _clockDs; } }
+        }
+
+        /// <summary>World ticks elapsed so far (clock floored to the tick grid).</summary>
+        public static long TicksElapsed
+        {
+            get { lock (Sync) { return BoundaryIndex(); } }
+        }
+
+        /// <summary>
+        /// DM world.time: game-time clock quantized down to the tick grid —
+        /// server ticks × tick_lag per the DM reference.
+        /// </summary>
+        public static double WorldTimeDs
+        {
+            get { lock (Sync) { return BoundaryIndex() * TickLag; } }
+        }
+
+        /// <summary>
+        /// Set by the engine adapter once it drives Pump from the game loop;
+        /// suppresses the wall-clock fallback driver.
+        /// </summary>
+        public static bool ExternalDriver
+        {
+            get { lock (Sync) { return _externalDriver; } }
+            set { lock (Sync) { _externalDriver = value; } }
+        }
+
+        private static long BoundaryIndex()
+        {
+            var lag = TickLag;
+            return (long)Math.Floor(_clockDs / lag);
+        }
+
+        // Due timestamp for a DM delay in deciseconds. Positive delays are
+        // rounded up to a whole number of ticks: the wake fires on a tick
+        // boundary, so a delay just below a boundary still waits the full
+        // remaining tick (DM rounds event durations to tick granularity).
+        // Zero/negative delays defer to the end of the current scheduler pass
+        // (DM sleep(0) yield / backlog sleep).
+        private static double DueFor(double delayDs)
+        {
+            var lag = TickLag;
+            if (delayDs > 0)
+            {
+                var ticks = Math.Ceiling(delayDs / lag);
+                return (BoundaryIndex() + ticks) * lag;
+            }
+            return _clockDs;
+        }
+
+        /// <summary>
+        /// Advance the DM clock by elapsedDs deciseconds of game time and run
+        /// every scheduled callback that became due. Due callbacks run on the
+        /// calling thread in (due, insertion) order — FIFO within a wake tick.
+        /// Then, once per world-tick boundary crossed: the registered
+        /// per-tick callbacks (subsystem cadence), and the world.Tick() hook
+        /// — BYOND 515 calls world.Tick() at the end of every server tick.
+        /// </summary>
+        public static void Pump(double elapsedDs)
+        {
+            if (elapsedDs < 0) elapsedDs = 0;
+            lock (Sync) { _clockDs += elapsedDs; }
+
+            // Drain due entries. New entries enqueued due-now while draining
+            // (sleep(0)/spawn(0) style yields) run at the end of this same
+            // pass — BYOND's "end of the current scheduler" semantics.
+            while (true)
+            {
+                List<Entry> due = null;
+                lock (Sync)
+                {
+                    while (Pending.Count > 0 && Pending.Peek().DueDs <= _clockDs)
+                        (due ??= new List<Entry>()).Add(Pending.Dequeue());
+                }
+                if (due == null) break;
+                foreach (var e in due)
+                {
+                    try { _ = e.Callback(); }
+                    catch { /* callback threw synchronously; keep scheduling */ }
+                }
+            }
+
+            int boundaries;
+            lock (Sync)
+            {
+                var idx = BoundaryIndex();
+                boundaries = (int)Math.Max(0, idx - _lastBoundary);
+                _lastBoundary = idx;
+            }
+            if (boundaries <= 0) return;
+            List<Func<Task>> cbs;
+            lock (Sync) { cbs = new List<Func<Task>>(TickCallbacks.Values); }
+            for (var i = 0; i < boundaries; i++)
+            {
+                foreach (var cb in cbs)
+                {
+                    try { _ = cb(); } catch { }
+                }
+                if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime w && w.CanCallProc("tick"))
+                {
+                    try { _ = w.CallProc("tick"); } catch { }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Subsystem cadence hook (item 70): registers a callback invoked
+        /// once per world-tick boundary the clock crosses, in registration
+        /// order. This is the minimal hook the emitted code uses for
+        /// /datum/controller-style subsystem loops — not a port of SS13's MC.
+        /// Returns an id for UnregisterTickCallback.
+        /// </summary>
+        public static long RegisterTickCallback(Func<Task> callback)
+        {
+            EnsureFallbackDriver();
+            lock (Sync) { var id = ++_tickCallbackSeq; TickCallbacks[id] = callback; return id; }
+        }
+
+        public static bool UnregisterTickCallback(long id)
+        {
+            lock (Sync) { return TickCallbacks.Remove(id); }
+        }
+
+        private static Task<DMValue> ScheduleSleep(double deciseconds)
+        {
+            EnsureFallbackDriver();
+            var tcs = new TaskCompletionSource<DMValue>();
+            lock (Sync)
+            {
+                var entry = new Entry
+                {
+                    DueDs = DueFor(deciseconds),
+                    Seq = _seq++,
+                    Callback = () => { tcs.TrySetResult(DMValue.Null); return Task.CompletedTask; },
+                };
+                Pending.Enqueue(entry, (entry.DueDs, entry.Seq));
+            }
+            return tcs.Task;
+        }
+
+        /// <summary>DM sleep(n): waits n deciseconds (rounded up onto the tick grid).</summary>
         public static async Task<DMValue> Sleep(double deciseconds)
         {
-            int milliseconds = (int)(deciseconds * 100);
-            await Task.Delay(Math.Max(1, milliseconds));
-            return DMValue.Null;
+            return await ScheduleSleep(deciseconds);
         }
 
         public static async Task<DMValue> Sleep(DMValue deciseconds)
         {
-            await Sleep(deciseconds.ToNumber());
+            await ScheduleSleep(deciseconds.ToNumber());
             return DMValue.Null;
         }
 
-        public static void Spawn(double deciseconds, Action action)
+        private static void ScheduleSpawn(double deciseconds, Func<Task> action)
         {
-            _ = Task.Run(async () =>
+            if (action == null) return;
+            if (deciseconds < 0)
             {
-                await Sleep(deciseconds);
-                action?.Invoke();
-            });
+                // DM spawn(negative): the spawned block runs IMMEDIATELY inside
+                // the current proc (the copy continues after the spawn
+                // statement when the proc next yields — that deferred-caller
+                // half is not modeled; the body starting synchronously is the
+                // observable half). The hot task's sync prefix runs inline now.
+                EnsureFallbackDriver();
+                try { _ = action(); } catch { }
+                return;
+            }
+            EnsureFallbackDriver();
+            lock (Sync)
+            {
+                var entry = new Entry { DueDs = DueFor(deciseconds), Seq = _seq++, Callback = action };
+                Pending.Enqueue(entry, (entry.DueDs, entry.Seq));
+            }
         }
 
+        /// <summary>DM spawn(n) body: schedules the body after n deciseconds.</summary>
+        public static void Spawn(double deciseconds, Action action)
+            => ScheduleSpawn(deciseconds, () => { action(); return Task.CompletedTask; });
+
         public static void Spawn(DMValue deciseconds, Func<Task> action)
-        {
-            _ = Task.Run(async () =>
-            {
-                await Sleep(deciseconds);
-                if (action != null) await action();
-            });
-        }
+            => ScheduleSpawn(deciseconds.ToNumber(), action);
+
+        public static void Spawn(DMValue deciseconds, Action action)
+            => ScheduleSpawn(deciseconds.ToNumber(), () => { action(); return Task.CompletedTask; });
 
         // spawn() used as an expression: the body runs asynchronously and the
         // expression itself evaluates to the lambda's return value (Null for
         // the transpiled fallback — DM's spawn token is not representable).
-        public static async Task<DMValue> SpawnExpr(DMValue deciseconds, Func<Task<DMValue>> action)
+        public static Task<DMValue> SpawnExpr(DMValue deciseconds, Func<Task<DMValue>> action)
         {
-            _ = Task.Run(async () =>
+            ScheduleSpawn(deciseconds.ToNumber(), async () => { if (action != null) await action(); });
+            return Task.FromResult(DMValue.Null);
+        }
+
+        /// <summary>
+        /// Engine-free driver: a daemon thread that advances the DM clock in
+        /// whole tick_lag quanta at wall-clock pace, so sleep/spawn/tick
+        /// callbacks work without a game loop (probes, standalone runtime).
+        /// Started lazily by the first scheduled callback; exits if a real
+        /// engine driver takes over (ExternalDriver).
+        /// </summary>
+        private static void EnsureFallbackDriver()
+        {
+            lock (DriverSync)
             {
-                await Sleep(deciseconds);
-                if (action != null) await action();
-            });
-            return DMValue.Null;
+                if (_externalDriver || _driverThread != null) return;
+                _driverLastTicks = Stopwatch.GetTimestamp();
+                _driverThread = new Thread(DriverLoop) { IsBackground = true, Name = "DMTickScheduler fallback" };
+                _driverThread.Start();
+            }
+        }
+
+        private static void DriverLoop()
+        {
+            while (true)
+            {
+                Thread.Sleep(5); // poll period; clock only advances in whole DM ticks
+                if (_externalDriver) return; // engine took over: stop pumping
+                var now = Stopwatch.GetTimestamp();
+                double elapsedDs;
+                lock (DriverSync)
+                {
+                    elapsedDs = (now - _driverLastTicks) * 10.0 / Stopwatch.Frequency;
+                    _driverLastTicks = now;
+                }
+                if (elapsedDs <= 0) continue;
+                // Quantize to whole ticks so the engine-free clock stays on the
+                // tick grid (world.time is always a multiple of tick_lag).
+                var lag = TickLag;
+                _driverRemainderDs += elapsedDs;
+                var ticks = (long)Math.Floor(_driverRemainderDs / lag);
+                if (ticks <= 0) continue;
+                _driverRemainderDs -= ticks * lag;
+                Pump(ticks * lag);
+            }
         }
     }
 }
@@ -851,22 +1114,67 @@ namespace SS13.DM.Runtime
         }
 
         /// <summary>
-        /// DM "world" object. Engine integration later drives world.time from
-        /// the tick rate; the engine-free runtime exposes a live datum.
+        /// The DM /world datum. DMWorld links world.fps and world.tick_lag the
+        /// way BYOND does: they are the same value seen two ways
+        /// (fps = 10/tick_lag), so writing one rewrites the other — a
+        /// world.fps = N assignment changes the tick grid the scheduler uses.
+        /// </summary>
+        public sealed class DMWorld : DMRuntime
+        {
+            public override DMValue SetVar(string name, DMValue val)
+            {
+                base.SetVar(name, val);
+                if (val.Type == DMValueType.Number && val.NumberValue > 0)
+                {
+                    if (name == "fps")
+                        base.SetVar("tick_lag", DMValue.FromNumber(10.0 / val.NumberValue));
+                    else if (name == "tick_lag")
+                        base.SetVar("fps", DMValue.FromNumber(10.0 / val.NumberValue));
+                }
+                return val;
+            }
+        }
+
+        /// <summary>
+        /// DM "world" object. world.time is driven by DMTickScheduler (engine
+        /// pump on a live server, wall-clock fallback otherwise); the engine-
+        /// free runtime exposes a live datum either way.
         /// </summary>
         public static DMValue WorldValue { get; } = BuildWorld();
 
+        // BYOND's era: world.realtime is deciseconds since 2000-01-01 00:00:00 GMT.
+        private static readonly DateTime ByondEpoch = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        /// <summary>
+        /// world.tick_lag in deciseconds (DM default 1 = 0.1 s). Live read of
+        /// the world datum var so DM writes to world.tick_lag (or the linked
+        /// world.fps) take effect for the scheduler and for property reads.
+        /// </summary>
+        public static double WorldTickLag()
+        {
+            if (WorldValue.DatumRef is DMRuntime w)
+            {
+                var lag = w.GetVar("tick_lag");
+                if (lag.Type == DMValueType.Number && lag.NumberValue > 0)
+                    return lag.NumberValue;
+            }
+            return 1;
+        }
+
         private static DMValue BuildWorld()
         {
-            var world = new DMRuntime { DMTypePath = "/world" };
+            var world = new DMWorld { DMTypePath = "/world" };
+            // Reads of world.time go through DMTickScheduler (game time, tick
+            // grid); the var stays at 0 as the pre-boot value.
             world.SetVar("time", DMValue.FromNumber(0));
             // DM's default map is 100x100; the movement builtins clamp against
             // these (WS9-5 — previously never set, so step() walked off-map).
             world.SetVar("xmax", DMValue.FromNumber(100));
             world.SetVar("ymax", DMValue.FromNumber(100));
-            // world.* statics: tick_lag (deciseconds), view (BYOND default 5),
-            // system_type (1=MS_WINDOWS, 2=UNIX — this host), byond_version,
-            // host, cpu (usage placeholder), fps.
+            // world.* statics: tick_lag (deciseconds, default 1 — the DMWorld
+            // link also records fps = 10), view (BYOND default 5), system_type
+            // (1=MS_WINDOWS, 2=UNIX — this host), byond_version, host, cpu
+            // (usage placeholder).
             world.SetVar("tick_lag", DMValue.FromNumber(1));
             world.SetVar("view", DMValue.FromNumber(5));
             world.SetVar("system_type", DMValue.FromNumber(2));
@@ -874,7 +1182,6 @@ namespace SS13.DM.Runtime
             world.SetVar("byond_build", DMValue.FromNumber(1605));
             world.SetVar("host", DMValue.FromString("localhost"));
             world.SetVar("cpu", DMValue.FromNumber(0));
-            world.SetVar("fps", DMValue.FromNumber(0));
             return DMValue.FromDatum(world);
         }
 
@@ -1063,18 +1370,27 @@ namespace SS13.DM.Runtime
                             return overlays.Type == DMValueType.Null ? DMValue.FromList(new DMList()) : overlays;
                         }
                 }
-                // world.* statics: timeofday is wall-clock at access time
-                // (world.time stays the static startup value — there is no
-                // tick loop to advance it, and the probe locks it at 0).
+                // world.* statics: game-time values resolve live from
+                // DMTickScheduler (item 70); wall-clock values are computed
+                // at access time against the BYOND era (2000-01-01 GMT).
                 if (ReferenceEquals(datum, WorldValue.DatumRef))
                 {
                     switch (name)
                     {
+                        // DM game time: server ticks × tick_lag (deciseconds).
+                        case "time":
+                            return DMValue.FromNumber(DMTickScheduler.WorldTimeDs);
+                        // ds since 2000-01-01 00:00:00 GMT (BYOND era).
+                        case "realtime":
+                            return DMValue.FromNumber((DateTime.UtcNow - ByondEpoch).TotalMilliseconds / 100.0);
+                        // ds since 00:00:00 GMT today.
                         case "timeofday":
                             return DMValue.FromNumber((DateTime.UtcNow - DateTime.UtcNow.Date).TotalMilliseconds / 100.0);
+                        // fps = 10/tick_lag (DM links the two).
+                        case "fps":
+                            return DMValue.FromNumber(10.0 / DMTickScheduler.TickLag);
                         case "tick_lag":
-                            return DMValue.FromNumber(datum.GetVar("tick_lag").Type == DMValueType.Number && datum.GetVar("tick_lag").NumberValue > 0
-                                ? datum.GetVar("tick_lag").NumberValue : 1);
+                            return DMValue.FromNumber(WorldTickLag());
                     }
                 }
                 return datum.GetVar(name);

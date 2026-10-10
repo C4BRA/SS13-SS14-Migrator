@@ -322,6 +322,7 @@ namespace Content.Server.DM
   public generateSystemCS(): string {
     return `using System;
 using System.Numerics;
+using System.Threading.Tasks;
 using Robust.Shared.GameObjects;
 using Robust.Shared.Log;
 using Robust.Shared.Map;
@@ -365,6 +366,10 @@ namespace Content.Server.DM
                     Logger.ErrorS("dm", "Entity spawn failed for {Type}: {Ex}", typePath, ex.Message);
                 }
             };
+
+            // B-2 (item 70): this system drives the DM world clock from the
+            // engine tick — suppress the runtime's wall-clock fallback driver.
+            DMTickScheduler.ExternalDriver = true;
         }
 
         /// <summary>
@@ -384,6 +389,67 @@ namespace Content.Server.DM
                 _ = worldDatum.CallProc("New");
             }
             Logger.InfoS("dm", "World init: DM world/New() complete");
+            RegisterSubsystems();
+        }
+
+        // ==== B-2: world tick pump + subsystem cadence (item 70) ====
+
+        /// <summary>
+        /// Per-tick pump for the DM world clock. RobustToolbox's
+        /// EntitySystemManager only calls Update on systems that declare an
+        /// override themselves (NeedsUpdate checks that Update's DeclaringType
+        /// is not the EntitySystem base) — that is why the generated system's
+        /// Update never ran before: it had no override. frameTime is the
+        /// simulated tick duration in seconds (the server game loop supplies
+        /// IGameTiming.TickPeriod per tick and does not run this while paused),
+        /// so the DM clock advances only while the simulation runs — matching
+        /// DM's "world.time is game time, not real time".
+        /// </summary>
+        public override void Update(float frameTime)
+        {
+            DMTickScheduler.Pump(frameTime * 10.0); // seconds -> deciseconds
+        }
+
+        /// <summary>
+        /// DM controllers conventionally run on a per-tick process loop
+        /// (master controller, /datum/controller/subsystem, process
+        /// schedulers). Every registered type under /datum/controller with a
+        /// fire() or process() proc is instantiated once and invoked on the DM
+        /// tick loop; the datum's own wait var (deciseconds, default
+        /// tick_lag) is honored between invocations. Minimal cadence hook —
+        /// the runtime registry is DMTickScheduler.RegisterTickCallback; this
+        /// is not a port of SS13's MC.
+        /// </summary>
+        private void RegisterSubsystems()
+        {
+            var worldDatum = DMRuntimeHelpers.WorldValue.DatumRef as DMRuntime;
+            if (worldDatum == null) return;
+            foreach (var typePath in ProcRegistry.RegisteredPaths)
+            {
+                if (!typePath.StartsWith("/datum/controller", StringComparison.OrdinalIgnoreCase)) continue;
+                string procName;
+                if (ProcRegistry.TryGetInherited(typePath, "fire", out _)) procName = "fire";
+                else if (ProcRegistry.TryGetInherited(typePath, "process", out _)) procName = "process";
+                else continue;
+                _ = Task.Run(async () =>
+                {
+                    var datum = await DMRuntimeHelpers.DMNew(worldDatum, typePath);
+                    if (datum.DatumRef is not DMRuntime subsystem) return;
+                    double nextFireDs = 0;
+                    DMTickScheduler.RegisterTickCallback(async () =>
+                    {
+                        if (DMTickScheduler.NowDs < nextFireDs) return;
+                        var wait = subsystem.GetVar("wait");
+                        var waitDs = wait.Type == DMValueType.Number && wait.NumberValue > 0
+                            ? wait.NumberValue : DMTickScheduler.TickLag;
+                        nextFireDs = DMTickScheduler.NowDs + waitDs;
+                        // Per-tick elapsed time in deciseconds (tick_lag) is
+                        // passed as the conventional fire/process argument.
+                        await subsystem.CallProc(procName, DMValue.FromNumber(DMTickScheduler.TickLag));
+                    });
+                    Logger.InfoS("dm", "DM subsystem {Type} on the tick loop ({Proc})", typePath, procName);
+                });
+            }
         }
 
         /// <summary>
