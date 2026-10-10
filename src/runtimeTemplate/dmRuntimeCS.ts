@@ -991,6 +991,15 @@ namespace SS13.DM.Runtime
         }
 
         private static readonly object Sync = new();
+        // W-E subsystem thread-safety: serializes whole Pump bodies. On a
+        // live server Pump is driven only by ConvertedDMSystem.Update on
+        // the main (IoC) thread; engine-free it is driven only by the
+        // wall-clock fallback thread — but the two can overlap for one
+        // iteration while the ExternalDriver handoff settles (the fallback
+        // loop notices the flag between pumps). The gate keeps due drains
+        // and per-tick callbacks single-threaded so DM state is never
+        // mutated on two threads at once.
+        private static readonly object PumpGate = new();
         // Min-heap on (DueDs, Seq): same-due callbacks fire in call order.
         private static readonly PriorityQueue<Entry, (double Due, long Seq)> Pending = new();
         // Per-DM-tick callbacks (subsystem registry); invoked once per
@@ -1085,46 +1094,52 @@ namespace SS13.DM.Runtime
         public static void Pump(double elapsedDs)
         {
             if (elapsedDs < 0) elapsedDs = 0;
-            lock (Sync) { _clockDs += elapsedDs; }
-
-            // Drain due entries. New entries enqueued due-now while draining
-            // (sleep(0)/spawn(0) style yields) run at the end of this same
-            // pass — BYOND's "end of the current scheduler" semantics.
-            while (true)
+            // PumpGate: whole pumps serialize (see the field note) — DM proc
+            // dispatch stays on one thread even if an external and a
+            // fallback driver overlap.
+            lock (PumpGate)
             {
-                List<Entry> due = null;
+                lock (Sync) { _clockDs += elapsedDs; }
+
+                // Drain due entries. New entries enqueued due-now while draining
+                // (sleep(0)/spawn(0) style yields) run at the end of this same
+                // pass — BYOND's "end of the current scheduler" semantics.
+                while (true)
+                {
+                    List<Entry> due = null;
+                    lock (Sync)
+                    {
+                        while (Pending.Count > 0 && Pending.Peek().DueDs <= _clockDs)
+                            (due ??= new List<Entry>()).Add(Pending.Dequeue());
+                    }
+                    if (due == null) break;
+                    foreach (var e in due)
+                    {
+                        try { _ = e.Callback(); }
+                        catch { /* callback threw synchronously; keep scheduling */ }
+                    }
+                }
+
+                int boundaries;
                 lock (Sync)
                 {
-                    while (Pending.Count > 0 && Pending.Peek().DueDs <= _clockDs)
-                        (due ??= new List<Entry>()).Add(Pending.Dequeue());
+                    var idx = BoundaryIndex();
+                    boundaries = (int)Math.Max(0, idx - _lastBoundary);
+                    _lastBoundary = idx;
                 }
-                if (due == null) break;
-                foreach (var e in due)
+                if (boundaries <= 0) return;
+                List<Func<Task>> cbs;
+                lock (Sync) { cbs = new List<Func<Task>>(TickCallbacks.Values); }
+                for (var i = 0; i < boundaries; i++)
                 {
-                    try { _ = e.Callback(); }
-                    catch { /* callback threw synchronously; keep scheduling */ }
-                }
-            }
-
-            int boundaries;
-            lock (Sync)
-            {
-                var idx = BoundaryIndex();
-                boundaries = (int)Math.Max(0, idx - _lastBoundary);
-                _lastBoundary = idx;
-            }
-            if (boundaries <= 0) return;
-            List<Func<Task>> cbs;
-            lock (Sync) { cbs = new List<Func<Task>>(TickCallbacks.Values); }
-            for (var i = 0; i < boundaries; i++)
-            {
-                foreach (var cb in cbs)
-                {
-                    try { _ = cb(); } catch { }
-                }
-                if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime w && w.CanCallProc("tick"))
-                {
-                    try { _ = w.CallProc("tick"); } catch { }
+                    foreach (var cb in cbs)
+                    {
+                        try { _ = cb(); } catch { }
+                    }
+                    if (DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime w && w.CanCallProc("tick"))
+                    {
+                        try { _ = w.CallProc("tick"); } catch { }
+                    }
                 }
             }
         }
