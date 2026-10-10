@@ -96,7 +96,46 @@ export class YAMLGenerator {
         description: irType.desc === 'null' ? null : irType.desc,
         components
       });
+
+      // Turfs are ALSO engine tile definitions (item 69, B-1): the engine's
+      // map loader resolves grid tiles by tile-def name, not entity protos,
+      // so the map converter's tilemap points at these `type: dmTile` protos
+      // (registered with ITileDefinitionManager by ConvertedDMSystem). The
+      // dmPath field lets the grid-init hook mint the turf's DM datum.
+      if (/^\/turf(\/|$)/.test(pathKey)) {
+        prototypes.push({
+          type: 'dmTile',
+          id: protoId,
+          dmPath: irType.path,
+          name: irType.name === 'null' ? null : irType.name,
+          fields: { friction: 0.2, variants: 1 }
+        });
+      }
     }
+
+    // Player-mob prototype (item 69, B-1): the entity ConvertedDMSystem
+    // attaches joining sessions to. Eye gives the client a camera; the DM
+    // datum uses a converted /mob path when the codebase defines one, else
+    // the generic /mob path. Sprite borrows the first iconned /mob type.
+    const mobSprite = [...irMap.values()].find(t => /^\/mob(\/|$)/.test(t.path) && t.iconState);
+    const humanPath = irMap.has('/mob/living/carbon/human') ? '/mob/living/carbon/human' : '/mob';
+    const playerComponents: any[] = [
+      { type: 'Eye' },
+      { type: 'DMRuntime', dmTypePath: humanPath, initialVars: {} }
+    ];
+    if (mobSprite?.iconState) {
+      playerComponents.unshift({
+        type: 'Sprite',
+        sprite: mobSprite.icon ? mobSprite.icon.replace(/\.dmi$/i, '.rsi') : 'Structures/Walls/solid.rsi',
+        state: mobSprite.iconState
+      });
+    }
+    prototypes.push({
+      type: 'entity',
+      id: 'dm_player_mob',
+      name: 'player',
+      components: playerComponents
+    });
 
     const yamlPath = path.join(outputDir, 'converted_entities.yml');
     // Streaming write: at corpus scale the YAML for 45k+ types is too large
@@ -117,6 +156,8 @@ export class YAMLGenerator {
       if (proto.parent) emit(`  parent: ${proto.parent}\n`);
       if (proto.name) emit(`  name: ${this.yamlScalar(proto.name, true)}\n`);
       if (proto.description) emit(`  description: ${this.yamlScalar(proto.description, true)}\n`);
+      if (proto.dmPath) emit(`  dmPath: ${this.yamlScalar(proto.dmPath)}\n`);
+      if (proto.fields) emit(this.serializeProps(proto.fields, 2));
       if (proto.components && proto.components.length > 0) {
         emit(`  components:\n`);
         for (const comp of proto.components) {
