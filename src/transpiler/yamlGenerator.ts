@@ -113,6 +113,30 @@ export class YAMLGenerator {
       }
     }
 
+    // Player-mob prototype (item 69, B-1): the entity ConvertedDMSystem
+    // attaches joining sessions to. Eye gives the client a camera; the DM
+    // datum uses a converted /mob path when the codebase defines one, else
+    // the generic /mob path. Sprite borrows the first iconned /mob type.
+    const mobSprite = [...irMap.values()].find(t => /^\/mob(\/|$)/.test(t.path) && t.iconState);
+    const humanPath = irMap.has('/mob/living/carbon/human') ? '/mob/living/carbon/human' : '/mob';
+    const playerComponents: any[] = [
+      { type: 'Eye' },
+      { type: 'DMRuntime', dmTypePath: humanPath, initialVars: {} }
+    ];
+    if (mobSprite?.iconState) {
+      playerComponents.unshift({
+        type: 'Sprite',
+        sprite: mobSprite.icon ? mobSprite.icon.replace(/\.dmi$/i, '.rsi') : 'Structures/Walls/solid.rsi',
+        state: mobSprite.iconState
+      });
+    }
+    prototypes.push({
+      type: 'entity',
+      id: 'dm_player_mob',
+      name: 'player',
+      components: playerComponents
+    });
+
     const yamlPath = path.join(outputDir, 'converted_entities.yml');
     // Streaming write: at corpus scale the YAML for 45k+ types is too large
     // to accumulate as one string without risking the node heap (item 66).

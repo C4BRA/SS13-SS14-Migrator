@@ -375,6 +375,7 @@ namespace Content.Server.DM
     {
         [Dependency] private readonly IPrototypeManager _protoMan = default!;
         [Dependency] private readonly ITileDefinitionManager _tileMan = default!;
+        [Dependency] private readonly IPlayerManager _playerMan = default!;
         [Dependency] private readonly IResourceManager _resMan = default!;
 
         private SharedTransformSystem _xform = default!;
@@ -482,6 +483,9 @@ namespace Content.Server.DM
                     Logger.ErrorS("dm", "Entity attach failed: {Ex}", ex.Message);
                 }
             };
+
+            // Player attach: a session going InGame gets a converted mob.
+            _playerMan.PlayerStatusChanged += OnPlayerStatusChanged;
         }
 
         /// <summary>
@@ -585,6 +589,58 @@ namespace Content.Server.DM
                 _ = datum.CallProc("New");
             }
             Logger.InfoS("dm", "Grid {Uid} (z={Z}): minted turf datums", uid, z);
+        }
+
+        private void OnPlayerStatusChanged(object? sender, SessionStatusEventArgs args)
+        {
+            try
+            {
+                // No lobby in a converted world: connect joins straight into
+                // the round, then InGame attaches the mob (item 69, B-1).
+                if (args.NewStatus == SessionStatus.Connected)
+                {
+                    _playerMan.JoinGame(args.Session);
+                    return;
+                }
+                if (args.NewStatus != SessionStatus.InGame) return;
+                SpawnPlayerMob(args.Session);
+            }
+            catch (Exception ex)
+            {
+                Logger.ErrorS("dm", "Player attach failed: {Ex}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Spawns the converted player mob on the default map and attaches the
+        /// session to it (SetAttachedEntity adds ActorComponent server-side).
+        /// </summary>
+        private void SpawnPlayerMob(ICommonSession session)
+        {
+            if (session.AttachedEntity is { } existing && EntityManager.EntityExists(existing))
+                return;
+            var proto = PickPlayerProto();
+            var coords = _zGrid.Count > 0
+                ? new EntityCoordinates(_zGrid.Values.First(), Vector2.Zero)
+                : new EntityCoordinates(_defaultMap, Vector2.Zero);
+            var uid = EntityManager.SpawnEntity(proto, coords);
+            _playerMan.SetAttachedEntity(session, uid);
+            Logger.InfoS("dm", "Player {Name} attached to mob {Uid} (proto {Proto})", session.Name, uid, proto);
+        }
+
+        /// <summary>
+        /// Player-mob prototype preference: a converted human mob when the DM
+        /// codebase has one, else the emitted dm_player_mob fallback.
+        /// </summary>
+        private string PickPlayerProto()
+        {
+            if (_protoMan.HasIndex<EntityPrototype>("mob_living_carbon_human"))
+                return "mob_living_carbon_human";
+            if (_protoMan.HasIndex<EntityPrototype>("dm_player_mob"))
+                return "dm_player_mob";
+            if (_protoMan.HasIndex<EntityPrototype>("mob"))
+                return "mob";
+            return "dm_player_mob";
         }
 
         /// <summary>
