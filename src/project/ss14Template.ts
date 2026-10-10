@@ -94,53 +94,9 @@ EndGlobal
   <ItemGroup>
     <ProjectReference Include="..\\SS13.DM.Runtime\\SS13.DM.Runtime.csproj" />
   </ItemGroup>
-  <!-- Engine shared reference (item 74): DMAppearance.cs needs
-       NetSerializableAttribute from Robust.Shared. Same Imports convention
-       as the server/client projects. -->
-  <Import Project="..\\RobustToolbox\\Imports\\Shared.props" />
 </Project>`;
     fs.writeFileSync(path.join(sharedDir, 'Content.Shared.csproj'), sharedCsproj, 'utf-8');
     fs.writeFileSync(path.join(sharedDir, 'DummyShared.cs'), 'namespace Content.Shared { public class Dummy { } }', 'utf-8');
-
-    // Item 74 (B-6): the appearance-data key used by AppearanceComponent
-    // .SetData must serialize over PVS. NetSerializer only registers
-    // [NetSerializable] types from scanned module assemblies (engine +
-    // Content.*) — never the SS13.DM.Runtime library — so the wire enum is
-    // emitted here (member list mirrors SS13.DM.Runtime.DMAppearanceKey).
-    fs.writeFileSync(path.join(sharedDir, 'DMAppearance.cs'), `using System;
-using Robust.Shared.Serialization;
-
-namespace Content.Shared
-{
-    /// <summary>
-    /// Appearance data keys published through AppearanceComponent.SetData
-    /// (item 71/74). Mirror of SS13.DM.Runtime.DMAppearanceKey — enum order
-    /// is wire-stable: append only.
-    /// </summary>
-    [Serializable, NetSerializable]
-    public enum DMAppearanceKey
-    {
-        Icon,
-        IconState,
-        Dir,
-        Color,
-        Alpha,
-        PixelX,
-        PixelY,
-        PixelZ,
-        Layer,
-        Plane,
-        Invisibility,
-        Opacity,
-        MouseOpacity,
-        Overlays,
-        Underlays,
-        Luminosity,
-        LightColor,
-        LightPower,
-        LightRange
-    }
-}`, 'utf-8');
 
     // 4. Content.Server Project — references the REAL RobustToolbox.
     const serverDir = path.join(outputDir, 'Content.Server');

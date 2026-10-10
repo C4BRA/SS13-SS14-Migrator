@@ -308,10 +308,10 @@ state "icon"
    assert(entitiesYaml.includes('- type: dmTile') && entitiesYaml.includes('  dmPath: /turf/simulated/floor'), "Turf prototypes emitted as dmTile defs with dmPath (item 69)");
    assert(entitiesYaml.includes('id: dm_space'), "dm_space dmTile prototype emitted for unset chunk cells (item 74)");
    assert(entitiesYaml.includes('id: dm_player_mob'), "Player-mob fallback prototype emitted (item 69)");
-   const sharedAppearance = fs.readFileSync(path.join(tmpOutputDir, 'Content.Shared', 'DMAppearance.cs'), 'utf-8');
+   const sharedAppearance = fs.readFileSync(path.join(tmpOutputDir, 'Content.Shared', 'DM', 'DMAppearanceKey.cs'), 'utf-8');
    assert(sharedAppearance.includes('NetSerializable') && sharedAppearance.includes('enum DMAppearanceKey'), "Content.Shared emits a NetSerializable DMAppearanceKey — AppearanceComponent.SetData keys must serialize over PVS (item 74)");
    const systemCs = fs.readFileSync(path.join(tmpOutputDir, 'Content.Server', 'DM', 'ConvertedDMSystem.cs'), 'utf-8');
-   assert(systemCs.includes('using DMAppearanceKey = Content.Shared.DMAppearanceKey'), "ConvertedDMSystem aliases the shared wire enum (item 74)");
+   assert(systemCs.includes('using Content.Shared.DM;'), "ConvertedDMSystem resolves the shared wire enum (item 74)");
 
     // Test 5g (Plan 20 B5): generated client entry — real Robust.Client boot
     // path so `dotnet run --project Content.Client` connects to the server.
