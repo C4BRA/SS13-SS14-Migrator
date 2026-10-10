@@ -369,6 +369,33 @@ state "icon"
     assert(systemCs.includes('DMTileDefs.EnsureRegistered()'), "Server delegates tile-def registration to the shared registrar (W-C client tiles)");
     assert(!systemCs.includes('partial class DMTilePrototype'), "DMTilePrototype no longer emitted server-side (moved to Content.Shared)");
 
+    // W-G input (docs/plans/28): type var defaults + client input.
+    const procsCs = fs.readdirSync(path.join(tmpOutputDir, 'Content.Server', 'DM'))
+      .filter(f => /^ConvertedDMProcs(_\d+)?\.cs$/.test(f))
+      .map(f => fs.readFileSync(path.join(tmpOutputDir, 'Content.Server', 'DM', f), 'utf-8'))
+      .join('\n');
+    const runtimeCs = fs.readFileSync(path.join(tmpOutputDir, 'SS13.DM.Runtime', 'DMRuntimeHelpers.cs'), 'utf-8');
+    const dmClientInput = fs.readFileSync(path.join(tmpOutputDir, 'Content.Client', 'DM', 'DMClientInput.cs'), 'utf-8');
+    assert(runtimeCs.includes('TypeVarInits') && runtimeCs.includes('ApplyTypeVarInits'), "Runtime carries the TypeVarInits registry + ApplyTypeVarInits walk (W-G input)");
+    assert(procsCs.includes('DMRuntimeHelpers.TypeVarInits["/obj/item/weapon/sword"]'), "Emitters register each type's var-init action (W-G input)");
+    assert(procsCs.includes('SeedVar(c, "name", DMValue.FromString("Energy Sword"))'), "Declared name default emitted into TypeVarInits (W-G input)");
+    assert(procsCs.includes('SeedVar(c, "desc", DMValue.FromString("A sharp energy blade."))'), "Declared desc default emitted into TypeVarInits (W-G input)");
+    assert(procsCs.includes('SeedVar(c, "custom_power", DMValue.FromNumber(100))'), "Scalar custom var default emitted into TypeVarInits (W-G input)");
+    assert(!procsCs.includes('SeedVar(c, "effects"'), "Expression/list initializers stay unseeded (W-G input)");
+    assert(systemCs.includes('ApplyTypeVarInits(comp.Runtime)'), "Component init seeds type var defaults before initialVars/New (W-G input)");
+    assert(runtimeCs.includes('ApplyTypeVarInits(datum)') && runtimeCs.includes('var datum = new DMRuntime { DMTypePath = normalized }'), "DMNew seeds type var defaults before loc/New (W-G input)");
+    assert(keybinds.includes('function: dmverb step_north') && keybinds.includes('key: W'), "WASD keybind emits dmverb step_north on W (W-G input)");
+    assert(keybinds.includes('function: dmverb step_south') && keybinds.includes('key: Down'), "Arrow keys bound too (W-G input)");
+    assert(keybinds.includes('commandWhenUIFocused: false'), "Movement binds suppressed while UI/console has focus (W-G input)");
+    assert(keybinds.includes('function: dmclickpick') && keybinds.includes('key: MouseLeft'), "MouseLeft bound to dmclickpick (W-G input)");
+    assert(keybinds.includes('function: TextSubmit') && keybinds.includes('key: Return'), "Return submits typed console lines (W-G input)");
+    assert(keybinds.includes('function: TextBackspace') && keybinds.includes('function: TextTabComplete'), "Console LineEdit editing keys bound (W-G input)");
+    assert(dmClientInput.includes('class DMClickPickCommand') && dmClientInput.includes('dmclick {hx}'), "Client resolves clicked atom -> dmclick tile coords (W-G input)");
+    assert(dmClientInput.includes('MouseGetControl'), "UI clicks skip the world pick (W-G input)");
+    assert(dmClientInput.includes('MainViewportContainer'), "Viewport container doesn't count as a UI click (W-G input)");
+    assert(dmClientInput.includes('CalculateBounds'), "Sprite hit-test uses renderer bounds (W-G input)");
+    assert(dmClientInput.includes('class DMControlsCommand') && dmClientInput.includes('dmverbs'), "dmcontrols lists controls + points at dmverbs (W-G input)");
+
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;
     const testZipPath = path.join(process.cwd(), 'temp_test_repo.zip');

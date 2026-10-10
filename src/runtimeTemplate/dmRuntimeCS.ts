@@ -1526,6 +1526,9 @@ namespace SS13.DM.Runtime
                 return DMValue.FromList(new DMList());
             var datum = new DMRuntime { DMTypePath = normalized };
             LiveDatums.Add(datum);
+            // W-G input: seed the datum's vars from the type's declared
+            // defaults (name/desc/...) BEFORE loc and New() — BYOND order.
+            ApplyTypeVarInits(datum);
             // DM: new Type(loc, args...) — the first argument of an ATOM
             // constructor is its loc (item 63). New() still receives every
             // argument: corpus New procs declare New(loc, ...) and bind
@@ -5594,6 +5597,58 @@ namespace SS13.DM.Runtime
         public static DMValue Winclone(params DMValue[] args) => DMValue.Null;
         /// <summary>DM shell — host-OS surface stub (honest Null).</summary>
         public static DMValue Shell(params DMValue[] args) => DMValue.Null;
+
+        // ==== W-G input (docs/plans/28): type var defaults ====
+
+        /// <summary>
+        /// Per-type datum var initializers, keyed by DM type path. Emitted by
+        /// the transpiler (TypeVarInits registrations inside
+        /// ConvertedDMProcs' RegisterProcs): each action writes the type's
+        /// declared var defaults (name/desc/gender/icon + scalar custom vars)
+        /// onto the datum. Applied ancestor-first at datum creation by
+        /// ApplyTypeVarInits so the most-derived declaration wins — BYOND's
+        /// var-default inheritance. This was the missing piece behind
+        /// usr.name / mob.name printing empty on spawned datums.
+        /// </summary>
+        public static readonly Dictionary<string, Action<DMRuntime>> TypeVarInits =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// A single type-default seed write (W-G input). Unlike SetVar it
+        /// overwrites InitialValues too: the WHOLE ancestor seed chain is
+        /// "creation time" for initial()'s purposes, so initial(var) must
+        /// read the most-derived seeded default, not the first-seeded
+        /// ancestor value. Later runtime writes still win the live var via
+        /// SetVar, and leave the seeded InitialValues untouched.
+        /// </summary>
+        public static void SeedVar(DMRuntime datum, string name, DMValue val)
+        {
+            datum.Variables[name] = val;
+            datum.InitialValues[name] = val;
+        }
+
+        /// <summary>
+        /// Seed a fresh datum's vars from its type hierarchy's declared
+        /// defaults: walks the type path root -> leaf (prefix walk, same
+        /// ancestor shape as ProcRegistry.TryGetInherited) and applies each
+        /// level's TypeVarInits entry. Runs BEFORE loc assignment and New()
+        /// dispatch — BYOND order: var defaults, then loc, then New().
+        /// Runtime var writes still win: they overwrite the seeded value
+        /// through SetVar (and the seed becomes the var's InitialValues
+        /// entry, which makes initial() read the declared default).
+        /// </summary>
+        public static void ApplyTypeVarInits(DMRuntime datum)
+        {
+            var path = datum.DMTypePath;
+            if (string.IsNullOrEmpty(path)) return;
+            var parts = path.ToLowerInvariant().Split('/', StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 1; i <= parts.Length; i++)
+            {
+                var candidate = "/" + string.Join("/", parts, 0, i);
+                if (TypeVarInits.TryGetValue(candidate, out var init))
+                    init(datum);
+            }
+        }
     }
 
     // NOTE (item 71): DMAppearanceKey (the AppearanceComponent.SetData keys)
