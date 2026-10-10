@@ -4836,32 +4836,10 @@ namespace SS13.DM.Runtime
         }
     }
 
-    /// <summary>
-    /// Appearance data keys published through AppearanceComponent.SetData
-    /// (item 71). Enum order is wire-stable — append only.
-    /// </summary>
-    public enum DMAppearanceKey
-    {
-        Icon,
-        IconState,
-        Dir,
-        Color,
-        Alpha,
-        PixelX,
-        PixelY,
-        PixelZ,
-        Layer,
-        Plane,
-        Invisibility,
-        Opacity,
-        MouseOpacity,
-        Overlays,
-        Underlays,
-        Luminosity,
-        LightColor,
-        LightPower,
-        LightRange
-    }
+    // NOTE (item 71): DMAppearanceKey (the AppearanceComponent.SetData keys)
+    // is NOT declared here — RobustSerializer only indexes [NetSerializable]
+    // types from content assemblies, so the generated solution emits it into
+    // Content.Shared/DM/DMAppearanceKey.cs instead (see csharpEmitter).
 
     // ==== B-4 verbs/input (item 72) ====
 

@@ -60,6 +60,7 @@ export class CSharpEmitter {
     const procsCode = this.generateProcsCS(irMap, globals);
     fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMProcs.cs'), procsCode, 'utf-8');
     fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMSystem.cs'), this.generateSystemCS(), 'utf-8');
+    this.emitSharedTypesFile(outputServerDir); // B-3 (item 71)
   }
 
   /** Corpus-scale variant: streams the proc file instead of building it in
@@ -72,6 +73,63 @@ export class CSharpEmitter {
     this.warnedCalls.clear();
     this.generateProcsCSFile(irMap, globals, path.join(outputServerDir, 'ConvertedDMProcs.cs'));
     fs.writeFileSync(path.join(outputServerDir, 'ConvertedDMSystem.cs'), this.generateSystemCS(), 'utf-8');
+    this.emitSharedTypesFile(outputServerDir); // B-3 (item 71)
+  }
+
+  // B-3 (item 71): AppearanceComponent data keys must live in a CONTENT
+  // assembly carrying [NetSerializable] — RobustSerializer only indexes
+  // those, and a server-specific type throws on attribute scan
+  // ("Type ... is server specific but has a NetSerializableAttribute").
+  // Emitted beside Content.Server/DM into Content.Shared/DM so both the
+  // server adapter and any future client visualizer resolve the same type.
+  private emitSharedTypesFile(outputServerDir: string): void {
+    const sharedDir = path.resolve(outputServerDir, '..', '..', 'Content.Shared', 'DM');
+    if (!fs.existsSync(sharedDir)) fs.mkdirSync(sharedDir, { recursive: true });
+    // The template's Content.Shared.csproj references no engine assembly;
+    // the generated enum needs Robust.Shared (NetSerializable). Add the
+    // official Shared.props import — direct Robust.* references are
+    // rejected by Robust.ProjectReferences.targets.
+    const sharedCsproj = path.resolve(sharedDir, '..', 'Content.Shared.csproj');
+    if (fs.existsSync(sharedCsproj)) {
+      const xml = fs.readFileSync(sharedCsproj, 'utf-8');
+      const importLine = '<Import Project="..\\RobustToolbox\\Imports\\Shared.props" />';
+      if (!xml.includes('Shared.props')) {
+        fs.writeFileSync(sharedCsproj, xml.replace('</Project>', `  ${importLine}\n</Project>`), 'utf-8');
+      }
+    }
+    fs.writeFileSync(path.join(sharedDir, 'DMAppearanceKey.cs'), `using Robust.Shared.Serialization;
+
+namespace Content.Shared.DM
+{
+    /// <summary>
+    /// Appearance data keys published through AppearanceComponent.SetData
+    /// (PLAN item 71, B-3). Enum order is wire-stable — append only.
+    /// </summary>
+    [NetSerializable]
+    public enum DMAppearanceKey
+    {
+        Icon,
+        IconState,
+        Dir,
+        Color,
+        Alpha,
+        PixelX,
+        PixelY,
+        PixelZ,
+        Layer,
+        Plane,
+        Invisibility,
+        Opacity,
+        MouseOpacity,
+        Overlays,
+        Underlays,
+        Luminosity,
+        LightColor,
+        LightPower,
+        LightRange
+    }
+}
+`, 'utf-8');
   }
 
   /**
@@ -348,6 +406,7 @@ using System.Linq;
 using System.Numerics;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Content.Shared.DM;
 using Robust.Server.GameObjects;
 using Robust.Server.Console;
 using Robust.Server.Player;
@@ -588,9 +647,22 @@ namespace Content.Server.DM
         /// so the DM clock advances only while the simulation runs — matching
         /// DM's "world.time is game time, not real time".
         /// </summary>
+        // B-3 (item 71): a session must be visible at SessionStatus.Connected
+        // for at least one game-state send — calling JoinGame synchronously
+        // inside the status event collapses Connecting->InGame in one hop and
+        // the client never enters a viewport (verified against the scaffolded
+        // RT client). Queue joins and drain them here, one tick later.
+        private readonly Queue<ICommonSession> _pendingJoins = new();
+
         public override void Update(float frameTime)
         {
             DMTickScheduler.Pump(frameTime * 10.0); // seconds -> deciseconds
+            while (_pendingJoins.Count > 0)
+            {
+                var session = _pendingJoins.Dequeue();
+                if (session.Status == SessionStatus.Connected)
+                    _playerMan.JoinGame(session);
+            }
         }
 
         /// <summary>
@@ -696,7 +768,7 @@ namespace Content.Server.DM
                 // the round, then InGame attaches the mob (item 69, B-1).
                 if (args.NewStatus == SessionStatus.Connected)
                 {
-                    _playerMan.JoinGame(args.Session);
+                    _pendingJoins.Enqueue(args.Session); // B-3: join next tick
                     return;
                 }
                 if (args.NewStatus != SessionStatus.InGame) return;
