@@ -402,6 +402,13 @@ namespace Content.Client
     fs.writeFileSync(path.join(resourcesDir, 'manifest.yml'),
       `defaultWindowTitle: "dm2ss14"\nautoConnect: true\n`, 'utf-8');
 
+    // Keybinds (item 74): without a content-side Resources/keybinds.yml,
+    // ShowDebugConsole has no default bind and the engine debug console can
+    // never open in a windowed client. KeyBindingType at this pin is
+    // State|Toggle|Command only — a Press bind crashes the client at boot.
+    fs.writeFileSync(path.join(resourcesDir, 'keybinds.yml'),
+      `binds:\n- function: ShowDebugConsole\n  key: Tilde\n  type: State\n`, 'utf-8');
+
     // The engine's content mounts resolve <solution>/RobustToolbox relative
     // to the binary (StartType.Content) — symlink the checkout there when it
     // is discoverable (SS14_ENGINE_DIR or the repo's sibling — item 66).

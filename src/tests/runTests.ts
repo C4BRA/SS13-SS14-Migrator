@@ -332,6 +332,8 @@ state "icon"
     assert(clientManifest.includes('autoConnect: true'), "Client manifest enables autoConnect for --connect (item 73)");
     assert(clientEntry.includes('/autocmds.txt') && clientEntry.includes('ExecuteCommand'), "Client reads autocmds.txt and executes it as the player session (item 74)");
     assert(clientEntry.includes('SessionStatus.InGame'), "Client autocmds wait for InGame before firing (item 74)");
+    const keybinds = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'keybinds.yml'), 'utf-8');
+    assert(keybinds.includes('function: ShowDebugConsole') && keybinds.includes('type: State'), "keybinds.yml emitted — windowed debug console is unopenable without it (item 74)");
 
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;

@@ -88,21 +88,46 @@ session, so `usr` binds to the attached mob.
   autocmd channel); `npm run audit:semantics` all probes green;
   `boot-smoke.sh` PASS.
 
+## Windowed render evidence (the final inch)
+
+After the headless gate passed, a real windowed `Robust.Client` (llvmpipe
+GL 4.5 on a VNC box) was driven against the gate's output world. Pixels
+captured: the green `human` mob sprite and the red `m1_button` sprite render
+at correct map positions (offsets match `dmloc` coordinates × 32px/tile).
+Keypress-driven `Command` binds fired `dmverb step_north`/`step_east` and
+`dmclick /obj/m1_button` on camera — the mob sprite moved and `M1-CLICK`
+output appeared in the debug console on screen. "Visibly rendered" is
+proven, not just resolvable.
+
+Notes folded back into the template from that run:
+
+- `Resources/keybinds.yml` is now emitted (was missing entirely —
+  `ShowDebugConsole` had no bind, so the console could never open
+  windowed). `KeyBindingType` at this pin is `State|Toggle|Command`; a
+  `Press` bind crashes the client at startup.
+- A lighting-free world renders black client-side (real semantics —
+  `MapComponent.LightingEnabled`); evidence capture used a networked
+  `PointLight` on the mob proto and/or `drawLight: false` on the mob `Eye`.
+- llvmpipe frame stall reproduces with lighting on (~10-15s then freeze);
+  `drawLight:false` + `LP_NUM_THREADS=2` + `xrandr -s 1024x768` mitigates.
+
 ## Known limits (honest)
 
-- **Pixel rendering is unverifiable headless.** E3 proves the whole sprite
-  path *resolves* client-side (component present, layer alive, state
-  resolved, zero missing-texture errors); no pixels are produced on
-  llvmpipe/headless. A windowed capture on real hardware remains the final
-  inch — B-3's PR #14 captured windowed renders successfully on their box.
-- **Client-side *tile* rendering gap**: `dmTile` defs register server-side
+- **Client-side tile drawing gap**: `dmTile` defs register server-side
   only; `ClydeTileDefinitionManager` builds its atlas at `IPostInjectInit`
   (before content protos load) and only regenerates on `/Textures/Tiles`
-  changes — floors draw as error-tiles client-side even though defs resolve.
-  Fixing it is engine-internal, not a small seam.
+  changes. Observed windowed: turfs draw *nothing* (skipped, not
+  error-textures) even fullbright — entities render normally over them.
+  Engine-internal, not a small seam.
+- Console `LineEdit` doesn't submit under synthetic input (special keys
+  swallowed) — `Command`-type keybinds on the same `ExecuteCommand` path
+  were used for live input.
 - `[usr.name]` interpolates empty in `M1-CLICK:` — the datum `name` var
   isn't seeded from the type's `name` initializer on the spawned mob datum.
   Cosmetic; output path itself proven.
+- Disconnected-session mobs persist on the map across relaunches
+  (BYOND-consistent; cosmetic).
 - B-3's flagged pre-existing blockers stand: `..()` re-resolution stack
   overflow, `RegisterSubsystems` off-thread CallProc, oversized-paradise
-  dmTiles vs the 32px atlas rule, no ambient light.
+  dmTiles vs the 32px atlas rule, no ambient light (world blacks out —
+  semantics, per above).
