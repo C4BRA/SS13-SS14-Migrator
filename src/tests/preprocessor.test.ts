@@ -228,6 +228,79 @@ async function runPreprocessorTests() {
   assertContains(t28.out, 'var/fromInclude = 42', '#pragma multiple keeps inlining');
   assert((t28.out.match(/var\/fromInclude/g) || []).length === 2, '#pragma multiple expands the body twice');
 
+  // === Baystation onboarding regression cases (docs/plans/13-baystation-onboarding.md) ===
+
+  // Test 29: a function-like macro invoked with the wrong arity is left
+  // unexpanded — bay spawn_sync.dm calls bare `check()` while a much later
+  // include defines `#define check(c) (c && c.valid())`; BYOND never applies it.
+  const coll29 = new DiagnosticCollector();
+  const pp29 = new DMPreprocessor(coll29);
+  const t29 = pp29.process('#define check(c) (c && c.valid())\nif (!check())\n    return\nvar/x = check(y)\n', '/tmp/pp_test29.dm');
+  assertContains(t29, 'check()', 'Arity-mismatched function-like macro left unexpanded');
+  assert(!t29.includes('( && .valid())'), 'Zero-arg call not substituted into one-param body');
+  assertContains(t29, 'var/x = (y && y.valid())', 'Matching-arity call still expands');
+
+  // Test 30: #ifdef embedded inside a backslash continuation is evaluated as
+  // part of the join — bay Diagnostic.dm builds a list() over MULTIZAS-gated
+  // entries inside one continued expression.
+  const coll30 = new DiagnosticCollector();
+  const pp30 = new DMPreprocessor(coll30);
+  const t30 = pp30.process('var/list/dirs = list( \\\n\t"North" = NORTH, \\\n#ifdef MULTIZAS\n\t"Up" = UP, \\\n#endif\n\t"South" = SOUTH \\\n\t)\n', '/tmp/pp_test30.dm');
+  assert(!t30.includes('UP'), 'Inactive #ifdef segment inside continuation dropped');
+  assert(!t30.includes('#ifdef'), 'Directive line not left literal after join');
+  assertContains(t30, '"South" = SOUTH', 'Continuation survives embedded conditional');
+  const t30b = pp30.process('#define MULTIZAS\nvar/list/dirs = list( \\\n\t"North" = NORTH, \\\n#ifdef MULTIZAS\n\t"Up" = UP, \\\n#endif\n\t"South" = SOUTH \\\n\t)\n', '/tmp/pp_test30b.dm');
+  assertContains(t30b, '"Up" = UP', 'Active #ifdef segment inside continuation kept');
+  const t30c = pp30.process('#if 0\nvar/list/x = list( \\\n#endif\nvar/y = 1\n', '/tmp/pp_test30c.dm');
+  assertContains(t30c, 'var/y = 1', '#endif belonging to an outer conditional ends the join');
+
+  // Test 31: @/pattern/ slash-delimited regex literals (bay browserOutput.dm,
+  // player_list.dm). Quotes inside the pattern must not corrupt icon-string
+  // state, parens inside it must not corrupt paren balancing, and the lexer
+  // must emit it as a single string literal.
+  const t31 = preprocess('var/r = regex(@/[\'"\\\\<>]/, "g")\nvar/s = ICONSTATE\n');
+  assertContains(t31.out, '@/[\'"\\\\<>]/', 'Slash regex survives preprocessing');
+  const parser31 = new DMParser(new DMLexer(t31.out).tokenize());
+  parser31.parse();
+  assert(parser31.diagnostics.errors.length === 0, '@/pattern/ regex literal lexes and parses');
+  const t31b = preprocess('var/img = "<IMG CLASS=icon SRC=(\\[[^]]+\\])(?: ICONSTATE=\'([^\']+)\')?>"\nvar/r2 = regex(@/<IMG CLASS=icon SRC=(\\[[^]]+\\])(?: ICONSTATE=\'([^\']+)\')?>/, "g")\nvar/after = 1\n');
+  const parser31b = new DMParser(new DMLexer(t31b.out).tokenize());
+  parser31b.parse();
+  assert(parser31b.diagnostics.errors.length === 0, 'Goonchat IMG regex with char classes parses without paren glue');
+
+  // Test 32: a stray } at depth 0 ends an initializer but is not consumed —
+  // bay recipes_furniture.dm: brace-form type blocks must still close.
+  const src32 = '/datum/a\n    var/x = 1\n/datum/b{ y = 2 }\n/datum/c\n    proc/run()\n        return 1\n';
+  const parser32 = new DMParser(new DMLexer(src32).tokenize());
+  const ast32 = parser32.parse();
+  assert(parser32.diagnostics.errors.length === 0, `Brace type block parses cleanly (${parser32.diagnostics.errors.length} errors)`);
+  assert(ast32.some((n: any) => n.path === '/datum/c'), 'Declaration after brace block not swallowed');
+
+  // Test 33: operator overload proc paths — bay _shared_list.dm defines
+  // operator[]= plus the arithmetic/bitwise overload family.
+  const src33 = '/datum/l/proc/operator[]=(i, v)\n    return v\n/datum/l/proc/operator+=(x)\n    return x\n';
+  const parser33 = new DMParser(new DMLexer(src33).tokenize());
+  const ast33 = parser33.parse();
+  assert(parser33.diagnostics.errors.length === 0, 'operator[]= and operator+= proc paths parse');
+  const node33 = ast33.find((n: any) => n.path === '/datum/l');
+  assert(node33 !== undefined, 'operator overloads parsed under /datum/l');
+  assert(node33!.procs.some((p: any) => p.name === 'operator[]='), 'operator[]= kept as proc name');
+  assert(node33!.procs.some((p: any) => p.name === 'operator+='), 'operator+= kept as proc name');
+
+  // Test 34: bare type-path loop variable — bay randomverbs.dm:
+  // `for (mob in GLOB.player_list)` (no var/, no /path, just the type keyword).
+  const src34 = '/datum/d/proc/f()\n    for (mob in world)\n        world << mob\n    for (mob/M in world)\n        world << M\n';
+  const parser34 = new DMParser(new DMLexer(src34).tokenize());
+  parser34.parse();
+  assert(parser34.diagnostics.errors.length === 0, 'for(mob in list) bare-path loop var parses');
+
+  // Test 35: var-declaration inside a call argument — the UNLINT idiom used
+  // across bay: SpacemanDMM_unlint(var/weakref/dw = data[i]).
+  const src35 = '/datum/d/proc/f(data)\n    g(var/weakref/dw = data[1])\n';
+  const parser35 = new DMParser(new DMLexer(src35).tokenize());
+  parser35.parse();
+  assert(parser35.diagnostics.errors.length === 0, 'var/x = expr inside call args parses');
+
   fs.rmSync(tmpDir2, { recursive: true, force: true });
   console.log("\n✅ ALL PREPROCESSOR TESTS PASSED!");
 }
