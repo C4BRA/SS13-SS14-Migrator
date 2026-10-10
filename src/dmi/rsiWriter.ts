@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DMIMetadata, DMIParser } from './dmiParser.js';
 import { decodePNG, encodePNG } from './pngCodec.js';
+import { toTileImage32 } from './imageScale.js';
 
 // Converts a BYOND .dmi into the SS14 RSI layout used by the pinned engine
 // (RobustToolbox @ 9cefa116, RSI v1):
@@ -119,6 +120,15 @@ export class RSIWriter {
         const tilePath = path.join(outputRSIPath, `${fileName}.tile.png`);
         fs.mkdirSync(path.dirname(tilePath), { recursive: true });
         fs.writeFileSync(tilePath, encodePNG({ width: meta.width, height: meta.height, rgba: tile }));
+
+        // W-B tiles (item 75): the pin's tile atlas only takes 32h x
+        // (32*Variants)w PNGs, so dmTile protos point at this always-32x32
+        // variant — identical for 32x32 cells, nearest-neighbour resampled
+        // for free-sized BYOND cells (walls 32x40, floors 50x50, small
+        // icons upscaled) instead of being blanked by ValidateTileSprite.
+        const tile32Path = path.join(outputRSIPath, `${fileName}.tile32.png`);
+        fs.mkdirSync(path.dirname(tile32Path), { recursive: true });
+        fs.writeFileSync(tile32Path, encodePNG(toTileImage32({ width: meta.width, height: meta.height, rgba: tile })));
       }
     }
 
