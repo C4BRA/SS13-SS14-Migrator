@@ -16,9 +16,11 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 |---|---|
 | `npm run build` | clean (tsc strict) |
 | `npm test` | green; generated solution builds vs real RobustToolbox |
-| Semantic probes | **238 / 238** (`npm run audit:semantics`) |
+| Semantic probes | **298 / 298** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
-| Loss sites (honest, post-12.1) | tg **25,882** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
+| Loss sites (honest, wave-4) | tg **22,616** · paradise **21,311** (W-D/W-F/W-I waves; tgmc/bee not re-measured) |
+| Stubbed procs (wave-4) | tg **773** · paradise **905** (was 3,062 / 1,915) |
+| Paradise boot DM-errors | **189** lines (was **9,464** — W-I corpus playability pass) |
 | Unresolved bare calls (tg) | **138** (item 67 — remainder are user procs resolved by the registry at call time) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
 | Open fix wave | **none — all 67 PLAN.md items complete** |
@@ -209,7 +211,7 @@ JSON history: `docs/audit/10-tgstation-audit.json`, `11-tgstation-audit-post.jso
 
 ### Probe suite
 
-**238/238 passing** (engine-free differential probes). Core semantics (truthiness, lists, `..()`, short-circuit,
+**298/298 passing** (engine-free differential probes). Wave-4 additions: `..()` parent-of-defining (W-A), `new` loc/named/dynamic/field-init/`new /list`/arglist/`..()`-in-New (W-F), datum var seeding (W-G), W-D builtins (locate/step_to/walk/gradient/vector/icon+matrix), M2 door slice semantics (W-H). Core semantics (truthiness, lists, `..()`, short-circuit,
 ranges, text, json_encode escapes, float division provenance, step-range continue)
 plus builtin batches, Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …),
 B-2 tick (sleep/spawn FIFO, world.time grid), B-1 loc/contents bridges, tier-4 builtins
