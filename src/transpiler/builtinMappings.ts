@@ -43,8 +43,10 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
 // they are NOT "resolved" just because the name is mapped (WS7-16).
 // image/sound/matrix/icon were removed in 12.11: they now create real datum
 // values (vars read back; rendering needs the engine — item 65).
+// animate/flick removed in B-3 (item 71): real datum-side animation stepped
+// by the DM tick scheduler, published through the appearance bridge.
 export const STUBBED_BUILTINS = [
-  'animate', 'flick', 'browse', 'call_ext',
+  'browse', 'call_ext',
   '__detect_rust_g', 'alert', 'input', 'locate', 'refcount',
   'winset', 'winget', 'link', 'gradient', 'vector', 'openToolTip', 'closeToolTip',
   'browse_rsc', 'ftp'

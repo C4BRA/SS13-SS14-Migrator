@@ -39,13 +39,55 @@ export class YAMLGenerator {
 
       const components: any[] = [];
 
-      // Sprite component if icon state exists
+      // B-3 (item 71): Sprite component for iconned atoms. `sprite` is
+      // relative to /Textures/ (the pin's SpriteComponent resolves
+      // TextureRoot / rsi), `state` must be the verbatim RSI state name —
+      // the loader does an exact string lookup of <rsi>/<name>.png.
       if (irType.iconState) {
-        components.push({
+        const spriteComp: any = {
           type: 'Sprite',
-          sprite: irType.icon ? irType.icon.replace(/\.dmi$/i, '.rsi') : 'Structures/Walls/solid.rsi',
+          sprite: irType.icon ? YAMLGenerator.iconToRsiResource(irType.icon) : 'Structures/Walls/solid.rsi',
           state: irType.iconState
-        });
+        };
+        // Static color/pixel offsets land on the layer; every other
+        // appearance var (dir, alpha, layer, invisibility, ...) is pushed
+        // at runtime through AppearanceComponent data (B-3 bridge).
+        const color = irType.customVars.get('color');
+        if (color !== undefined && color !== null && String(color) !== 'null') {
+          spriteComp.color = String(color).replace(/^['"]|['"]$/g, '');
+        }
+        const px = Number(irType.customVars.get('pixel_x')) || 0;
+        const py = Number(irType.customVars.get('pixel_y')) || 0;
+        if (px !== 0 || py !== 0) {
+          // Vector2 serializes as a scalar "x,y" at this pin, not a sequence.
+          spriteComp.offset = `${px / 32},${py / 32}`;
+        }
+        components.push(spriteComp);
+      }
+
+      // B-3: AppearanceComponent is the engine's server-visible appearance
+      // channel (the pin ignores Sprite on the server) — every atom proto
+      // gets one so the appearance bridge can publish icon/state/dir/…
+      if (/^\/(obj|mob|turf|area)(\/|$)/.test(irType.path)) {
+        components.push({ type: 'Appearance' });
+      }
+
+      // B-3 lighting basics: BYOND luminosity/light_range/light_power/
+      // light_color map to the server PointLight component.
+      const lum = Number(irType.customVars.get('light_range') ?? irType.customVars.get('luminosity')) || 0;
+      if (lum > 0) {
+        const lightComp: any = {
+          type: 'PointLight',
+          radius: lum,
+          enabled: true
+        };
+        const lightPower = Number(irType.customVars.get('light_power'));
+        if (lightPower > 0) lightComp.energy = lightPower;
+        const lightColor = irType.customVars.get('light_color');
+        if (lightColor !== undefined && lightColor !== null && String(lightColor) !== 'null') {
+          lightComp.color = String(lightColor).replace(/^['"]|['"]$/g, '');
+        }
+        components.push(lightComp);
       }
 
       // Physics / Fixtures if dense
@@ -79,6 +121,11 @@ export class YAMLGenerator {
         for (const [k, v] of irType.customVars.entries()) {
           customVarObj[k] = v;
         }
+        // icon/icon_state are consumed by the IR switch (not customVars),
+        // but the datum still needs them: the runtime appearance bridge
+        // reads datum vars to publish appearance data (B-3).
+        if (irType.icon) customVarObj['icon'] = irType.icon;
+        if (irType.iconState) customVarObj['icon_state'] = irType.iconState;
         components.push({
           type: 'DMRuntime',
           dmTypePath: irType.path,
@@ -103,12 +150,20 @@ export class YAMLGenerator {
       // (registered with ITileDefinitionManager by ConvertedDMSystem). The
       // dmPath field lets the grid-init hook mint the turf's DM datum.
       if (/^\/turf(\/|$)/.test(pathKey)) {
+        const tileFields: Record<string, any> = { friction: 0.2, variants: 1 };
+        // B-3: the pin's tile atlas needs a plain W x H PNG. The RSI
+        // writer emits <state>.tile.png (dir 0 frame 0) next to every
+        // state sprite for exactly this purpose; the server validates
+        // size/existence in RegisterTileDefs before registering.
+        if (irType.icon && irType.iconState) {
+          tileFields.sprite = `/Textures/${YAMLGenerator.iconToRsiResource(irType.icon)}/${irType.iconState}.tile.png`;
+        }
         prototypes.push({
           type: 'dmTile',
           id: protoId,
           dmPath: irType.path,
           name: irType.name === 'null' ? null : irType.name,
-          fields: { friction: 0.2, variants: 1 }
+          fields: tileFields
         });
       }
     }
@@ -126,10 +181,11 @@ export class YAMLGenerator {
     if (mobSprite?.iconState) {
       playerComponents.unshift({
         type: 'Sprite',
-        sprite: mobSprite.icon ? mobSprite.icon.replace(/\.dmi$/i, '.rsi') : 'Structures/Walls/solid.rsi',
+        sprite: mobSprite.icon ? YAMLGenerator.iconToRsiResource(mobSprite.icon) : 'Structures/Walls/solid.rsi',
         state: mobSprite.iconState
       });
     }
+    playerComponents.push({ type: 'Appearance' });
     prototypes.push({
       type: 'entity',
       id: 'dm_player_mob',
@@ -186,6 +242,17 @@ export class YAMLGenerator {
 
   public pathToId(dmPath: string): string {
     return dmPath.replace(/^\//, '').replace(/\//g, '_').toLowerCase();
+  }
+
+  // B-3: DM icon var -> /Textures/-relative RSI resource path.
+  // 'icons/mob/human.dmi' -> 'icons/mob/human.rsi' — the conversion stage
+  // writes RSIs at Resources/Textures/<dmi rel path with .dmi->.rsi>.
+  public static iconToRsiResource(icon: string): string {
+    return icon
+      .replace(/^['"]|['"]$/g, '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/\.dmi$/i, '.rsi');
   }
 
   private serializeProps(obj: any, indent: number, skipTopLevelType = false): string {

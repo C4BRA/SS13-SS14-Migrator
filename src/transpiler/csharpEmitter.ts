@@ -346,7 +346,9 @@ namespace Content.Server.DM
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Text.Json;
 using System.Threading.Tasks;
+using Robust.Server.GameObjects;
 using Robust.Server.Console;
 using Robust.Server.Player;
 using Robust.Shared.Console;
@@ -383,6 +385,9 @@ namespace Content.Server.DM
         [Dependency] private readonly ITileDefinitionManager _tileMan = default!;
         [Dependency] private readonly IPlayerManager _playerMan = default!;
         [Dependency] private readonly IResourceManager _resMan = default!;
+        // B-3 (item 71): the pin's server ignores Sprite components; the
+        // Appearance channel is how a datum's visuals reach the client.
+        [Dependency] private readonly AppearanceSystem _appearance = default!;
         [Dependency] private readonly IServerConsoleHost _conHost = default!;
 
         private SharedTransformSystem _xform = default!;
@@ -497,6 +502,12 @@ namespace Content.Server.DM
             // B-2 (item 70): this system drives the DM world clock from the
             // engine tick — suppress the runtime's wall-clock fallback driver.
             DMTickScheduler.ExternalDriver = true;
+
+            // B-3 (item 71): datum appearance-var writes republish the
+            // entity's AppearanceComponent data; flick() durations resolve
+            // from the converted RSI meta.json delay tables.
+            DMRuntimeHelpers.EntityAppearanceBridge = PushAppearanceData;
+            DMRuntimeHelpers.RsiStateDurationDs = LookupRsiStateDuration;
 
             // ==== B-4 verbs/input (item 72) ====
             // 'x << msg' on datum targets routes through the output bridge:
@@ -635,6 +646,7 @@ namespace Content.Server.DM
             var count = 0;
             foreach (var tileProto in _protoMan.EnumeratePrototypes<DMTilePrototype>())
             {
+                ValidateTileSprite(tileProto); // B-3 (item 71)
                 _tileMan.Register(tileProto);
                 count++;
             }
@@ -772,6 +784,9 @@ namespace Content.Server.DM
             SyncVarsFromTransform(uid, comp.Runtime);
             DMRuntimeHelpers.LiveDatums.Add(comp.Runtime);
             ExecuteNew(uid, comp);
+            // B-3 (item 71): publish the proto's declared appearance
+            // (icon/state/dir/color/offsets/overlays) as appearance data.
+            PushAppearanceData(comp.Runtime);
         }
 
         /// <summary>
@@ -790,6 +805,147 @@ namespace Content.Server.DM
         public void ExecuteNew(EntityUid uid, DMRuntimeComponent comp)
         {
             _ = comp.Runtime.CallProc("New");
+        }
+
+        // ==== B-3 (item 71): appearance bridge + sprite helpers ====
+
+        /// <summary>
+        /// Publish a datum's whole appearance as AppearanceComponent data
+        /// (server-visible; the pin ignores Sprite on the server). Every
+        /// appearance-var write lands here via DMRuntime.SetVar ->
+        /// DMRuntimeHelpers.OnDatumVarChanged -> EntityAppearanceBridge.
+        /// Overlay/underlay entries serialize as
+        /// "rsi|state|dir|layer|pixel_x|pixel_y|color|alpha" strings for a
+        /// future client visualizer (B-5) to compose.
+        /// </summary>
+        private void PushAppearanceData(DMRuntime datum)
+        {
+            if (datum.EntityId == 0) return;
+            var uid = new EntityUid((int)datum.EntityId);
+            if (!EntityManager.EntityExists(uid)) return;
+            var comp = EntityManager.EnsureComponent<AppearanceComponent>(uid);
+            void Set(DMAppearanceKey key, object value) => _appearance.SetData(uid, key, value, comp);
+            Set(DMAppearanceKey.Icon, DMRuntimeHelpers.IconPathToRsi(datum.GetVar("icon")) ?? "");
+            Set(DMAppearanceKey.IconState, StrVar(datum, "icon_state"));
+            Set(DMAppearanceKey.Dir, (int)NumVar(datum, "dir", 2));
+            Set(DMAppearanceKey.Color, StrVar(datum, "color"));
+            Set(DMAppearanceKey.Alpha, (int)NumVar(datum, "alpha", 255));
+            Set(DMAppearanceKey.PixelX, (int)NumVar(datum, "pixel_x", 0));
+            Set(DMAppearanceKey.PixelY, (int)NumVar(datum, "pixel_y", 0));
+            Set(DMAppearanceKey.PixelZ, (int)NumVar(datum, "pixel_z", 0));
+            Set(DMAppearanceKey.Layer, (float)NumVar(datum, "layer", 3));
+            Set(DMAppearanceKey.Plane, (int)NumVar(datum, "plane", 0));
+            Set(DMAppearanceKey.Invisibility, (int)NumVar(datum, "invisibility", 0));
+            Set(DMAppearanceKey.Opacity, (int)NumVar(datum, "opacity", 0));
+            Set(DMAppearanceKey.MouseOpacity, (int)NumVar(datum, "mouse_opacity", 1));
+            Set(DMAppearanceKey.Overlays, DMRuntimeHelpers.SerializeOverlayList(datum, "overlays"));
+            Set(DMAppearanceKey.Underlays, DMRuntimeHelpers.SerializeOverlayList(datum, "underlays"));
+            Set(DMAppearanceKey.Luminosity, (int)NumVar(datum, "luminosity", 0));
+            Set(DMAppearanceKey.LightRange, (int)NumVar(datum, "light_range", 0));
+            Set(DMAppearanceKey.LightPower, (float)NumVar(datum, "light_power", 1));
+            Set(DMAppearanceKey.LightColor, StrVar(datum, "light_color"));
+        }
+
+        private static string StrVar(DMRuntime d, string name)
+        {
+            var v = d.GetVar(name);
+            return v.Type == DMValueType.Null ? "" : v.ToString();
+        }
+
+        private static double NumVar(DMRuntime d, string name, double fallback)
+        {
+            var v = d.GetVar(name);
+            return v.Type == DMValueType.Number ? v.NumberValue : fallback;
+        }
+
+        /// <summary>
+        /// flick() duration lookup: sum the dir-0 delays of the named state
+        /// in the datum's converted RSI (meta.json is a build-time artifact
+        /// under /Textures — read once per RSI, cached).
+        /// </summary>
+        private readonly Dictionary<string, Dictionary<string, double>> _rsiDelayCache = new();
+
+        private double LookupRsiStateDuration(DMRuntime datum, string state)
+        {
+            var rsi = DMRuntimeHelpers.IconPathToRsi(datum.GetVar("icon"));
+            if (rsi == null) return 0;
+            if (!_rsiDelayCache.TryGetValue(rsi, out var table))
+            {
+                table = LoadRsiDelays(rsi);
+                _rsiDelayCache[rsi] = table;
+            }
+            return table.TryGetValue(state, out var d) ? d : 0;
+        }
+
+        private Dictionary<string, double> LoadRsiDelays(string rsi)
+        {
+            var table = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var metaPath = new ResPath($"/Textures/{rsi}/meta.json");
+                if (!_resMan.ContentFileExists(metaPath)) return table;
+                using var stream = _resMan.ContentFileRead(metaPath);
+                using var doc = JsonDocument.Parse(stream);
+                if (!doc.RootElement.TryGetProperty("states", out var states)) return table;
+                foreach (var st in states.EnumerateArray())
+                {
+                    var name = st.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                    double sum = 0;
+                    if (st.TryGetProperty("delays", out var delays) && delays.GetArrayLength() > 0)
+                    {
+                        foreach (var v in delays[0].EnumerateArray())
+                            sum += v.GetDouble();
+                    }
+                    table[name] = sum;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.WarningS("dm", "RSI delay table for {Rsi} failed: {Ex}", rsi, ex.Message);
+            }
+            return table;
+        }
+
+        /// <summary>
+        /// dmTile sprites must be a plain PNG whose height is the tile size
+        /// (32px) and whose width is 32*Variants — the pin's tile atlas
+        /// builder throws otherwise. .tile.png crops written by the RSI
+        /// converter are always 32x32; anything else is dropped to a blank
+        /// tile with a warning rather than crashing the client.
+        /// </summary>
+        private void ValidateTileSprite(DMTilePrototype proto)
+        {
+            if (proto.Sprite is not { } sprite) return;
+            try
+            {
+                if (!_resMan.ContentFileExists(sprite))
+                {
+                    Logger.WarningS("dm", "tile {Id}: sprite {Path} missing — blank tile", proto.ID, sprite);
+                    proto.Sprite = null;
+                    return;
+                }
+                using var stream = _resMan.ContentFileRead(sprite);
+                var head = new byte[24];
+                var read = stream.Read(head, 0, head.Length);
+                if (read < head.Length || head[0] != 0x89 || head[1] != 0x50)
+                {
+                    proto.Sprite = null;
+                    return;
+                }
+                var w = (head[16] << 24) | (head[17] << 16) | (head[18] << 8) | head[19];
+                var h = (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
+                if (h != 32 || w % 32 != 0)
+                {
+                    proto.Sprite = null;
+                    return;
+                }
+                proto.Variants = (byte)Math.Min(255, Math.Max(1, w / 32));
+            }
+            catch (Exception ex)
+            {
+                Logger.WarningS("dm", "tile {Id}: sprite check failed ({Ex}) — blank tile", proto.ID, ex.Message);
+                proto.Sprite = null;
+            }
         }
 
         // ==== B-4 verbs/input (item 72): output routing + client datum ====
@@ -896,8 +1052,10 @@ namespace Content.Server.DM
 
         public string Name => NameField ?? ID;
 
+        // B-3: setters are public so the sprite validation pass can drop a
+        // missing/oversized tile png and fix Variants before Register.
         [DataField("sprite")]
-        public ResPath? Sprite { get; private set; }
+        public ResPath? Sprite { get; set; }
 
         public Dictionary<Direction, ResPath> EdgeSprites { get; } = new();
 
@@ -908,7 +1066,7 @@ namespace Content.Server.DM
         public float Friction { get; private set; } = 0.2f;
 
         [DataField("variants")]
-        public byte Variants { get; private set; } = 1;
+        public byte Variants { get; set; } = 1;
 
         public ushort TileId { get; private set; }
 
@@ -1859,6 +2017,21 @@ namespace Content.Server.DM
             : `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a)})`
         ).join(', ')})`
       : node.arguments.map((a: any) => this.transpileExpression(a)).join(', ');
+
+    // B-3 (item 71): animate()/flick()/image() named appearance args
+    // (alpha = 0, time = 5, icon_state = "x") parse as `assignment` nodes —
+    // emitting them as assignments would write the CALLER's vars. Emit
+    // name/value marker lists instead.
+    if (!hasArglist && (node.name === 'animate' || node.name === 'flick' || node.name === 'image') &&
+        node.arguments.some((a: any) => a.type === 'assignment' && typeof a.target === 'string')) {
+      const helper = node.name === 'animate' ? 'Animate' : node.name === 'flick' ? 'Flick' : 'ImageNamed';
+      const pairs = node.arguments.map((a: any) =>
+        a.type === 'assignment' && typeof a.target === 'string'
+          ? `DMRuntimeHelpers.DMNamedArg("${this.escapeString(a.target)}", ${this.transpileExpression(a.value)})`
+          : this.transpileExpression(a)
+      ).join(', ');
+      return `DMRuntimeHelpers.${helper}(${pairs})`;
+    }
 
     // DM associative literal: list("a" = 1, "b" = 2) — arguments are
     // key/value pairs emitted through MakeListAssoc (plain args are values).

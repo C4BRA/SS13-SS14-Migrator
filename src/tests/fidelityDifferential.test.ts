@@ -1142,6 +1142,87 @@ const PROBES: Probe[] = [
     dm: `/datum/probe/proc/run()\n\treturn replacetext_char("one two", "two", "2")`,
     expected: 'one 2'
   },
+  // ==== B-3 appearance probes (item 71) — engine-free datum semantics ====
+  {
+    name: 'atom .alpha defaults to 255',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\treturn o.alpha`,
+    expected: '255'
+  },
+  {
+    name: 'atom .mouse_opacity defaults to 1',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\treturn o.mouse_opacity`,
+    expected: '1'
+  },
+  {
+    name: 'atom .layer defaults: obj 3 / mob 4 / turf 1',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\tvar/mob/m = new /mob()\n\tvar/turf/t = new /turf()\n\treturn o.layer + m.layer + t.layer`,
+    expected: '8'
+  },
+  {
+    name: 'atom .invisibility and .opacity default to 0',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\treturn o.invisibility + o.opacity`,
+    expected: '0'
+  },
+  {
+    name: 'atom .pixel_x/.pixel_y default to 0',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\treturn o.pixel_x + o.pixel_y`,
+    expected: '0'
+  },
+  {
+    name: 'atom .icon_state defaults to empty string',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\treturn o.icon_state == ""`,
+    expected: '1'
+  },
+  {
+    name: 'atom .underlays defaults to an empty list',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\treturn o.underlays.len`,
+    expected: '0'
+  },
+  {
+    name: 'appearance vars read back after write',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\to.alpha = 64\n\to.pixel_x = -7\n\to.color = "#ff00ff"\n\treturn o.alpha + o.pixel_x + (o.color == "#ff00ff")`,
+    expected: '58'
+  },
+  {
+    name: 'overlays += adds a text icon_state entry',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\to.overlays += "glow"\n\treturn o.overlays.len`,
+    expected: '1'
+  },
+  {
+    name: 'underlays += adds an entry',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\to.underlays += "shadow"\n\treturn o.underlays.len`,
+    expected: '1'
+  },
+  {
+    name: 'animate() with time=0 applies the named var',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\tanimate(o, alpha = 0, time = 0)\n\tsleep(2)\n\treturn o.alpha`,
+    expected: '0'
+  },
+  {
+    name: 'animate() tween completes after duration',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\tanimate(o, pixel_x = 10, time = 1)\n\tsleep(4)\n\treturn o.pixel_x`,
+    expected: '10'
+  },
+  {
+    name: 'animate() named args do not write caller vars',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\tanimate(o, alpha = 5, time = 0)\n\tsleep(2)\n\treturn isnull(src.alpha) ? o.alpha : -1`,
+    expected: '5'
+  },
+  {
+    name: 'flick() swaps icon_state then restores it',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\to.icon_state = "base"\n\tflick("hit", o)\n\tvar/mid = o.icon_state\n\tsleep(4)\n\treturn mid + o.icon_state`,
+    expected: 'hitbase'
+  },
+  {
+    name: 'image() named args set vars on the image datum',
+    dm: `/datum/probe/proc/run()\n\tvar/image/im = image("x.dmi", icon_state = "hit", pixel_x = 4)\n\treturn im.icon_state + im.pixel_x`,
+    expected: 'hit4'
+  },
+  {
+    name: 'flick() of an /image adds then removes an overlay',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\tvar/image/im = image("x.dmi", icon_state = "hit")\n\tflick(im, o)\n\tvar/mid = o.overlays.len\n\tsleep(4)\n\treturn mid * 10 + o.overlays.len`,
+    expected: '10'
+  },
   // ==== B-4 probes (item 72): << dispatch + verb runtime ====
   {
     // `x << y` picks semantics by LHS type: list appends, numbers shift,
