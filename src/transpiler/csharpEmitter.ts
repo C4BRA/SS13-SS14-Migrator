@@ -136,6 +136,60 @@ namespace Content.Shared.DM
     }
 }
 `, 'utf-8');
+
+    // W-H: client-side appearance -> sprite bridge. The server publishes
+    // DMAppearanceKey data on AppearanceComponent, but nothing consumed it:
+    // the only engine consumer (GenericVisualizerSystem) needs per-value YAML
+    // tables no generated proto ships, so icon_state/icon swaps never reached
+    // pixels (windowed test showed 0px diff with live server state). This
+    // passthrough applies Icon+IconState to sprite layer 0 (BYOND's base
+    // layer) on every appearance change — auto-registered like any content
+    // system.
+    const clientDmDir = path.resolve(outputServerDir, '..', '..', 'Content.Client', 'DM');
+    if (!fs.existsSync(clientDmDir)) fs.mkdirSync(clientDmDir, { recursive: true });
+    fs.writeFileSync(path.join(clientDmDir, 'DMAppearanceVisualizer.cs'), `using Content.Shared.DM;
+using Robust.Client.GameObjects;
+using Robust.Client.Graphics;
+using Robust.Shared.GameObjects;
+using Robust.Shared.IoC;
+using Robust.Shared.Utility;
+
+namespace Content.Client.DM
+{
+    /// <summary>
+    /// DM appearance passthrough: pushes DMAppearanceKey.Icon/IconState into
+    /// sprite layer 0 so converted icon_state swaps actually render.
+    /// </summary>
+    public sealed class DMAppearanceVisualizerSystem : EntitySystem
+    {
+        [Dependency] private readonly SharedAppearanceSystem _appearance = default!;
+        [Dependency] private readonly SpriteSystem _sprite = default!;
+
+        public override void Initialize()
+        {
+            base.Initialize();
+            SubscribeLocalEvent<AppearanceComponent, AppearanceChangeEvent>(OnAppearanceChange);
+        }
+
+        private void OnAppearanceChange(EntityUid uid, AppearanceComponent comp, ref AppearanceChangeEvent args)
+        {
+            if (args.Sprite == null) return;
+
+            _appearance.TryGetData(uid, DMAppearanceKey.IconState, out string? state, args.Component);
+            _appearance.TryGetData(uid, DMAppearanceKey.Icon, out string? rsi, args.Component);
+            if (!string.IsNullOrEmpty(rsi))
+            {
+                _sprite.LayerSetSprite((uid, args.Sprite), 0,
+                    new SpriteSpecifier.Rsi(new ResPath(rsi), state ?? ""));
+            }
+            else if (!string.IsNullOrEmpty(state))
+            {
+                _sprite.LayerSetRsiState((uid, args.Sprite), 0, new RSI.StateId(state));
+            }
+        }
+    }
+}
+`, 'utf-8');
   }
 
   /**
@@ -311,16 +365,28 @@ namespace Content.Server.DM
         const csharpProcName = this.nextProcMemberName(procName, usedProcMembers);
         let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntime comp, DMValue[] args)\n        {\n`;
 
+        // W-H: DM proc params, 'var/x' decls, the '.' return slot and
+        // for-loop vars are proc LOCALS, not datum fields. The proc pushes a
+        // local frame (AsyncLocal scope) and pops it in finally — before
+        // this, a param named like a field (e.g. `icon_state`) clobbered the
+        // caller's datum var (M2 door slice: get_airlock_overlay wrote
+        // "_open" onto the airlock's icon_state).
+        member += `            comp.PushFrame();\n            try\n            {\n`;
+
         procNode.args.forEach((arg, idx) => {
           // Args are stored on the datum so body references via
           // comp.GetVar(name) resolve them; this also sidesteps C# keyword
           // collisions (e.g. an arg named `event` or `object`). Missing args
           // fall back to the declared default value (item 58: `f(a = 1)`).
+          // W-H: declared as proc locals — frame-scoped, not datum vars.
           const fallback = arg.defaultValue
             ? this.transpileExpression(arg.defaultValue)
             : 'DMValue.Null';
-          member += `            comp.SetVar("${arg.name}", args.Length > ${idx} ? args[${idx}] : ${fallback});\n`;
+          member += `                comp.DeclareLocal("${arg.name}");\n`;
+          member += `                comp.SetVar("${arg.name}", args.Length > ${idx} ? args[${idx}] : ${fallback});\n`;
         });
+        // W-H: the '.' return slot is a proc local too.
+        member += `                comp.DeclareLocal(".");\n`;
 
         this.currentProcName = procName;
         this.currentProcArgs = procNode.args.map((a: any) => a.name as string); // W-A parent-call
@@ -328,11 +394,11 @@ namespace Content.Server.DM
         this.labelStack.length = 0;
 
         if (this.referencesIdentifier(procNode, 'args')) {
-          member += `            var __dmArgs = DMList.FromArray(args);\n`;
+          member += `                var __dmArgs = DMList.FromArray(args);\n`;
         }
 
         for (const stmt of procNode.statements) {
-          member += this.transpileStatement(stmt, 12); // 12 spaces indent
+          member += this.transpileStatement(stmt, 16); // W-H: +4 inside try
         }
 
         // Implicit `.` return. Skipped when the proc already ends in a
@@ -340,10 +406,11 @@ namespace Content.Server.DM
         // (CS0162 warnings at corpus scale — WS5-18).
         const lastStmt = procNode.statements[procNode.statements.length - 1];
         if (!(lastStmt && lastStmt.type === 'ReturnStatement')) {
-          member += `            return comp.GetVar(".");\n        }\n`;
+          member += `                return comp.GetVar(".");\n            }\n`;
         } else {
-          member += `        }\n`;
+          member += `            }\n`;
         }
+        member += `            finally\n            {\n                comp.PopFrame();\n            }\n        }\n`;
         sinks.pair(procRegs[regIndex++], member);
       }
     }
@@ -1021,7 +1088,10 @@ namespace Content.Server.DM
             DMRuntimeHelpers.ApplyTypeVarInits(comp.Runtime);
             foreach (var (k, v) in comp.InitialVars)
             {
-                comp.Runtime.SetVar(k, DMValue.FromString(v));
+                // W-H: values are raw DM initializer text — ParseInitialVar
+                // coerces 'FALSE'/'TRUE'/'null'/numbers; FromString left them
+                // truthy strings (barricaded etc. broke the click chain).
+                comp.Runtime.SetVar(k, DMRuntimeHelpers.ParseInitialVar(v));
             }
             SyncVarsFromTransform(uid, comp.Runtime);
             DMRuntimeHelpers.LiveDatums.Add(comp.Runtime);
@@ -1091,6 +1161,18 @@ namespace Content.Server.DM
             Set(DMAppearanceKey.LightRange, (int)NumVar(datum, "light_range", 0));
             Set(DMAppearanceKey.LightPower, (float)NumVar(datum, "light_power", 1));
             Set(DMAppearanceKey.LightColor, StrVar(datum, "light_color"));
+
+            // W-H: density -> physics bridge. An opened door must stop
+            // blocking: mirror datum density onto each fixture via the
+            // sanctioned SharedPhysicsSystem.SetHard (fixture.Hard is
+            // write-gated to physics code at this pin).
+            if (EntityManager.TryGetComponent(uid, out Robust.Shared.Physics.FixturesComponent? fxManager))
+            {
+                var phys = EntityManager.System<Robust.Shared.Physics.Systems.SharedPhysicsSystem>();
+                var hard = datum.GetVar("density").IsTrue();
+                foreach (var fixture in fxManager.Fixtures.Values)
+                    phys.SetHard(uid, fixture, hard, fxManager);
+            }
         }
 
         private static string StrVar(DMRuntime d, string name)
@@ -1686,10 +1768,12 @@ namespace Content.Server.DM
         return `${pad}comp.SetVar("${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
 
       case 'VarDeclStatement':
+        // W-H: 'var/x' is a proc local — declare it on the frame so writes
+        // can't clobber a same-named datum field (see PushFrame above).
         if (stmt.varInit) {
-          return `${pad}comp.SetVar("${stmt.varName}", ${this.transpileExpression(stmt.varInit)});\n`;
+          return `${pad}comp.DeclareLocal("${stmt.varName}");\n${pad}comp.SetVar("${stmt.varName}", ${this.transpileExpression(stmt.varInit)});\n`;
         }
-        return `${pad}comp.SetVar("${stmt.varName}", DMValue.Null);\n`;
+        return `${pad}comp.DeclareLocal("${stmt.varName}");\n${pad}comp.SetVar("${stmt.varName}", DMValue.Null);\n`;
 
       case 'IfStatement':
         let ifCode = `${pad}if ((${this.transpileExpression(stmt.condition)}).IsTrue())\n${pad}{\n`;
@@ -1865,6 +1949,7 @@ namespace Content.Server.DM
               const endCode = this.transpileExpression(stmt.loopRange.end);
               const stepCode = this.transpileExpression(stmt.step);
               forCode += `${pad}    var ${stepTmp} = ${stepCode};\n`;
+              forCode += `${pad}    comp.DeclareLocal("${stmt.loopVariable}");\n`;
               forCode += `${pad}    comp.SetVar("${stmt.loopVariable}", ${startCode});\n`;
               forCode += `${pad}    while (${stepTmp}.ToNumber() >= 0 ? DMValue.LessOrEqual(comp.GetVar("${stmt.loopVariable}"), ${endCode}).IsTrue() : DMValue.GreaterOrEqual(comp.GetVar("${stmt.loopVariable}"), ${endCode}).IsTrue())\n`;
               forCode += `${pad}    {\n`;
@@ -1881,6 +1966,7 @@ namespace Content.Server.DM
               forCode += `${pad}    }\n`;
             } else {
               const contLabel = `__dmForInCont${this.tempCounter++}`;
+              forCode += `${pad}    comp.DeclareLocal("${stmt.loopVariable}");\n`;
               forCode += `${pad}    foreach (var ${iter} in DMListItems(${this.transpileExpression(stmt.loopRange)}))\n`;
               forCode += `${pad}    {\n`;
               forCode += `${pad}        {\n`;
