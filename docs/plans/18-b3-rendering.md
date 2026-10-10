@@ -169,9 +169,9 @@ Var → engine mapping and limits:
   animate time=0 + tween completion + named-arg isolation, flick
   icon_state + /image overlay restore, image() named args).
 - Paradise conversion → `dotnet build Content.Server.csproj` = **0 errors**
-  (fixed a pre-existing master break along the way: `url_encode(url, 1)`
-  2-arg call sites failed against the Tier-4 wave's 1-arg helper — added
-  a 2-arg overload in the B-3 region, append-only).
+  (a pre-existing master break — `url_encode(url, 1)` 2-arg call sites vs
+  the Tier-4 wave's 1-arg helper — was fixed upstream by the B-4 merge,
+  which added the 2-arg overload).
 - `bash scripts/boot-smoke.sh` → **PASS** (Ready + spawn bridge).
 - Generated-output spot check (paradise): `type: Sprite` with
   `sprite: icons/turf/floors.rsi`, `state: plating`; `type: Appearance`;

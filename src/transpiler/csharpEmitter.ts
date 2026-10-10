@@ -349,7 +349,9 @@ using System.Numerics;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Robust.Server.GameObjects;
+using Robust.Server.Console;
 using Robust.Server.Player;
+using Robust.Shared.Console;
 using Robust.Shared.ContentPack;
 using Robust.Shared.Enums;
 using Robust.Shared.EntitySerialization.Systems;
@@ -359,9 +361,12 @@ using Robust.Shared.Log;
 using Robust.Shared.Map;
 using Robust.Shared.Map.Components;
 using Robust.Shared.Maths;
+using Robust.Shared.Network;
 using Robust.Shared.Player;
 using Robust.Shared.Prototypes;
 using Robust.Shared.Serialization.Manager.Attributes;
+using Robust.Shared.Toolshed;
+using Robust.Shared.Toolshed.Errors;
 using Robust.Shared.Utility;
 using SS13.DM.Runtime;
 
@@ -383,6 +388,7 @@ namespace Content.Server.DM
         // B-3 (item 71): the pin's server ignores Sprite components; the
         // Appearance channel is how a datum's visuals reach the client.
         [Dependency] private readonly AppearanceSystem _appearance = default!;
+        [Dependency] private readonly IServerConsoleHost _conHost = default!;
 
         private SharedTransformSystem _xform = default!;
         private SharedMapSystem _map = default!;
@@ -502,6 +508,19 @@ namespace Content.Server.DM
             // from the converted RSI meta.json delay tables.
             DMRuntimeHelpers.EntityAppearanceBridge = PushAppearanceData;
             DMRuntimeHelpers.RsiStateDurationDs = LookupRsiStateDuration;
+
+            // ==== B-4 verbs/input (item 72) ====
+            // 'x << msg' on datum targets routes through the output bridge:
+            // world broadcasts to every in-game client console, mob/client
+            // datums reach the owning session's console, everything also
+            // lands in the server log. Engine-free runs fall back to stdout.
+            DMVerbRuntime.OutputBridge = DmOutput;
+            // The engine's permission controller denies client-run commands
+            // without a content implementation (ConGroupController.Implementation
+            // is null -> CanCommand = false). Converted worlds have no admin
+            // group setup; the shim allows only our dm* command names for
+            // player sessions (the server console bypasses the check anyway).
+            IoCManager.Resolve<IConGroupController>().Implementation = new DMPermissions();
         }
 
         /// <summary>
@@ -704,6 +723,10 @@ namespace Content.Server.DM
             var uid = EntityManager.SpawnEntity(proto, coords);
             _playerMan.SetAttachedEntity(session, uid);
             Logger.InfoS("dm", "Player {Name} attached to mob {Uid} (proto {Proto})", session.Name, uid, proto);
+
+            // B-4 (item 72): bind a DM /client datum to the session so
+            // mob.client / client.mob / 'client << x' resolve for corpus code.
+            BindClientDatum(session, uid);
         }
 
         /// <summary>
@@ -924,6 +947,89 @@ namespace Content.Server.DM
                 proto.Sprite = null;
             }
         }
+
+        // ==== B-4 verbs/input (item 72): output routing + client datum ====
+
+        /// <summary>
+        /// 'x << msg' on datum targets (DMValue.Output -> OutputBridge).
+        /// world << broadcasts to every in-game client console plus the
+        /// server log; a mob or /client datum reaches its owning session's
+        /// console; unbound datums fall back to the server log.
+        /// </summary>
+        private void DmOutput(DMValue target, DMValue message)
+        {
+            var text = message.ToString();
+            if (target.DatumRef is DMRuntime datum)
+            {
+                if (ReferenceEquals(datum, DMRuntimeHelpers.WorldValue.DatumRef))
+                {
+                    foreach (var session in _playerMan.Sessions)
+                    {
+                        if (session.Status == SessionStatus.InGame)
+                            _conHost.WriteLine(session, text);
+                    }
+                }
+                else
+                {
+                    var session = SessionForDatum(datum);
+                    if (session != null)
+                    {
+                        _conHost.WriteLine(session, text);
+                        return;
+                    }
+                }
+            }
+            Logger.InfoS("dm.out", "{Text}", text);
+        }
+
+        /// <summary>
+        /// The session a datum's output should reach: a /client datum carries
+        /// a __session var (NetUserId string) bound at attach; a mob resolves
+        /// through its client var or its attached entity.
+        /// </summary>
+        private ICommonSession? SessionForDatum(DMRuntime datum)
+        {
+            var sid = datum.GetVar("__session");
+            if (sid.Type == DMValueType.String && Guid.TryParse(sid.ToString(), out var guid)
+                && _playerMan.TryGetSessionById(new NetUserId(guid), out var byId))
+            {
+                return byId;
+            }
+            if (datum.GetVar("client").DatumRef is DMRuntime client && !ReferenceEquals(client, datum))
+                return SessionForDatum(client);
+            if (datum.EntityId != 0
+                && _playerMan.TryGetSessionByEntity(new EntityUid((int)datum.EntityId), out var byEntity))
+            {
+                return byEntity;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Mints a /client datum for the session's mob so DM 'mob.client'
+        /// reads a real object: client.mob backref, key/ckey/login vars, and
+        /// a __session tag the output bridge resolves (engine-free datums
+        /// can't hold an ICommonSession).
+        /// </summary>
+        private void BindClientDatum(ICommonSession session, EntityUid uid)
+        {
+            try
+            {
+                if (!EntityManager.TryGetComponent(uid, out DMRuntimeComponent? comp)) return;
+                var client = new DMRuntime { DMTypePath = "/client" };
+                client.SetVar("mob", DMValue.FromDatum(comp.Runtime));
+                client.SetVar("key", DMValue.FromString(session.Name));
+                client.SetVar("ckey", DMRuntimeHelpers.CKey(DMValue.FromString(session.Name)));
+                client.SetVar("address", DMValue.FromString(session.Channel?.RemoteEndPoint?.ToString() ?? ""));
+                client.SetVar("__session", DMValue.FromString(session.UserId.ToString()));
+                DMRuntimeHelpers.LiveDatums.Add(client);
+                comp.Runtime.SetVar("client", DMValue.FromDatum(client));
+            }
+            catch (Exception ex)
+            {
+                Logger.ErrorS("dm", "Client datum bind failed: {Ex}", ex.Message);
+            }
+        }
     }
 
     /// <summary>
@@ -965,6 +1071,316 @@ namespace Content.Server.DM
         public ushort TileId { get; private set; }
 
         public void AssignTileId(ushort id) => TileId = id;
+    }
+
+    // ==== B-4 (item 72): verb/interaction command bridge =================
+    // These IConsoleCommand implementations are auto-registered by the
+    // engine ConsoleHost reflection scan over the content assembly. They are
+    // the M1 interaction path: a client types e.g. 'dmverb say hello' (or
+    // presses a bound key / verb panel entry once B-5/B-6 wire the client)
+    // and the server dispatches into the DM proc registry with BYOND verb
+    // semantics — src = the verb's datum, usr = the caller's mob.
+    //
+    // Client boundary (B-5 owns the entry): everything below works for any
+    // IConsoleShell; a real Robust.Client needs (a) chat/completions that
+    // accept 'dm*'-prefixed input -> RemoteExecuteCommand, (b) click ->
+    // 'dmclick' command arg or a proper interaction event -> this dispatch,
+    // (c) keybind -> 'dmverb' mappings for hotkeys, (d) a verb panel fed by
+    // 'dmverbs' output, (e) rendering of IServerConsoleHost.WriteLine text
+    // as chat — that output already reaches the session console.
+
+    /// <summary>Shared helpers for the dm* commands.</summary>
+    internal static class DMCommands
+    {
+        /// <summary>The session's attached mob datum (null for the bare server console).</summary>
+        public static DMRuntime? MobDatum(IEntityManager entMan, ICommonSession? session)
+        {
+            var uid = session?.AttachedEntity;
+            if (uid is not { } u) return null;
+            return entMan.TryGetComponent(u, out DMRuntimeComponent? comp) ? comp.Runtime : null;
+        }
+
+        /// <summary>
+        /// Datum reference from a command token: "@&lt;uid&gt;"/digits = entity,
+        /// "/type/path" = first live datum of that type, "x,y,z" = atom at
+        /// DM tile coords.
+        /// </summary>
+        public static DMRuntime? ResolveTarget(IEntityManager entMan, string token)
+        {
+            var t = token.StartsWith("@") ? token.Substring(1) : token;
+            if (long.TryParse(t, out var id))
+            {
+                if (entMan.TryGetComponent(new EntityUid((int)id), out DMRuntimeComponent? comp))
+                    return comp.Runtime;
+                return DMVerbRuntime.DatumForEntityId(id);
+            }
+            if (token.StartsWith("/"))
+                return DMVerbRuntime.DatumForPath(token);
+            var parts = token.Split(',');
+            if (parts.Length == 3
+                && double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var x)
+                && double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var y)
+                && double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z))
+            {
+                return DMVerbRuntime.DatumAt(x, y, z);
+            }
+            return null;
+        }
+
+        /// <summary>Literal -> DMValue (numbers, @uid datum refs, /type/paths, else string).</summary>
+        public static DMValue ParseArg(IEntityManager entMan, string token)
+        {
+            if (token.StartsWith("@") || token.StartsWith("/") || token.Contains(','))
+            {
+                if (ResolveTarget(entMan, token) is { } d) return DMValue.FromDatum(d);
+            }
+            if (double.TryParse(token, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n))
+                return DMValue.FromNumber(n, token.IndexOfAny(new[] { '.', 'e', 'E' }) >= 0);
+            if (token.StartsWith("/")) return DMValue.FromPath(token);
+            return DMValue.FromString(token);
+        }
+
+        /// <summary>
+        /// Verb args: all-k=v tokens collapse into one assoc list so named
+        /// args bind onto the callee's parameter names (BYOND arglist
+        /// semantics); anything else binds positionally.
+        /// </summary>
+        public static DMValue[] ParseArgs(IEntityManager entMan, string[] tokens)
+        {
+            if (tokens.Length > 0 && tokens.All(t => t.Contains('=')))
+            {
+                var list = new DMList();
+                foreach (var t in tokens)
+                {
+                    var i = t.IndexOf('=');
+                    list.SetAssoc(t.Substring(0, i), ParseArg(entMan, t.Substring(i + 1)));
+                }
+                return new[] { DMValue.FromList(list) };
+            }
+            return tokens.Select(t => ParseArg(entMan, t)).ToArray();
+        }
+
+        /// <summary>Fire-and-forget a verb call, logging failures to the shell.</summary>
+        public static void Fire(IConsoleShell shell, Task<DMValue> call, string what)
+        {
+            _ = call.ContinueWith(t =>
+            {
+                if (t.Exception != null)
+                    shell.WriteError($"dmverb '{what}' threw: {t.Exception.GetBaseException().Message}");
+            });
+        }
+    }
+
+    /// <summary>
+    /// dmverb &lt;proc&gt; [args...] — invoke a DM verb/proc on the player's
+    /// mob. src = usr = the mob datum (the player's own verbs).
+    /// </summary>
+    public sealed class DMVerbCommand : IConsoleCommand
+    {
+        public string Command => "dmverb";
+        public string Description => "Invoke a DM verb on your mob (converted world).";
+        public string Help => "dmverb <proc> [args...] — args: numbers, text, @uid, /type/path, k=v named pairs. List verbs with dmverbs.";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            if (args.Length == 0) { shell.WriteLine(Help); return; }
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmverb: no DM mob attached — use dmverbon <target> <proc> from the server console"); return; }
+            if (!DMVerbRuntime.HasProc(mob, args[0])) { shell.WriteError($"dmverb: {mob.DMTypePath} has no verb/proc '{args[0]}' — see dmverbs"); return; }
+            DMCommands.Fire(shell, DMVerbRuntime.CallVerbAsUsr(mob, mob, args[0], DMCommands.ParseArgs(entMan, args.Skip(1).ToArray())), args[0]);
+        }
+    }
+
+    /// <summary>
+    /// dmverbon &lt;target&gt; &lt;proc&gt; [args...] — invoke a verb on an
+    /// object with correct DM semantics: src = the target atom's datum,
+    /// usr = the calling player's mob. This is the obj/turf verb path
+    /// (e.g. a machine's verb the mob runs from its context).
+    /// </summary>
+    public sealed class DMVerbOnCommand : IConsoleCommand
+    {
+        public string Command => "dmverbon";
+        public string Description => "Invoke a DM verb on an object (src=object, usr=your mob).";
+        public string Help => "dmverbon <@uid|/type/path|x,y,z> <proc> [args...]";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            if (args.Length < 2) { shell.WriteLine(Help); return; }
+            var target = DMCommands.ResolveTarget(entMan, args[0]);
+            if (target == null) { shell.WriteError($"dmverbon: no datum for '{args[0]}'"); return; }
+            if (!DMVerbRuntime.HasProc(target, args[1])) { shell.WriteError($"dmverbon: {target.DMTypePath} has no verb/proc '{args[1]}'"); return; }
+            var usr = DMCommands.MobDatum(entMan, shell.Player) ?? target;
+            DMCommands.Fire(shell, DMVerbRuntime.CallVerbAsUsr(target, usr, args[1], DMCommands.ParseArgs(entMan, args.Skip(2).ToArray())), args[1]);
+        }
+    }
+
+    /// <summary>
+    /// dmclick &lt;target&gt; — click/interact routing: fires the atom's
+    /// Click() proc with BYOND-style args (location=clicked atom,
+    /// control=null, params=empty click list), src = clicked atom, usr =
+    /// the player's mob. The server-side half of "interacts with one
+    /// object" for M1; a real client's click plumbing is B-5's boundary.
+    /// </summary>
+    public sealed class DMClickCommand : IConsoleCommand
+    {
+        public string Command => "dmclick";
+        public string Description => "Click/interact a DM atom (fires its Click() proc, usr=your mob).";
+        public string Help => "dmclick <@uid|/type/path|x,y,z>";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            if (args.Length < 1) { shell.WriteLine(Help); return; }
+            var target = DMCommands.ResolveTarget(entMan, args[0]);
+            if (target == null) { shell.WriteError($"dmclick: no datum for '{args[0]}'"); return; }
+            var usr = DMCommands.MobDatum(entMan, shell.Player) ?? target;
+            var clickParams = new DMList(); // BYOND Click(location, control, params)
+            DMCommands.Fire(shell, DMVerbRuntime.CallVerbAsUsr(target, usr, "Click",
+                DMValue.FromDatum(target), DMValue.Null, DMValue.FromList(clickParams)), "Click");
+        }
+    }
+
+    /// <summary>
+    /// dmsay &lt;text&gt; — speech: routes through the mob's 'say' verb/proc
+    /// when the codebase defines one; falls back to a server-wide echo so
+    /// the channel is observable either way.
+    /// </summary>
+    public sealed class DMSayCommand : IConsoleCommand
+    {
+        public string Command => "dmsay";
+        public string Description => "Say text through your DM mob's say verb.";
+        public string Help => "dmsay <text>";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var text = string.Join(" ", args);
+            if (text.Length == 0) { shell.WriteLine(Help); return; }
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmsay: no DM mob attached"); return; }
+            if (DMVerbRuntime.HasProc(mob, "say"))
+            {
+                DMCommands.Fire(shell, DMVerbRuntime.CallVerbAsUsr(mob, mob, "say", DMValue.FromString(text)), "say");
+                return;
+            }
+            var line = $"{shell.Player?.Name ?? "server"}: {text}";
+            foreach (var s in IoCManager.Resolve<IPlayerManager>().Sessions)
+            {
+                if (s.Status == SessionStatus.InGame)
+                    IoCManager.Resolve<IServerConsoleHost>().WriteLine(s, line);
+            }
+        }
+    }
+
+    /// <summary>
+    /// dmooc &lt;text&gt; — out-of-character channel: broadcasts to all
+    /// in-game consoles (OOC is a session chat, not a mob verb).
+    /// </summary>
+    public sealed class DMOocCommand : IConsoleCommand
+    {
+        public string Command => "dmooc";
+        public string Description => "OOC chat to all connected players.";
+        public string Help => "dmooc <text>";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var text = string.Join(" ", args);
+            if (text.Length == 0) { shell.WriteLine(Help); return; }
+            var line = $"OOC {shell.Player?.Name ?? "server"}: {text}";
+            foreach (var s in IoCManager.Resolve<IPlayerManager>().Sessions)
+            {
+                if (s.Status == SessionStatus.InGame)
+                    IoCManager.Resolve<IServerConsoleHost>().WriteLine(s, line);
+            }
+        }
+    }
+
+    /// <summary>
+    /// dmtopic &lt;href&gt; — Browse/link equivalent: calls world.Topic(href)
+    /// on the world datum. Browsers don't exist server-side, but a
+    /// converted Topic() handler resolves here.
+    /// </summary>
+    public sealed class DMTopicCommand : IConsoleCommand
+    {
+        public string Command => "dmtopic";
+        public string Description => "Route an href to world.Topic() (Browse/link equivalent).";
+        public string Help => "dmtopic <href>";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var href = string.Join(" ", args);
+            if (href.Length == 0) { shell.WriteLine(Help); return; }
+            if (DMRuntimeHelpers.WorldValue.DatumRef is not DMRuntime world) { shell.WriteError("dmtopic: no world datum"); return; }
+            var hasTopic = DMVerbRuntime.HasProc(world, "Topic");
+            if (!hasTopic && !DMVerbRuntime.HasProc(world, "topic")) { shell.WriteError("dmtopic: world has no Topic() proc"); return; }
+            var usr = DMCommands.MobDatum(entMan, shell.Player) ?? world;
+            var linkData = new DMList();
+            DMCommands.Fire(shell, DMVerbRuntime.CallVerbAsUsr(world, usr, hasTopic ? "Topic" : "topic",
+                DMValue.FromString(href), DMValue.FromList(linkData), DMValue.Null), "Topic");
+        }
+    }
+
+    /// <summary>dmverbs — list every proc invocable on your mob (verb panel).</summary>
+    public sealed class DMVerbsCommand : IConsoleCommand
+    {
+        public string Command => "dmverbs";
+        public string Description => "List the DM verbs/procs callable on your mob.";
+        public string Help => "dmverbs";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmverbs: no DM mob attached"); return; }
+            var names = ProcRegistry.EnumerateProcs(mob.DMTypePath).OrderBy(n => n).ToList();
+            shell.WriteLine($"{mob.DMTypePath} verbs ({names.Count}): {string.Join(", ", names)}");
+        }
+    }
+
+    /// <summary>dmloc — print your mob's DM x,y,z coords (for dmclick x,y,z).</summary>
+    public sealed class DMLocCommand : IConsoleCommand
+    {
+        public string Command => "dmloc";
+        public string Description => "Print your mob's DM tile coords.";
+        public string Help => "dmloc";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmloc: no DM mob attached"); return; }
+            shell.WriteLine($"x={mob.GetVar("x")}, y={mob.GetVar("y")}, z={mob.GetVar("z")}");
+        }
+    }
+
+    /// <summary>
+    /// Client command permission shim (B-4, item 72): without an
+    /// implementation, ConGroupController.CanCommand returns false and every
+    /// player-typed command lands "Unknown command". Converted worlds have
+    /// no admin group setup, so we allow exactly the dm* interaction
+    /// commands for player sessions — the server console bypasses this check
+    /// entirely. Everything else stays denied.
+    /// </summary>
+    public sealed class DMPermissions : IConGroupControllerImplementation
+    {
+        private static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "dmverb", "dmverbon", "dmclick", "dmsay", "dmooc", "dmtopic", "dmverbs", "dmloc"
+        };
+
+        public bool CanCommand(ICommonSession session, string cmdName) => Allowed.Contains(cmdName);
+        public bool CanAdminPlace(ICommonSession session) => false;
+        public bool CanScript(ICommonSession session) => false;
+        public bool CanAdminMenu(ICommonSession session) => false;
+        public bool CanAdminReloadPrototypes(ICommonSession session) => false;
+        public bool CheckInvokable(CommandSpec command, ICommonSession? user, out IConError? error)
+        {
+            error = null;
+            return false;
+        }
     }
 }
 `;
@@ -1317,6 +1733,19 @@ namespace Content.Server.DM
           if (stmt.expression.type === 'property_assignment') {
             return `${pad}_ = ${expr};\n`;
           }
+          // B-4 (item 72): statement-level `x << y` is a compound op in DM —
+          // `n << 2` shifts n, `L << x` appends to L. Plain locals write the
+          // result back through SetVar (Output returns the shifted value or
+          // the same list/datum). src/usr/world/args are runtime-bound (no
+          // SetVar) and property/index LHS have no writeback — the send
+          // side effect still runs.
+          if (stmt.expression.type === 'binary' && stmt.expression.operator === '<<') {
+            const lhs = stmt.expression.left as any;
+            if (lhs?.type === 'variable' && !['src', 'usr', 'world', 'args', 'loc', 'contents'].includes(lhs.name)) {
+              return `${pad}comp.SetVar("${lhs.name}", DMValue.Output(${this.transpileExpression(lhs)}, ${this.transpileExpression(stmt.expression.right)}));\n`;
+            }
+            return `${pad}_ = ${expr};\n`;
+          }
           // Only calls are valid C# expression-statements; everything else
           // (ternaries, literals, binary ops, ranges, ...) is discarded via
           // the discard assignment, which keeps side effects intact.
@@ -1545,17 +1974,13 @@ namespace Content.Server.DM
         const t = this.nextTemp();
         return `((${left}) is var ${t} && !${t}.IsTrue() ? (${right}) : (${t}))`;
       }
-      case '<<': {
-        // DM `world << x` / `usr << x` is OUTPUT; a shift on anything else
-        // is a bitwise shift. The distinction: output targets are world/usr
-        // (or their properties); everything else shifts.
-        const t = node.left as any;
-        if ((t.type === 'variable' && (t.name === 'world' || t.name === 'usr')) ||
-            (t.type === 'property' && (t.target as any)?.name === 'world')) {
-          return `DMValue.Output(${left}, ${right})`;
-        }
-        return `DMValue.ShiftLeft(${left}, ${right})`;
-      }
+      case '<<':
+        // B-4 (item 72): DM `x << y` is output for client-capable targets
+        // (client/mob/world/datums), append for lists, and a bitwise shift
+        // otherwise — the LHS type is dynamic, so every << routes through
+        // DMValue.Output which dispatches at runtime (`num << 2` still
+        // shifts) and returns the target for `a << b << c` chaining.
+        return `DMValue.Output(${left}, ${right})`;
       case '>>': return `DMValue.ShiftRight(${left}, ${right})`;
       case '&': return `DMValue.BitwiseAnd(${left}, ${right})`;
       case '|': return `DMValue.BitwiseOr(${left}, ${right})`;

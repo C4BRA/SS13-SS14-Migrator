@@ -1222,6 +1222,93 @@ const PROBES: Probe[] = [
     name: 'flick() of an /image adds then removes an overlay',
     dm: `/datum/probe/proc/run()\n\tvar/obj/o = new /obj()\n\tvar/image/im = image("x.dmi", icon_state = "hit")\n\tflick(im, o)\n\tvar/mid = o.overlays.len\n\tsleep(4)\n\treturn mid * 10 + o.overlays.len`,
     expected: '10'
+  },
+  // ==== B-4 probes (item 72): << dispatch + verb runtime ====
+  {
+    // `x << y` picks semantics by LHS type: list appends, numbers shift,
+    // datum targets route through the output path (engine-free -> console,
+    // and the operator evaluates to the message).
+    name: '<< dispatches: list appends, numbers shift-assign, datum output returns target',
+    dm: `/datum/probe/proc/run()\n\tvar/x = 4\n\tx << 2\n\tvar/list/L = list(1)\n\tL << 5\n\tvar/m = (world << "hi")\n\treturn "[x]|[L.len]|[L[2]]|[istype(m,/world)]"`,
+    expected: '16|2|5|1'
+  },
+  {
+    name: 'src << chains (returns the datum for the next <<)',
+    dm: `/datum/probe/proc/run()\n\tvar/m = (src << "a" << "b")\n\treturn istype(m, /datum/probe)`,
+    expected: '1'
+  },
+  {
+    // Verb dispatch: CallVerbAsUsr runs the target datum's proc with
+    // src = the verb's datum and usr = the *caller's* mob — BYOND's verb
+    // semantics for verbs that live on other atoms.
+    name: 'DMVerbRuntime.CallVerbAsUsr binds src=target, usr=caller mob',
+    dm: '/datum/probe/proc/run()\n\treturn DMValue.Null',
+    expected: 'src=/mob/probe;usr=/mob/player;msg=hi',
+    files: {
+      'ConvertedDMProcs.cs': `using System;
+using System.Threading.Tasks;
+using SS13.DM.Runtime;
+
+namespace Content.Server.DM
+{
+public static class ConvertedDMProcs
+{
+    public static void RegisterProcs()
+    {
+        ProcRegistry.Register("/mob/probe", "hello", Proc_MobProbe_Hello, new[] { "msg" });
+        ProcRegistry.Register("/datum/probe", "run", Proc_DatumProbe_Run);
+    }
+    public static async Task<DMValue> Proc_MobProbe_Hello(DMRuntime comp, DMValue[] args)
+    {
+        var usr = DMRuntimeHelpers.CurrentUsr.DatumRef as DMRuntime;
+        return DMValue.FromString("src=" + comp.DMTypePath + ";usr=" + (usr?.DMTypePath ?? "null") + ";msg=" + (args.Length > 0 ? args[0].ToString() : ""));
+    }
+    public static async Task<DMValue> Proc_DatumProbe_Run(DMRuntime comp, DMValue[] args)
+    {
+        var mob = new DMRuntime { DMTypePath = "/mob/probe" };
+        var usr = new DMRuntime { DMTypePath = "/mob/player" };
+        return await DMVerbRuntime.CallVerbAsUsr(mob, usr, "hello", DMValue.FromString("hi"));
+    }
+}
+}`
+    }
+  },
+  {
+    // Command-style named args: `dmverb hello msg=named` collapses into a
+    // single assoc list; CallVerbAsUsr binds it onto the callee's parameter
+    // names (BYOND arglist semantics).
+    name: 'verb named-arg binding via assoc list (k=v -> param names)',
+    dm: '/datum/probe/proc/run()\n\treturn DMValue.Null',
+    expected: 'msg=named',
+    files: {
+      'ConvertedDMProcs.cs': `using System;
+using System.Threading.Tasks;
+using SS13.DM.Runtime;
+
+namespace Content.Server.DM
+{
+public static class ConvertedDMProcs
+{
+    public static void RegisterProcs()
+    {
+        ProcRegistry.Register("/mob/probe", "hello", Proc_MobProbe_Hello, new[] { "msg" });
+        ProcRegistry.Register("/datum/probe", "run", Proc_DatumProbe_Run);
+    }
+    public static async Task<DMValue> Proc_MobProbe_Hello(DMRuntime comp, DMValue[] args)
+    {
+        comp.SetVar("msg", args.Length > 0 ? args[0] : DMValue.Null);
+        return DMValue.FromString("msg=" + comp.GetVar("msg").ToString());
+    }
+    public static async Task<DMValue> Proc_DatumProbe_Run(DMRuntime comp, DMValue[] args)
+    {
+        var mob = new DMRuntime { DMTypePath = "/mob/probe" };
+        var named = new DMList();
+        named.SetAssoc("msg", DMValue.FromString("named"));
+        return await DMVerbRuntime.CallVerbAsUsr(mob, mob, "hello", DMValue.FromList(named));
+    }
+}
+}`
+    }
   }
 ];
 
