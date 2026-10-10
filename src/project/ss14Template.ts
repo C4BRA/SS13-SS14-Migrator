@@ -234,8 +234,10 @@ namespace Content.Server
 }`;
     fs.writeFileSync(path.join(serverDir, 'Program.cs'), programCS, 'utf-8');
 
-    // 5. Content.Client Project (console stub; full Robust.Client integration
-    //    is out of scope for Phase 0 — see PLAN.md).
+    // 5. Content.Client Project — real Robust.Client content entry (item 73,
+    //    B-5). Same engine mount conventions as the server: the binary must
+    //    land in <solution>/bin/Content.Client so StartType.Content mounts it
+    //    at /Assemblies/ and <solution>/Resources at /.
     const clientDir = path.join(outputDir, 'Content.Client');
     fs.mkdirSync(clientDir, { recursive: true });
 
@@ -245,14 +247,99 @@ namespace Content.Server
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Flattened output path: the engine's StartType.Content mount expects
+         the client binary at <solution>/bin/Content.Client (mounts the dir
+         at /Assemblies/ and loads Content.* modules from it). -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>..\\bin\\Content.Client\\</OutputPath>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\\SS13.DM.Runtime\\SS13.DM.Runtime.csproj" />
     <ProjectReference Include="..\\Content.Shared\\Content.Shared.csproj" />
   </ItemGroup>
+  <!-- Engine references go through the official Imports (direct references
+       are rejected by Robust.ProjectReferences.targets). Client.props pulls
+       in Robust.Client (which transitively carries Robust.Shared, SDL3,
+       ImageSharp, etc.); the serialization generator produces the
+       ISerializationGenerated implementations. -->
+  <Import Project="..\\RobustToolbox\\Imports\\Shared.props" />
+  <Import Project="..\\RobustToolbox\\Imports\\Client.props" />
+  <Import Project="..\\RobustToolbox\\MSBuild\\Robust.Properties.targets" />
+  <Import Project="..\\RobustToolbox\\MSBuild\\Robust.EntitySystemSubscriptionsGenerator.targets" />
 </Project>`;
     fs.writeFileSync(path.join(clientDir, 'Content.Client.csproj'), clientCsproj, 'utf-8');
-    fs.writeFileSync(path.join(clientDir, 'Program.cs'), `using System; namespace Content.Client { public class Program { public static void Main(string[] args) { Console.WriteLine("SS14 Client Initialized"); } } }`, 'utf-8');
+
+    // Real Robust.Client boot entry (item 73): ContentStart.Start is the
+    // engine's public client host — it loads Content.* modules from
+    // bin/Content.Client, mounts <solution>/Resources at /, and runs the
+    // game loop. `--headless` boots without graphics/audio; `--connect
+    // [--connect-address <addr>]` auto-connects to a server (default
+    // localhost:1212). Verification: `scripts/client-smoke.sh`.
+    const clientProgramCS = `using System;
+using Robust.Client;
+
+namespace Content.Client
+{
+    internal static class Program
+    {
+        [STAThread]
+        public static void Main(string[] args) => ContentStart.Start(args);
+    }
+}`;
+    fs.writeFileSync(path.join(clientDir, 'Program.cs'), clientProgramCS, 'utf-8');
+
+    // Content entry point (item 73): the engine's mod loader instantiates
+    // every GameShared subclass in the loaded Content.* modules. The client
+    // MUST register components + net ids itself — the engine never calls
+    // DoAutoRegistrations/GenerateNetIds internally, and once net ids are
+    // generated the component table locks (ComponentRegistrationLockException).
+    //
+    // Two server-only emitted types need client-side ignores, mirroring how
+    // the engine's ServerComponentFactory ignores client-only "Sprite":
+    //   - DMRuntime component: skipping it silently keeps every converted
+    //     entity prototype free of "Unknown component" errors; DMRuntime is
+    //     not a networked component so nothing else needs it client-side.
+    //   - dmTile prototypes: registered with ITileDefinitionManager by the
+    //     server-side ConvertedDMSystem; the client's PrototypeManager has no
+    //     dmTile kind and an unknown kind fails the WHOLE yaml document,
+    //     which would drop every entity prototype.
+    const clientEntryPointCS = `using Robust.Client.State;
+using Robust.Client.UserInterface.States;
+using Robust.Shared.ContentPack;
+using Robust.Shared.GameObjects;
+using Robust.Shared.IoC;
+using Robust.Shared.Prototypes;
+
+namespace Content.Client
+{
+    /// <summary>
+    /// Content entry point for the generated client (item 73, B-5):
+    /// registers content components + net ids, ignores the server-only
+    /// emitted types, and shows the engine's builtin connect screen.
+    /// </summary>
+    public sealed class EntryPoint : GameClient
+    {
+        public override void Init()
+        {
+            base.Init();
+            var componentFactory = IoCManager.Resolve<IComponentFactory>();
+            componentFactory.RegisterIgnore("DMRuntime");
+            componentFactory.DoAutoRegistrations();
+            componentFactory.GenerateNetIds();
+            IoCManager.Resolve<IPrototypeManager>().RegisterIgnore("dmTile");
+        }
+
+        public override void PostInit()
+        {
+            base.PostInit();
+            // The engine's builtin connect screen: a working connect UI with
+            // no content UI code (Robust debug screen, content-accessible).
+            IoCManager.Resolve<IStateManager>()
+                .RequestStateChange<DebugBuiltinConnectionScreenState>();
+        }
+    }
+}`;
+    fs.writeFileSync(path.join(clientDir, 'EntryPoint.cs'), clientEntryPointCS, 'utf-8');
 
     // 6. Config files — placed under Resources/ConfigFiles so the booted
     //    server (which loads resources from the output directory) finds them.
@@ -260,6 +347,13 @@ namespace Content.Server
     const configDir = path.join(resourcesDir, 'ConfigFiles');
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(path.join(configDir, 'server_config.toml'), `[net]\nport = 1212\n[engine]\ntick_rate = 60\n`, 'utf-8');
+
+    // Client resource manifest (item 73): /manifest.yml is read by the
+    // client (ResourceManifestData) from the content root mount — the
+    // Resources/ dir. autoConnect is the engine default but stated
+    // explicitly since `--connect` depends on it.
+    fs.writeFileSync(path.join(resourcesDir, 'manifest.yml'),
+      `defaultWindowTitle: "dm2ss14"\nautoConnect: true\n`, 'utf-8');
 
     // The engine's content mounts resolve <solution>/RobustToolbox relative
     // to the binary (StartType.Content) — symlink the checkout there when it
