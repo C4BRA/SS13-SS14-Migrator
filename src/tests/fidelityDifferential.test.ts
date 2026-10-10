@@ -1532,6 +1532,31 @@ public static class ConvertedDMProcs
     dm: `/datum/probe/proc/run()
 	return ..() == null`,
     expected: '1'
+  },
+  {
+    // W-I corpus: `x / f(y)` divides by the CALL's result — BYOND resolves
+    // /ident( as a proc invocation, not a typepath, so 40/probe_len(...) is
+    // 40 / 4 = 10. Previously the merged /ident token made the postfix '('
+    // bind to the whole quotient: (40/probe_len)(...) — a call on a number.
+    name: 'x / globalproc(args) divides by the call result',
+    dm: `/proc/probe_len(L)
+	return L.len
+/datum/probe/proc/run()
+	return 40 / probe_len(list(1, 2, 3, 4))`,
+    expected: '10'
+  },
+  {
+    // W-I corpus: same merged-path shape in a statement expression —
+    // the call binds to the last path segment (the divisor), so the
+    // statement evaluates to the quotient of a real call result.
+    name: 'expression stmt x/ident(args) uses call as divisor',
+    dm: `/proc/probe_two()
+	return 2
+/datum/probe/proc/run()
+	var/x = 100
+	x = x/probe_two()
+	return x`,
+    expected: '50'
   }
 ];
 

@@ -301,6 +301,40 @@ async function runPreprocessorTests() {
   parser35.parse();
   assert(parser35.diagnostics.errors.length === 0, 'var/x = expr inside call args parses');
 
+  // Test 36 (W-I corpus): a `{"` template string inside a continuation /
+  // paren-balanced region must close at `"` followed by `}` — its body must
+  // not leak over the following line's tokens (paradise SStickets.dm merged
+  // `/datum/.../Topic(href, href_list)` into the previous proc's expression
+  // when the template state stayed open).
+  const t36 = preprocess('/datum/tickets/proc/message_staff(msg)\n\tsend("[{"A"}]")\n\n/datum/tickets/Topic(href)\n\treturn\n');
+  const parser36 = new DMParser(new DMLexer(t36.out).tokenize());
+  const ast36 = parser36.parse();
+  const decl36 = ast36.find((n: any) => n.path === '/datum/tickets');
+  assert(decl36 !== undefined, 'type decl present');
+  const topic36 = decl36!.procs.find((p: any) => p.name === 'Topic');
+  assert(topic36 !== undefined, 'following /datum/tickets/Topic decl not swallowed by {" template');
+
+  // Test 37 (W-I corpus): multi-line {"..."} template inside macro args —
+  // the arg list must not consume lines after the template's `" }` close.
+  const t37 = preprocess('/datum/d/proc/f()\n\tg(list(\n\t\t{"k"} = 1,\n\t\t"j" = 2\n\t))\n\n/datum/e/proc/h()\n\treturn 1\n');
+  const parser37 = new DMParser(new DMLexer(t37.out).tokenize());
+  const ast37 = parser37.parse();
+  assert(ast37.some((n: any) => n.path === '/datum/e'), 'declaration after multi-line {" template args survives');
+
+  // Test 38 (W-I corpus): `throw <expr>` parses as a ThrowStatement both in
+  // proc bodies and as a single statement — previously it fell into the
+  // expression path and corrupted the following declaration.
+  const src38 = '/datum/d/proc/f()\n\tthrow new /exception("x")\n\treturn 1\n/datum/d/proc/g()\n\tif (1) throw new /exception("y")\n\treturn 2\n';
+  const parser38 = new DMParser(new DMLexer(src38).tokenize());
+  const ast38 = parser38.parse();
+  assert(parser38.diagnostics.errors.length === 0, 'throw parses without errors');
+  const d38 = ast38.find((n: any) => n.path === '/datum/d');
+  const f38 = d38!.procs.find((p: any) => p.name === 'f');
+  assert(f38!.statements.some((s: any) => s.type === 'ThrowStatement'), 'throw in proc body is a ThrowStatement');
+  const g38 = d38!.procs.find((p: any) => p.name === 'g');
+  const if38 = g38!.statements.find((s: any) => s.type === 'IfStatement') as any;
+  assert(if38 !== undefined && if38.thenBranch.some((s: any) => s.type === 'ThrowStatement'), 'single-statement if throw is a ThrowStatement');
+
   fs.rmSync(tmpDir2, { recursive: true, force: true });
   console.log("\n✅ ALL PREPROCESSOR TESTS PASSED!");
 }

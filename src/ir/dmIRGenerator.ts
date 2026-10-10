@@ -121,7 +121,16 @@ export class DMIRGenerator {
               irType.opacity = Boolean(Number(this.coerceTruthy(val)));
               break;
             default:
-              irType.customVars.set(varDecl.name, val);
+              // W-I corpus: DM color vars must serialize to something
+              // Robust's ColorSerializer parses — rgb(r,g,b[,a]) folds to
+              // "#rrggbb[aa]" (what DM evaluates it to at runtime anyway);
+              // non-constant color exprs (color-matrix list(), generator(),
+              // TRUE/FALSE) aren't static colors, so normalize to "null"
+              // rather than letting raw DM text crash prototype loading.
+              irType.customVars.set(varDecl.name,
+                varDecl.name === 'color' || varDecl.name === 'light_color'
+                  ? this.foldColorValue(val)
+                  : val);
               irType.isDynamic = true; // Has custom DM dynamic variable
               break;
           }
@@ -190,6 +199,24 @@ export class DMIRGenerator {
       return val.replace(/^["']|["']$/g, '');
     }
     return val;
+  }
+
+  // W-I corpus: fold a captured DM color initializer into a YAML-safe value.
+  // Hex strings pass through; rgb(r,g,b[,a]) with numeric literals folds to
+  // "#rrggbb[aa]"; anything else returns 'null' (prototype loads with the
+  // default tint instead of failing ColorSerializer).
+  private foldColorValue(val: any): any {
+    if (val === null || val === undefined) return val;
+    const s = String(val).trim();
+    if (s.startsWith('#')) return s;
+    const m = /^rgb\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*(?:,\s*(-?\d+(?:\.\d+)?)\s*)?\)$/i.exec(s);
+    if (!m) return 'null';
+    const ch = (x: string): string => {
+      const n = Math.max(0, Math.min(255, Math.round(Number(x))));
+      return n.toString(16).padStart(2, '0');
+    };
+    const hex = `#${ch(m[1])}${ch(m[2])}${ch(m[3])}`;
+    return m[4] === undefined ? hex : hex + ch(m[4]);
   }
 
   // DM's builtin truth literals (TRUE/FALSE/yes/no) coerce to 1/0 for the
