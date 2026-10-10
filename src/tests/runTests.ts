@@ -213,6 +213,63 @@ async function runTests() {
     gui.stop();
   }
 
+  // W-J (Plan 30): GUI polish endpoints — output browser confinement, SSE
+  // auth, cancel semantics. Own server instance so this block stays additive.
+  {
+    const { GUIServer } = await import('../gui/server.js');
+    const net = await import('net');
+    const freePort = await new Promise<number>((resolve) => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address() as any;
+        srv.close(() => resolve(addr.port));
+      });
+    });
+    const gui = new GUIServer(freePort);
+    gui.start();
+    await new Promise(r => setTimeout(r, 300));
+
+    const rawRequest = (raw: string) => new Promise<string>((resolve) => {
+      const sock = net.createConnection(freePort, '127.0.0.1', () => sock.write(raw));
+      let data = '';
+      sock.on('data', d => { data += d.toString(); });
+      sock.on('end', () => resolve(data));
+      sock.on('error', () => resolve(data));
+    });
+
+    const index = await rawRequest(`GET / HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+    const token = index.match(/AUTH_TOKEN = "([0-9a-f]+)"/)![1];
+    const homeRoot = process.env.HOME || '/tmp';
+    const browseDir = fs.mkdtempSync(path.join(homeRoot, 'dm2ss14-gui-browse-'));
+    try {
+      fs.writeFileSync(path.join(browseDir, 'a.txt'), 'hello');
+      fs.mkdirSync(path.join(browseDir, 'sub'));
+
+      const treeNoToken = await rawRequest(`GET /api/tree?root=${browseDir} HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeNoToken.includes('403'), "Tree without session token rejected (403)");
+      const treeOutside = await rawRequest(`GET /api/tree?token=${token}&root=/etc HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeOutside.includes('403'), "Tree root outside home rejected (403)");
+      const treeOk = await rawRequest(`GET /api/tree?token=${token}&root=${browseDir} HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeOk.includes(' 200 ') && treeOk.includes('"a.txt"') && treeOk.includes('"sub"'), "Tree lists dir entries for a valid root");
+      const treeEscape = await rawRequest(`GET /api/tree?token=${token}&root=${browseDir}&path=.. HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(treeEscape.includes('403'), "Tree path escaping the browse root rejected (403)");
+
+      const fileOk = await rawRequest(`GET /api/file?token=${token}&root=${browseDir}&path=a.txt HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(fileOk.includes('hello'), "File preview returns text content");
+      const fileMissing = await rawRequest(`GET /api/file?token=${token}&root=${browseDir}&path=nope.txt HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(fileMissing.includes('403'), "Missing file path rejected (403, no existence oracle)");
+
+      const eventsNoToken = await rawRequest(`GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nConnection: close\r\n\r\n`);
+      assert(eventsNoToken.includes('403'), "SSE stream without token rejected (403)");
+
+      const cancelIdle = await rawRequest(`POST /api/cancel HTTP/1.1\r\nHost: 127.0.0.1:${freePort}\r\nX-Auth-Token: ${token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
+      assert(cancelIdle.includes('409'), "Cancel with no in-flight convert returns 409");
+    } finally {
+      fs.rmSync(browseDir, { recursive: true, force: true });
+      gui.stop();
+    }
+  }
+
   // Test 5: End-to-End Transpilation to temporary directory
   const tmpInputDir = path.join(process.cwd(), 'temp_test_ss13');
   const tmpOutputDir = path.join(process.cwd(), 'temp_test_ss14');
