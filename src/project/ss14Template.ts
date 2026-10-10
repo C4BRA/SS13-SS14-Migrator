@@ -94,9 +94,53 @@ EndGlobal
   <ItemGroup>
     <ProjectReference Include="..\\SS13.DM.Runtime\\SS13.DM.Runtime.csproj" />
   </ItemGroup>
+  <!-- Engine shared reference (item 74): DMAppearance.cs needs
+       NetSerializableAttribute from Robust.Shared. Same Imports convention
+       as the server/client projects. -->
+  <Import Project="..\\RobustToolbox\\Imports\\Shared.props" />
 </Project>`;
     fs.writeFileSync(path.join(sharedDir, 'Content.Shared.csproj'), sharedCsproj, 'utf-8');
     fs.writeFileSync(path.join(sharedDir, 'DummyShared.cs'), 'namespace Content.Shared { public class Dummy { } }', 'utf-8');
+
+    // Item 74 (B-6): the appearance-data key used by AppearanceComponent
+    // .SetData must serialize over PVS. NetSerializer only registers
+    // [NetSerializable] types from scanned module assemblies (engine +
+    // Content.*) — never the SS13.DM.Runtime library — so the wire enum is
+    // emitted here (member list mirrors SS13.DM.Runtime.DMAppearanceKey).
+    fs.writeFileSync(path.join(sharedDir, 'DMAppearance.cs'), `using System;
+using Robust.Shared.Serialization;
+
+namespace Content.Shared
+{
+    /// <summary>
+    /// Appearance data keys published through AppearanceComponent.SetData
+    /// (item 71/74). Mirror of SS13.DM.Runtime.DMAppearanceKey — enum order
+    /// is wire-stable: append only.
+    /// </summary>
+    [Serializable, NetSerializable]
+    public enum DMAppearanceKey
+    {
+        Icon,
+        IconState,
+        Dir,
+        Color,
+        Alpha,
+        PixelX,
+        PixelY,
+        PixelZ,
+        Layer,
+        Plane,
+        Invisibility,
+        Opacity,
+        MouseOpacity,
+        Overlays,
+        Underlays,
+        Luminosity,
+        LightColor,
+        LightPower,
+        LightRange
+    }
+}`, 'utf-8');
 
     // 4. Content.Server Project — references the REAL RobustToolbox.
     const serverDir = path.join(outputDir, 'Content.Server');
@@ -303,12 +347,17 @@ namespace Content.Client
     //     server-side ConvertedDMSystem; the client's PrototypeManager has no
     //     dmTile kind and an unknown kind fails the WHOLE yaml document,
     //     which would drop every entity prototype.
-    const clientEntryPointCS = `using Robust.Client.State;
+    const clientEntryPointCS = `using System;
+using Robust.Client.Console;
+using Robust.Client.Player;
+using Robust.Client.State;
 using Robust.Client.UserInterface.States;
 using Robust.Shared.ContentPack;
+using Robust.Shared.Enums;
 using Robust.Shared.GameObjects;
 using Robust.Shared.IoC;
 using Robust.Shared.Prototypes;
+using Robust.Shared.Timing;
 
 namespace Content.Client
 {
@@ -319,6 +368,21 @@ namespace Content.Client
     /// </summary>
     public sealed class EntryPoint : GameClient
     {
+        // ==== B-6 (item 74): headless QA autocmd channel ====
+        // The engine's client console never reads stdin (SystemConsoleManager
+        // is server-only), so a headless --connect client can never type a
+        // command. If Resources/autocmds.txt exists, each non-empty line is a
+        // console command the client executes as its own session once InGame
+        // — the SAME path a player typing in the debug console takes
+        // (ExecuteCommand -> ServerDummyCommand -> MsgConCmd -> server
+        // executes with shell.Player = this session). '{attached}'
+        // substitutes the mob uid. (Environment.GetEnvironmentVariable is
+        // sandbox-banned, hence a content file, not an env var.)
+        private string[]? _autoCmds;
+        private int _autoCmdIdx;
+        private bool _autoCmdArmed;
+        private TimeSpan _nextAutoCmdAt;
+
         public override void Init()
         {
             base.Init();
@@ -327,6 +391,11 @@ namespace Content.Client
             componentFactory.DoAutoRegistrations();
             componentFactory.GenerateNetIds();
             IoCManager.Resolve<IPrototypeManager>().RegisterIgnore("dmTile");
+
+            var res = IoCManager.Resolve<IResourceManager>();
+            if (res.ContentFileExists("/autocmds.txt"))
+                _autoCmds = res.ContentFileReadAllText("/autocmds.txt")
+                    .Split('\\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         }
 
         public override void PostInit()
@@ -336,6 +405,28 @@ namespace Content.Client
             // no content UI code (Robust debug screen, content-accessible).
             IoCManager.Resolve<IStateManager>()
                 .RequestStateChange<DebugBuiltinConnectionScreenState>();
+        }
+
+        public override void Update(ModUpdateLevel level, FrameEventArgs frameEventArgs)
+        {
+            base.Update(level, frameEventArgs);
+            if (_autoCmds == null || _autoCmdIdx >= _autoCmds.Length) return;
+            var session = IoCManager.Resolve<IPlayerManager>().LocalSession;
+            if (session?.Status != SessionStatus.InGame) return;
+            var timing = IoCManager.Resolve<IGameTiming>();
+            if (!_autoCmdArmed)
+            {
+                // Give the server-side player-attach (B-1) a beat to spawn
+                // and bind the mob before the first dm* command lands.
+                _autoCmdArmed = true;
+                _nextAutoCmdAt = timing.RealTime + TimeSpan.FromSeconds(2);
+                return;
+            }
+            if (timing.RealTime < _nextAutoCmdAt) return;
+            _nextAutoCmdAt = timing.RealTime + TimeSpan.FromSeconds(1);
+            var cmd = _autoCmds[_autoCmdIdx++]
+                .Replace("{attached}", session.AttachedEntity?.ToString() ?? "0");
+            IoCManager.Resolve<IClientConsoleHost>().ExecuteCommand(null, cmd);
         }
     }
 }`;

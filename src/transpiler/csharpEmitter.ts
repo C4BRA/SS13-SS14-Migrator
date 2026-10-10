@@ -369,6 +369,12 @@ using Robust.Shared.Toolshed;
 using Robust.Shared.Toolshed.Errors;
 using Robust.Shared.Utility;
 using SS13.DM.Runtime;
+// Item 74 (B-6): the AppearanceComponent.SetData key must be a type the
+// net serializer can resolve — [NetSerializable] only registers from the
+// scanned module assemblies (engine + Content.*), never the SS13.DM.Runtime
+// library, so the wire enum lives in Content.Shared. This alias keeps the
+// generated call sites (DMAppearanceKey.Icon ...) unchanged.
+using DMAppearanceKey = Content.Shared.DMAppearanceKey;
 
 namespace Content.Server.DM
 {
