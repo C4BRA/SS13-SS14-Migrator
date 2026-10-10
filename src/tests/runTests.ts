@@ -303,9 +303,15 @@ state "icon"
    assert(dmmMapYaml.includes('version: 7') && dmmMapYaml.includes('tiles: "'), "Chunk tiles are packed as format-7 base64 blobs");
    assert(dmmMapYaml.includes('pos: 1.5, 1.5'), "Entity position is 2D Vector2 at tile center (DM x,y-1 + 0.5)");
    assert(dmmMapYaml.includes('parent: 2'), "Entities are parented to their z-level grid (multi-z => one grid per z)");
+   assert(dmmMapYaml.includes('  0: dm_space'), "Map YAML tilemap maps unset-cell id 0 to dm_space — the engine deserializer resolves EVERY cell (item 74)");
    const entitiesYaml = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'Prototypes', 'converted_entities.yml'), 'utf-8');
    assert(entitiesYaml.includes('- type: dmTile') && entitiesYaml.includes('  dmPath: /turf/simulated/floor'), "Turf prototypes emitted as dmTile defs with dmPath (item 69)");
+   assert(entitiesYaml.includes('id: dm_space'), "dm_space dmTile prototype emitted for unset chunk cells (item 74)");
    assert(entitiesYaml.includes('id: dm_player_mob'), "Player-mob fallback prototype emitted (item 69)");
+   const sharedAppearance = fs.readFileSync(path.join(tmpOutputDir, 'Content.Shared', 'DM', 'DMAppearanceKey.cs'), 'utf-8');
+   assert(sharedAppearance.includes('NetSerializable') && sharedAppearance.includes('enum DMAppearanceKey'), "Content.Shared emits a NetSerializable DMAppearanceKey — AppearanceComponent.SetData keys must serialize over PVS (item 74)");
+   const systemCs = fs.readFileSync(path.join(tmpOutputDir, 'Content.Server', 'DM', 'ConvertedDMSystem.cs'), 'utf-8');
+   assert(systemCs.includes('using Content.Shared.DM;'), "ConvertedDMSystem resolves the shared wire enum (item 74)");
 
     // Test 5g (Plan 20 B5): generated client entry — real Robust.Client boot
     // path so `dotnet run --project Content.Client` connects to the server.
@@ -324,6 +330,10 @@ state "icon"
     assert(fs.existsSync(path.join(tmpOutputDir, 'Resources', 'manifest.yml')), "Resources/manifest.yml emitted — the client resource manifest (item 73)");
     const clientManifest = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'manifest.yml'), 'utf-8');
     assert(clientManifest.includes('autoConnect: true'), "Client manifest enables autoConnect for --connect (item 73)");
+    assert(clientEntry.includes('/autocmds.txt') && clientEntry.includes('ExecuteCommand'), "Client reads autocmds.txt and executes it as the player session (item 74)");
+    assert(clientEntry.includes('SessionStatus.InGame'), "Client autocmds wait for InGame before firing (item 74)");
+    const keybinds = fs.readFileSync(path.join(tmpOutputDir, 'Resources', 'keybinds.yml'), 'utf-8');
+    assert(keybinds.includes('function: ShowDebugConsole') && keybinds.includes('type: State'), "keybinds.yml emitted — windowed debug console is unopenable without it (item 74)");
 
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;

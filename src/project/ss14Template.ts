@@ -303,12 +303,17 @@ namespace Content.Client
     //     server-side ConvertedDMSystem; the client's PrototypeManager has no
     //     dmTile kind and an unknown kind fails the WHOLE yaml document,
     //     which would drop every entity prototype.
-    const clientEntryPointCS = `using Robust.Client.State;
+    const clientEntryPointCS = `using System;
+using Robust.Client.Console;
+using Robust.Client.Player;
+using Robust.Client.State;
 using Robust.Client.UserInterface.States;
 using Robust.Shared.ContentPack;
+using Robust.Shared.Enums;
 using Robust.Shared.GameObjects;
 using Robust.Shared.IoC;
 using Robust.Shared.Prototypes;
+using Robust.Shared.Timing;
 
 namespace Content.Client
 {
@@ -319,6 +324,21 @@ namespace Content.Client
     /// </summary>
     public sealed class EntryPoint : GameClient
     {
+        // ==== B-6 (item 74): headless QA autocmd channel ====
+        // The engine's client console never reads stdin (SystemConsoleManager
+        // is server-only), so a headless --connect client can never type a
+        // command. If Resources/autocmds.txt exists, each non-empty line is a
+        // console command the client executes as its own session once InGame
+        // — the SAME path a player typing in the debug console takes
+        // (ExecuteCommand -> ServerDummyCommand -> MsgConCmd -> server
+        // executes with shell.Player = this session). '{attached}'
+        // substitutes the mob uid. (Environment.GetEnvironmentVariable is
+        // sandbox-banned, hence a content file, not an env var.)
+        private string[]? _autoCmds;
+        private int _autoCmdIdx;
+        private bool _autoCmdArmed;
+        private TimeSpan _nextAutoCmdAt;
+
         public override void Init()
         {
             base.Init();
@@ -327,6 +347,11 @@ namespace Content.Client
             componentFactory.DoAutoRegistrations();
             componentFactory.GenerateNetIds();
             IoCManager.Resolve<IPrototypeManager>().RegisterIgnore("dmTile");
+
+            var res = IoCManager.Resolve<IResourceManager>();
+            if (res.ContentFileExists("/autocmds.txt"))
+                _autoCmds = res.ContentFileReadAllText("/autocmds.txt")
+                    .Split('\\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         }
 
         public override void PostInit()
@@ -336,6 +361,28 @@ namespace Content.Client
             // no content UI code (Robust debug screen, content-accessible).
             IoCManager.Resolve<IStateManager>()
                 .RequestStateChange<DebugBuiltinConnectionScreenState>();
+        }
+
+        public override void Update(ModUpdateLevel level, FrameEventArgs frameEventArgs)
+        {
+            base.Update(level, frameEventArgs);
+            if (_autoCmds == null || _autoCmdIdx >= _autoCmds.Length) return;
+            var session = IoCManager.Resolve<IPlayerManager>().LocalSession;
+            if (session?.Status != SessionStatus.InGame) return;
+            var timing = IoCManager.Resolve<IGameTiming>();
+            if (!_autoCmdArmed)
+            {
+                // Give the server-side player-attach (B-1) a beat to spawn
+                // and bind the mob before the first dm* command lands.
+                _autoCmdArmed = true;
+                _nextAutoCmdAt = timing.RealTime + TimeSpan.FromSeconds(2);
+                return;
+            }
+            if (timing.RealTime < _nextAutoCmdAt) return;
+            _nextAutoCmdAt = timing.RealTime + TimeSpan.FromSeconds(1);
+            var cmd = _autoCmds[_autoCmdIdx++]
+                .Replace("{attached}", session.AttachedEntity?.ToString() ?? "0");
+            IoCManager.Resolve<IClientConsoleHost>().ExecuteCommand(null, cmd);
         }
     }
 }`;
@@ -354,6 +401,13 @@ namespace Content.Client
     // explicitly since `--connect` depends on it.
     fs.writeFileSync(path.join(resourcesDir, 'manifest.yml'),
       `defaultWindowTitle: "dm2ss14"\nautoConnect: true\n`, 'utf-8');
+
+    // Keybinds (item 74): without a content-side Resources/keybinds.yml,
+    // ShowDebugConsole has no default bind and the engine debug console can
+    // never open in a windowed client. KeyBindingType at this pin is
+    // State|Toggle|Command only — a Press bind crashes the client at boot.
+    fs.writeFileSync(path.join(resourcesDir, 'keybinds.yml'),
+      `binds:\n- function: ShowDebugConsole\n  key: Tilde\n  type: State\n`, 'utf-8');
 
     // The engine's content mounts resolve <solution>/RobustToolbox relative
     // to the binary (StartType.Content) — symlink the checkout there when it

@@ -175,6 +175,20 @@ export class YAMLGenerator {
       }
     }
 
+    // Item 74 (B-6): `dm_space` — the tile def every converted map's
+    // `tilemap: 0:` entry points at. Chunk blobs store 0 for cells outside
+    // the DMM region and the engine deserializer resolves every cell
+    // through the tilemap; without this proto the map load throws
+    // KeyNotFoundException. No sprite => renders as engine space; dmPath
+    // /turf gives the empty cells a generic turf datum (BYOND default).
+    prototypes.push({
+      type: 'dmTile',
+      id: 'dm_space',
+      dmPath: '/turf',
+      name: 'dm_space',
+      fields: { friction: 0.2, variants: 1 }
+    });
+
     // Player-mob prototype (item 69, B-1): the entity ConvertedDMSystem
     // attaches joining sessions to. Eye gives the client a camera; the DM
     // datum uses a converted /mob path when the codebase defines one, else

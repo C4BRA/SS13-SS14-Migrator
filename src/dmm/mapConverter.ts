@@ -32,8 +32,14 @@ export class MapConverter {
 
     // yaml tile id -> tile def name (the dmTile prototype id).
     const tileIds = new Map<string, number>();
-    const tilemap: [number, string][] = [];
-    let nextTileId = 1; // 0 is reserved: Tile.Empty
+    // 0 is written for every unset cell in a chunk blob; the engine's
+    // MapChunkSerializer resolves EVERY cell through tileMap[id], so `0`
+    // must map to a registered tile def (same convention as stock maps'
+    // `0: Space`). The emitted `dm_space` dmTile proto has no sprite, so
+    // out-of-map cells render as space; RegisterGrid still mints a generic
+    // /turf datum for them (BYOND world.turf default semantics).
+    const tilemap: [number, string][] = [[0, 'dm_space']];
+    let nextTileId = 1;
     const tileIdFor = (protoId: string): number => {
       const hit = tileIds.get(protoId);
       if (hit !== undefined) return hit;
