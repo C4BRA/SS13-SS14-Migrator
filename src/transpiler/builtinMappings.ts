@@ -25,7 +25,14 @@ export const MAPPED_BUILTINS = [  'sleep', 'spawn', 'qdel', 'locate', 'istype', 
   'regex', 'regex_quote', 'astype', 'isicon', 'icon_states', 'arctan',
   'findlasttext', 'values_sum', 'values_dot', 'values_min', 'values_max',
   'roll', 'winset', 'link', 'gradient', 'vector', 'openToolTip',
-  'closeToolTip', 'browse_rsc', 'ftp'
+  'closeToolTip', 'browse_rsc', 'ftp',
+  // Tier-4 wave: remaining real BYOND builtins (docs/plans/17)
+  'file2text', 'text2file', 'md5', 'addtext', 'trimtext', 'cmptext',
+  'cmptextex', 'findtext_char', 'findlasttext_char', 'splittext_char',
+  'findtextex_char', 'replacetext_char',
+  'nonspantext', 'spantext', 'url_encode', 'url_decode', 'ckeyex',
+  'sorttextex', 'text2ascii_char', 'lerp', 'trunc', 'tan', 'arcsin',
+  'ohearers', 'bounds_dist', 'generator'
 ];
 
 // NOTE: every entry above is LOWERCASE. DM proc names are case-insensitive —
@@ -316,6 +323,59 @@ export function transpileBuiltinCall(name: string, args: string): string | null 
       return `DMRuntimeHelpers.StackTrace(${args})`;
     case 'output':
       return `DMRuntimeHelpers.Output(${args})`;
+    // ==== Tier-4 builtins (docs/plans/17-remaining-builtins.md) ====
+    case 'file2text':
+      return `DMRuntimeHelpers.File2Text(${args})`;
+    case 'text2file':
+      return `DMRuntimeHelpers.Text2File(${args})`;
+    case 'md5':
+      return `DMRuntimeHelpers.Md5(${args})`;
+    case 'addtext':
+      return `DMRuntimeHelpers.AddText(${args})`;
+    case 'trimtext':
+      return `DMRuntimeHelpers.TrimText(${args})`;
+    case 'cmptext':
+      return `DMRuntimeHelpers.CmpText(${args})`;
+    case 'cmptextex':
+      return `DMRuntimeHelpers.CmpTextEx(${args})`;
+    case 'findtext_char':
+      return `DMRuntimeHelpers.FindTextChar(${args})`;
+    case 'findlasttext_char':
+      return `DMRuntimeHelpers.FindLastTextChar(${args})`;
+    case 'splittext_char':
+      return `DMRuntimeHelpers.SplitTextChar(${args})`;
+    case 'findtextex_char':
+      return `DMRuntimeHelpers.FindTextExChar(${args})`;
+    case 'replacetext_char':
+      return `DMRuntimeHelpers.ReplaceTextChar(${args})`;
+    case 'nonspantext':
+      return `DMRuntimeHelpers.NonSpanText(${args})`;
+    case 'spantext':
+      return `DMRuntimeHelpers.SpanText(${args})`;
+    case 'url_encode':
+      return `DMRuntimeHelpers.UrlEncode(${args})`;
+    case 'url_decode':
+      return `DMRuntimeHelpers.UrlDecode(${args})`;
+    case 'ckeyex':
+      return `DMRuntimeHelpers.CKeyEx(${args})`;
+    case 'sorttextex':
+      return `DMRuntimeHelpers.SortTextEx(${args})`;
+    case 'text2ascii_char':
+      return `DMRuntimeHelpers.Text2AsciiChar(${args})`;
+    case 'lerp':
+      return `DMRuntimeHelpers.Lerp(${args})`;
+    case 'trunc':
+      return `DMRuntimeHelpers.Trunc(${args})`;
+    case 'tan':
+      return `DMRuntimeHelpers.Tan(${args})`;
+    case 'arcsin':
+      return `DMRuntimeHelpers.ArcSin(${args})`;
+    case 'ohearers':
+      return `DMRuntimeHelpers.OHearers(${args})`;
+    case 'bounds_dist':
+      return `DMRuntimeHelpers.BoundsDist(${args})`;
+    case 'generator':
+      return `DMRuntimeHelpers.Generator(${args})`;
     default:
       return null;
   }
