@@ -180,22 +180,36 @@ The 12.1–12.11 batches are tracked linearly as items 55–67 in `PLAN.md` (uni
 Corpora (master @ 2026-07): tgstation 7,440 .dm · tgmc 2,612 · paradise 3,779 · beestation 5,195  
 under `~/Documents/antigravity/ss13-audit-corpora/`.
 
-### Latest corpus snapshot (Plan 12)
+### Latest corpus snapshot (refreshed Oct 2026 — 5 corpora incl. baystation)
 
-| | tgstation | tgmc | paradise | beestation |
-|---|---:|---:|---:|---:|
-| Parse errors | 0 | 0 | 0 | 0 |
-| Types / procs | 46,995 / 64,794 | 26,853 / 23,519 | 28,849 / 38,763 | 34,803 / 44,822 |
-| Reported loss | **54,160** | **26,928** | **39,362** | **45,043** |
-| Unresolved bare | 407 | 328 | 552 | 468 |
-| Stubbed builtins | 4,172 | 2,939 | 3,584 | 4,564 |
+| | tgstation | baystation | paradise | tgmc | beestation |
+|---|---:|---:|---:|---:|---:|
+| Parse errors | 14 * | **0** (was 259) | 0 | 0 | 183 * |
+| Types / procs | 49,102 / 67,350 | 25,305 / 26,976 | 29,408 / 39,866 | 27,035 / 24,071 | 35,524 / 46,192 |
+| Reported loss | 26,136 | 18,153 | 23,229 | 15,928 | 24,522 |
+| Unresolved bare | 139 | 494 | 348 | 177 | 220 |
+| Stubbed builtins | 4,209 | 3,336 | 2,510 | 2,112 | 3,606 |
+| Convert exit | 0 | 0 | 0 | 0 | 0 |
+| `dotnet build` | 0 errors | 0 errors | 0 errors | 0 errors | 0 errors |
+
+\* tg + bee errors are confined to `tools/` (intentionally malformed linter fixtures
+and 3rd-party libs, not game code). Bay parse was onboarded in this wave: 7 real
+gaps fixed (slash-regex literals, operator-overload proc family, wrong-arity macro
+expansion, expression-position `var/x = e`, brace-type-block closer consumption,
+for-in bare-path loop vars, #if in continuations) → its unresolved bucket collapsed
+8,960 → 494 (`to_chat` was hidden behind a parse-error file).
+
+Compile-proof: **5/5 corpora** emit solutions that build against pinned
+RobustToolbox (9cefa116) with 0 C# errors; tg + paradise + converted fixture reach
+server Ready (boot-smoke PASS, spawn-bridge materializes DM atoms, DM world/New
+executes). Speed: full-corpus convert on paradise = 22.2s wall (was 62.5s, B-8).
 
 JSON history: `docs/audit/10-tgstation-audit.json`, `11-tgstation-audit-post.json`,
-`12-baseline-*.json`.
+`12-baseline-*.json`, `docs/audit/13-baystation-audit.json`.
 
 ### Probe suite
 
-**157/157 passing.** Core semantics (truthiness, lists, `..()`, short-circuit,
+**191/191 passing** (engine-free differential probes). Core semantics (truthiness, lists, `..()`, short-circuit,
 ranges, text, json_encode escapes, float division provenance, step-range continue)
 plus builtin batches and Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …)
 item-58 (default args omitted/overridden/expression, assoc identifier keys) and item-59 (labeled continue/break).
@@ -203,12 +217,12 @@ item-58 (default args omitted/overridden/expression, assoc identifier keys) and 
 ### Loss scoreboard (tgstation, honest view — post-12.1)
 
 ```
-totalLossSites (12.1: false counters removed)    30,020
+totalLossSites (12.1: false counters removed)    26,136 (tg, Oct-2026)
   heavy real buckets:
-    new (partial)                 12,872
-    broken props (loc only)          3,229
-    stubs                          4,172
-    unresolved bare                  407
+    new (partial)                 ~12,9k
+    broken props (loc only)          ~3.2k (datum-level .loc now real — B-1)
+    stubs                          4,209
+    unresolved bare                  139
     as / set / client / verb / …    rest
 ```
 

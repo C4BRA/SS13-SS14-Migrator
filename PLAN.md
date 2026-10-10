@@ -253,20 +253,32 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       flake). Repo gates committed: `npm run audit:parse` (per-corpus parse gate) and
       `npm run boot:smoke` (fixture convert → build → boot → Ready, 0 errors;
       degrades gracefully without the engine).
-69. [~] **B-1 — Entity integration wave (critical path).** FIRST INCREMENT DONE: the
-      runtime↔engine spawn bridge — a DM `new` on an atom type (`/obj|/mob|/turf|/area`)
-      now materializes a real SS14 entity (DMRuntimeComponent binding, `EntityId`,
-      datum loc var); `world/New` runs once at startup (EntryPoint.PostInit → StartWorld
-      — EntitySystem.Update never fires at this pin); a default map is created; the map
-      converter's tile/object ids align with the generated prototype ids; atom types
-      get DMRuntime components in the YAML. Verified by `npm run boot:smoke` (spawn
-      bridge assertion). REMAINING: loc chains (item 62's `.loc`), movement
-      (x/y ↔ transform), map-spawned turf/object runtimes, player mob. Files: runtime
-      template, `ConvertedDMSystem.cs`, `ss14Template.ts`, `mapConverter.ts`,
-      `yamlGenerator.ts`.
-70. [ ] **B-2 — World/tick/time layer.** `world.time` live on the engine tick; DM
-      `sleep`/`spawn`/timers driven by the tick loop; subsystem cadence (SS13
-      subsystem scheduling). Files: runtime template, engine adapter.
+69. [x] **B-1 — Entity integration wave (critical path).** DONE (PRs on master):
+      spawn bridge (DM `new` on atoms → real entities, `EntityId` binding); datum-level
+      containment — `.loc`/`contents` computed membership, `MoveAtomTo` single move
+      path, `Enter`/`Entered`/`Exit`/`Exited` hooks, `for (var/o in x)` iterates
+      contents; x/y/z vars live read/write with engine transform bridges
+      (`EntityMove/Coord/AttachBridge`); map converter rewritten for pinned format 6
+      (proto-grouped entities, 16x16 format-7 chunk blobs, per-z grids parented to one
+      map entity, `dmTile` ITileDefinition protos + per-tile DMRuntime datums on load);
+      player mob — `dm_player_mob` prototype + `PlayerStatusChanged` attach
+      (Connected→JoinGame, InGame→spawn+attach). Also folded in: label-name dedup
+      (CS0140) and `get_step_*` optional args (CS1501) found by bay compile-proof.
+      +11 probes (182/182). boot-smoke PASS incl. spawn-bridge assertion.
+      Known limits (docs/plans/14-b1-entity.md): attach wired but unexercised (needs
+      live client), step→transform round-trip unexercised, tile sprites unmapped,
+      `loc=null` positional approximation, SetTile tiles get no datum.
+70. [x] **B-2 — World/tick/time layer.** DONE: DM game-time `DMTickScheduler`
+      advanced by `ConvertedDMSystem.Update` (root-caused the "Update never fired"
+      note — `EntitySystemManager` only calls Update on systems that declare it) with
+      a whole-tick wall-clock fallback for probes. `world.time`/`realtime`/`tick_lag`/
+      `fps` live (tick grid + BYOND era + fps↔tick_lag link); sleep/spawn schedule in
+      ds rounded onto the tick grid, same-tick FIFO, `spawn(0)`/`sleep(0)` end-of-pass
+      yields; `RegisterTickCallback`+`RegisterSubsystems` give `/datum/controller*`
+      fire/process per-DM-tick cadence honoring `wait`. +9 probes (191/191 merged
+      suite). Known limits: `spawn(-1)` half unmodeled, `world.time` write stored not
+      read, mid-run `tick_lag` change approximates, subsystem `priority`/`flags`
+      ignored (docs/plans/16-b2-tick.md).
 71. [ ] **B-3 — Rendering/appearance layer.** Sprites/RSI on entities, overlays,
       `animate()`/`flick()` (the remaining appearance stubs), lighting basics. The
       visual layer behind "visibly rendered". Files: `ConvertedDMSystem.cs`, runtime.
@@ -277,8 +289,16 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
 74. [ ] **B-6 — M1 gate: minimum playable demo.** One converted map, a player mob that
       spawns, moves, and interacts with one object, visibly rendered — the north-star
       acceptance test for B-1..B-5.
-75. [ ] **B-7 — Fidelity + loss reduction.** Refresh the 4-corpus fidelity scoreboard
-      (tgmc/paradise/bee rows are stale), attack the remaining buckets (`.loc` 3,229,
-      stubs 4,172, unresolved 138). Files: `fidelityAudit.ts`, runtime.
-76. [ ] **B-8 — Speed.** Worker-thread parallel parse + DMI conversion (files are
-      independent; the audit measured the parse as the dominant stage). Files: `index.ts`.
+75. [~] **B-7 — Fidelity + loss reduction.** Scoreboard REFRESHED on 5 corpora
+      (Oct-2026 heads, baystation onboarded — see AUDIT.md): bay parse 259 errors → 0
+      (7 lexer/parser/preprocessor gaps fixed — slash-regex literals, operator-overload
+      procs, wrong-arity macro expansion, etc.) which collapsed its unresolved bucket
+      8,960 → 494 and freed blocked code into the IR. Builtins-expansion wave in flight
+      targeting unresolved/stubbed across all corpora. Remaining heavy buckets:
+      `new` partial-args, stubs (~2.1-4.2k per corpus), `new` loc semantics.
+76. [x] **B-8 — Speed.** DONE: `src/parallel/` worker_threads pool fans out
+      preprocess→lex→parse + DMI→RSI + DMM→map per file; `--jobs/-j` (0=auto cap 16,
+      1=sequential, output byte-identical — `diff -r` over 1.2GB paradise trees = 0
+      diffs, determinism test added). Paradise 62.5s → 22.2s wall (**2.8×**) on 8
+      cores; DMI was the real bottleneck (36.3s→5.9s), not parse (12.0s→4.7s). Emit
+      stays serial (~8s, now dominant — flagged in docs/plans/15-b8-speed.md).
