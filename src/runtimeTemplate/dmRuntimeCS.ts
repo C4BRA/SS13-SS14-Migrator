@@ -3954,6 +3954,13 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static DMValue UrlEncode(DMValue value) => DMValue.FromString(DmUrlEncode(value.ToString()));
 
+        // B-4 (item 72): BYOND 515's url_encode(text, format) — paradise's
+        // async input uses format 1 (href-safe fast encode). The extra arg
+        // selects an encoding mode BYOND-side; our single encoder is already
+        // RFC 3986-percent-encoding, so the overload accepts and documents
+        // the approximation rather than failing the corpus build (CS1501).
+        public static DMValue UrlEncode(DMValue value, DMValue format) => DMValue.FromString(DmUrlEncode(value.ToString()));
+
         /// <summary>
         /// DM url_decode(text): decode %XX escapes; '+' decodes as a space
         /// (DM's URL convention, matching params2list).
