@@ -261,16 +261,177 @@ export class DMPreprocessor {
 
   // Join backslash-continued lines so multi-line #define bodies are treated as
   // a single logical line.
+  //
+  // Conditional directives (#if/#ifdef/#else/#endif) can appear INSIDE a
+  // continuation — BYOND evaluates them mid-statement, dropping the inactive
+  // continuation segments (baystation ZAS/Diagnostic.dm keeps two list
+  // entries behind `#ifdef MULTIZAS`). They are resolved here with a local
+  // frame stack, mirroring joinParenBlocks: frames may only be opened and
+  // closed within a single join. A directive that would pop a frame the join
+  // did not open (e.g. `#endif` for an `#ifdef` that began outside the
+  // continued statement) terminates the join and is left for the main loop,
+  // which owns the real condStack.
   private joinContinuations(lines: string[]): string[] {
     const out: string[] = [];
+    const condFrames: CondFrame[] = [];
+    const isActive = (): boolean => condFrames.length === 0 || condFrames[condFrames.length - 1].active;
+    // Continuation-embedded #if/#ifdef need the same sequential view of the
+    // file's own defines and outer conditionals the main loop gets — but this
+    // pass runs BEFORE it, so file-level directive lines are simulated here:
+    // #if-family lines track outer frames (so #define inside an inactive
+    // region stays undefined) and #define/#undef update the macro maps in
+    // order. In the production pipeline the collected-define seed usually
+    // covers this; the simulation makes single-file processing match BYOND.
+    const fileFrames: CondFrame[] = [];
+    const fileActive = (): boolean => fileFrames.length === 0 || fileFrames[fileFrames.length - 1].active;
+    let simInBlockComment = false;
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i];
+      const topTrim = line.trim();
+      if (simInBlockComment) {
+        if (topTrim.includes('*/')) simInBlockComment = false;
+      } else if (topTrim.startsWith('/*') && !topTrim.includes('*/')) {
+        simInBlockComment = true;
+      } else if (!simInBlockComment && topTrim.startsWith('#')) {
+        const dm = topTrim.match(/^#(\w+)(.*)$/);
+        const name = dm ? dm[1] : '';
+        const arg = (dm ? DMPreprocessor.stripInlineComment(dm[2]) : '').trim();
+        switch (name) {
+          case 'if':
+          case 'ifdef':
+          case 'ifndef': {
+            const value =
+              name === 'ifdef' ? this.defines.has(arg) || this.functionDefines.has(arg)
+                : name === 'ifndef' ? !this.defines.has(arg) && !this.functionDefines.has(arg)
+                  : this.evalIf(arg);
+            const parentActive = fileActive();
+            fileFrames.push({ parentActive, branchTaken: parentActive && value, active: parentActive && value });
+            break;
+          }
+          case 'elif': {
+            const frame = fileFrames[fileFrames.length - 1];
+            if (frame && frame.parentActive) {
+              if (frame.branchTaken) {
+                frame.active = false;
+              } else {
+                const value = this.evalIf(arg);
+                frame.active = value;
+                if (value) frame.branchTaken = true;
+              }
+            }
+            break;
+          }
+          case 'else': {
+            const frame = fileFrames[fileFrames.length - 1];
+            if (frame && frame.parentActive) {
+              if (frame.branchTaken) {
+                frame.active = false;
+              } else {
+                frame.active = true;
+                frame.branchTaken = true;
+              }
+            }
+            break;
+          }
+          case 'endif':
+            fileFrames.pop();
+            break;
+          case 'define': {
+            if (!fileActive()) break;
+            const dd = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\((.*?)\))?\s*(.*)$/);
+            if (!dd) break;
+            // Peek ahead for a multi-line body WITHOUT consuming the lines —
+            // they are still emitted for the main loop's real directive pass.
+            let body = dd[3];
+            let k = i + 1;
+            while (k < lines.length && !DMPreprocessor.isBalancedDefineBody(body)) {
+              body += '\n' + lines[k++];
+            }
+            const bodyClean = DMPreprocessor.stripInlineComment(body).trim();
+            this.ensureOwnDefines();
+            if (dd[2] !== undefined) {
+              const params = this.splitArgs(dd[2]).map(p => p.trim()).filter(p => p.length > 0);
+              let variadic = false;
+              const cleanParams: string[] = [];
+              for (const p of params) {
+                if (p === '...') {
+                  variadic = true;
+                } else if (p.endsWith('...')) {
+                  variadic = true;
+                  cleanParams.push(p.slice(0, -3));
+                } else {
+                  cleanParams.push(p);
+                }
+              }
+              this.functionDefines.set(dd[1], { params: cleanParams, variadic, body: bodyClean });
+            } else {
+              this.defines.set(dd[1], bodyClean);
+            }
+            break;
+          }
+          case 'undef': {
+            if (!fileActive()) break;
+            this.ensureOwnDefines();
+            this.defines.delete(arg);
+            this.functionDefines.delete(arg);
+            break;
+          }
+        }
+      }
       let lastChar = line.trimEnd().slice(-1);
       while (lastChar === '\\' && i + 1 < lines.length) {
+        const nextTrimmed = lines[i + 1].trim();
+        if (nextTrimmed.startsWith('#')) {
+          const dm = nextTrimmed.match(/^#(\w+)(.*)$/);
+          const name = dm ? dm[1] : '';
+          const arg = (dm ? dm[2] : '').trim();
+          if (name === 'if' || name === 'ifdef' || name === 'ifndef') {
+            const value =
+              name === 'ifdef' ? this.defines.has(arg) || this.functionDefines.has(arg)
+                : name === 'ifndef' ? !this.defines.has(arg) && !this.functionDefines.has(arg)
+                  : this.evalIf(arg);
+            const parentActive = isActive();
+            condFrames.push({ parentActive, branchTaken: parentActive && value, active: parentActive && value });
+            i++;
+            continue;
+          }
+          if (name === 'elif' || name === 'else' || name === 'endif') {
+            const frame = condFrames[condFrames.length - 1];
+            if (!frame) {
+              // Belongs to a conditional the main loop owns: end the join so
+              // the directive reaches the main loop as its own line. Strip
+              // the dangling '\' — the continuation is interrupted.
+              line = line.trimEnd().slice(0, -1).trimEnd();
+              break;
+            }
+            i++;
+            if (name === 'endif') {
+              condFrames.pop();
+            } else if (frame.parentActive) {
+              if (frame.branchTaken) {
+                frame.active = false;
+              } else {
+                const value = name === 'elif' ? this.evalIf(arg) : true;
+                frame.active = value;
+                if (value) frame.branchTaken = true;
+              }
+            }
+            continue;
+          }
+          // Non-conditional directives (#define/#include/...) inside a
+          // continued statement are glued verbatim, as before.
+        }
+        if (!isActive()) {
+          i++; // inactive continuation segment: drop the line, join stays open
+          continue;
+        }
         line = line.slice(0, line.trimEnd().length - 1) + ' ' + lines[++i].trimStart();
         lastChar = line.trimEnd().slice(-1);
       }
       out.push(line);
+    }
+    if (condFrames.length > 0) {
+      this.collector.error('Unterminated #if/#ifdef inside line continuation', 1, 1);
     }
     return out;
   }
@@ -311,19 +472,35 @@ export class DMPreprocessor {
                 : name === 'ifndef' ? !this.defines.has(arg) && !this.functionDefines.has(arg)
                   : this.evalIf(arg);
             condFrames.push({ parentActive, branchTaken: parentActive && value, active: parentActive && value });
-          } else if (name === 'elif' || name === 'else') {
+            i++;
+            continue;
+          }
+          if (name === 'elif' || name === 'else' || name === 'endif') {
             const frame = condFrames[condFrames.length - 1];
-            if (frame && frame.parentActive) {
+            if (!frame) {
+              // Belongs to a conditional the main loop owns (e.g. #if 0
+              // wrapping this whole expression): the join must END here or
+              // the directive — and everything after it — is swallowed into
+              // dead text (bay Diagnostic.dm-shaped dead code).
+              break;
+            }
+            if (frame.parentActive) {
               if (frame.branchTaken) {
                 frame.active = false;
               } else {
-                frame.active = true;
-                frame.branchTaken = true;
+                const value = name === 'elif' ? this.evalIf(arg) : true;
+                frame.active = value;
+                if (value) frame.branchTaken = true;
               }
             }
-          } else if (name === 'endif') {
-            condFrames.pop();
+            if (name === 'endif') {
+              condFrames.pop();
+            }
+            i++;
+            continue;
           }
+          // Non-conditional directives (#define/#include/...) inside a paren
+          // block keep the historical behavior: consumed and dropped.
           i++;
           continue;
         }
@@ -462,7 +639,31 @@ export class DMPreprocessor {
           const nextCh = line[i + 1];
           const isRaw = nextCh === '@';
           const isRegex = nextCh !== '"' && nextCh !== "'" && !/[\s]/.test(nextCh ?? '');
-          if (isRaw || isRegex) {
+          if (nextCh === '/') {
+            // @/pattern/ slash-delimited regex (BYOND 513+): ends at an
+            // unescaped '/' outside [class]. The pattern's parens and quote
+            // chars are content — skipping them keeps the balance true
+            // (baystation goonchat browserOutput.dm: ICONSTATE='([^']+)').
+            let j = i + 2;
+            let inClass = false;
+            let classStart = -1;
+            while (j < line.length) {
+              const c = line[j];
+              if (c === '\\') {
+                j += 2;
+                continue;
+              }
+              if (!inClass && c === '/') break;
+              if (c === '[') {
+                inClass = true;
+                classStart = j;
+              } else if (inClass && c === ']' && j > classStart + 1) {
+                inClass = false;
+              }
+              j++;
+            }
+            i = j;
+          } else if (isRaw || isRegex) {
             let j = i + (isRaw ? 2 : 1);
             while (j < line.length) {
               if (line[j] === '@') {
@@ -687,6 +888,32 @@ export class DMPreprocessor {
         result += line.slice(i);
         break;
       }
+      if (!inString && !inIcon && ch === '@' && line[i + 1] === '/') {
+        // @/pattern/ regex literal: the pattern's quote and paren chars are
+        // content — copy it verbatim or a stray ' toggles icon state for the
+        // rest of the line (baystation goonchat browserOutput.dm).
+        let j = i + 2;
+        let inClass = false;
+        let classStart = -1;
+        while (j < line.length) {
+          const c = line[j];
+          if (c === '\\') {
+            j += 2;
+            continue;
+          }
+          if (!inClass && c === '/') break;
+          if (c === '[') {
+            inClass = true;
+            classStart = j;
+          } else if (inClass && c === ']' && j > classStart + 1) {
+            inClass = false;
+          }
+          j++;
+        }
+        result += line.slice(i, j);
+        i = j;
+        continue;
+      }
       if (ch === '"' && !inIcon) {
         inString = !inString;
         result += ch;
@@ -815,13 +1042,24 @@ export class DMPreprocessor {
           if (k < line.length && line[k] === '(') {
             const end = this.findMatchingParen(line, k);
             if (end >= 0 && depth < MAX_MACRO_EXPANSION_DEPTH && this.macroExpansionBudget > 0) {
-              this.macroExpansionBudget--;
               const argText = line.slice(k + 1, end);
-              const args = this.splitArgs(argText).map(a => a.trim());
-              const expanded = this.expandFunctionMacro(fnMacro, args);
-              result += this.expandMacros(expanded, depth + 1, cmt);
-              i = end + 1;
-              continue;
+              const args = argText.trim() === '' ? [] : this.splitArgs(argText).map(a => a.trim());
+              // BYOND requires the exact declared arity for non-variadic
+              // macros (a variadic tail absorbs the extras, but every named
+              // param must still be supplied). A mismatched call site is a
+              // same-named PROC call, not a macro use — expanding it injects
+              // the body with empty substitutions and produces garbage:
+              // baystation's `check()` calls the local proc while a later
+              // file defines `#define check(c) (c && c.valid())`.
+              const required = fnMacro.variadic ? Math.max(0, fnMacro.params.length - 1) : fnMacro.params.length;
+              const arityOk = fnMacro.variadic ? args.length >= required : args.length === fnMacro.params.length;
+              if (arityOk) {
+                this.macroExpansionBudget--;
+                const expanded = this.expandFunctionMacro(fnMacro, args);
+                result += this.expandMacros(expanded, depth + 1, cmt);
+                i = end + 1;
+                continue;
+              }
             }
           }
           // Not a call site (or depth/budget exhausted) — leave the word as-is

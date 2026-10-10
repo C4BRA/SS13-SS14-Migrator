@@ -161,6 +161,12 @@ export class DMLexer {
         tokens.push(this.readRegex());
         continue;
       }
+      if (ch === '@' && this.peek() === '/') {
+        // DM regex literal: @/pattern/ — slash-delimited (BYOND 513+). The
+        // '/' is literal inside a [character class] and after a backslash.
+        tokens.push(this.readSlashRegex());
+        continue;
+      }
       if (ch === '@' && this.peek() === '{') {
         // @{"..."} template-string prefix: the { is the template opener and
         // must not fall into the raw-@ branch below (item 56 — readRegex
@@ -618,6 +624,47 @@ export class DMLexer {
         this.advance();
         closed = true;
         break;
+      }
+      str += ch;
+      this.advance();
+    }
+    if (!closed) {
+      this.diagnostics.error('Unterminated regex literal', startLine, startCol);
+    }
+    return { type: TokenType.StringLiteral, value: str, line: startLine, column: startCol };
+  }
+
+  // DM regex literal: @/pattern/ (slash-delimited). The pattern ends at an
+  // unescaped '/' outside a [character class]; a '\' escapes the next char
+  // and a newline without a closing '/' is unterminated.
+  private readSlashRegex(): Token {
+    const startLine = this.line;
+    const startCol = this.col;
+    this.advance(); // @
+    this.advance(); // /
+    let str = '';
+    let closed = false;
+    let inClass = false;
+    let classStart = -1;
+    while (this.pos < this.input.length) {
+      const ch = this.input[this.pos];
+      if (ch === '\n' || ch === '\r') break;
+      if (ch === '\\') {
+        str += ch + (this.input[this.pos + 1] ?? '');
+        this.advance();
+        this.advance();
+        continue;
+      }
+      if (!inClass && ch === '/') {
+        this.advance();
+        closed = true;
+        break;
+      }
+      if (ch === '[') {
+        inClass = true;
+        classStart = this.pos;
+      } else if (inClass && ch === ']' && this.pos > classStart + 1) {
+        inClass = false;
       }
       str += ch;
       this.advance();

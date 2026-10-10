@@ -212,10 +212,12 @@ export class DMParser {
         if (procMatch) {
           const ownerPath = procMatch[1];
           let procName = procMatch[3];
-          // Operator overloads: /datum/x/proc/operator+=(A) — the compound
-          // operator token follows the path and is part of the name (item 56).
-          if (this.isType(TokenType.Operator) &&
-              ['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '||=', '&&='].includes(this.peek().value)) {
+          // Operator overloads: /datum/x/proc/operator+=(A) — the operator
+          // token follows the path and is part of the name (item 56). The
+          // full DM overload family is accepted: +, -, *, /, %, &, |, ^, <<,
+          // >>, <, >, <=, >=, ==, <>, !, ~, ++, -- and the compound-assign
+          // forms (baystation _shared_list.dm operator+, operator|).
+          if (procName === 'operator' && this.isType(TokenType.Operator)) {
             procName += this.advance().value;
           }
           // operator[](A) — the bracket pair is punctuation (item 59: the
@@ -223,6 +225,12 @@ export class DMParser {
           // sanitized downstream).
           if (this.isType(TokenType.Punctuation) && this.peek().value === '[') {
             procName += this.advance().value + this.advance().value; // [ ]
+          }
+          // operator[]=(index, value) — the index-assignment overload carries
+          // a '=' between the brackets and the arg list (baystation
+          // _shared_list.dm).
+          if (procName.endsWith('[]') && this.peek().value === '=' && this.peekNext()?.value === '(') {
+            procName += this.advance().value;
           }
           const ownerNode = this.getOrCreateTypeNode(ownerPath, typeDecls);
 
@@ -658,6 +666,12 @@ export class DMParser {
       if (token.type === TokenType.Newline && depth === 0) break;
       if (token.type === TokenType.Dedent && depth === 0) break;
       if (token.type === TokenType.Punctuation && token.value === ';' && depth === 0) break;
+      // A stray closer at depth 0 ends the initializer but must NOT be
+      // consumed: a '}' is the legitimate end of a brace-form type block
+      // (/datum/x{ var = 1 }) and has to reach parseTypeBlock's closing
+      // check — eating it left the type block open and swallowed every
+      // following declaration (baystation recipes_furniture.dm).
+      if (token.type === TokenType.Punctuation && (token.value === ')' || token.value === ']' || token.value === '}') && depth === 0) break;
       if (token.type === TokenType.Indent || token.type === TokenType.Newline) {
         // Inside multiline list()/bracket initializers, indentation and
         // newlines are just whitespace (classic DM allows lists to span lines).
@@ -667,15 +681,7 @@ export class DMParser {
       }
       const value = this.advance().value;
       if (value === '(' || value === '[' || value === '{') depth++;
-      else if (value === ')' || value === ']' || value === '}') {
-        // A stray closer at depth 0 is an error in the source, not a signal
-        // to swallow the following declaration — clamp at 0 and stop (WS2-6).
-        if (depth <= 0) {
-          parts.push(value);
-          break;
-        }
-        depth--;
-      }
+      else if (value === ')' || value === ']' || value === '}') depth--;
       // StringLiteral token values arrive unquoted; restore the quotes so the
       // captured text round-trips through the lexer in parseInitializerTextToExpr
       // (otherwise "hello world" re-lexes as two bare identifiers).
@@ -1341,6 +1347,25 @@ export class DMParser {
     let loopVarType = '';
     if (this.isType(TokenType.Identifier)) {
       loopVar = this.advance().value;
+    } else if (this.isType(TokenType.TypePath) ||
+               (this.isType(TokenType.Keyword) && this.peek().value !== 'var' && this.peek().value !== 'in' && this.peekNext()?.value !== '(')) {
+      // for(mob in list) / for(mob/M in list) — DM sugar where a bare type
+      // path is the loop variable: the last segment names the var and the
+      // path (or the bare keyword alone, as /mob) is its type filter
+      // (baystation randomverbs.dm `for (mob in GLOB.player_list)`).
+      const headTok = this.advance();
+      let head = headTok.value;
+      if (this.isType(TokenType.TypePath)) {
+        head += this.advance().value; // keyword + /name (mob/M, obj/item/x)
+      }
+      const lastSlash = head.lastIndexOf('/');
+      if (lastSlash > 0) {
+        loopVarType = '/' + head.substring(0, lastSlash).replace(/^\//, '');
+        loopVar = head.substring(lastSlash + 1);
+      } else {
+        loopVar = head;
+        if (headTok.type === TokenType.Keyword) loopVarType = '/' + head;
+      }
     } else if (this.peek().value === 'var') {
       // for(var/i in list) or for(var i in list)
       this.advance();
@@ -2100,6 +2125,37 @@ export class DMParser {
       if (token.value === 'FALSE' || token.value === 'false') {
         this.advance();
         return { type: 'literal', value: false, literalType: 'bool' };
+      }
+      // var/type/name = expr in expression position (call arguments, if()
+      // conditions): DM declares the var in the enclosing scope and the
+      // expression evaluates to the assigned value — e.g. baystation's
+      // UNLINT(var/weakref/dw = data[i]). Emitted as an assignment node:
+      // the declaration itself is an accepted loss (the name still resolves).
+      if (token.value === 'var') {
+        this.advance();
+        let varName = '';
+        if (this.isType(TokenType.TypePath)) {
+          const pathVal = this.advance().value;
+          const lastSlash = pathVal.lastIndexOf('/');
+          varName = lastSlash > 0 ? pathVal.substring(lastSlash + 1) : pathVal.replace(/^\//, '');
+        } else if (this.isType(TokenType.Identifier)) {
+          const next = this.peekNext();
+          if (next && next.type === TokenType.Operator && next.value === '/') {
+            this.advance(); // bare type name
+            this.advance(); // /
+            if (this.isType(TokenType.Identifier) || this.isType(TokenType.Keyword)) {
+              varName = this.advance().value;
+            }
+          } else {
+            varName = this.advance().value;
+          }
+        } else if (this.isType(TokenType.Keyword)) {
+          varName = this.advance().value;
+        }
+        if (this.matchOperator('=')) {
+          return this.parsePostfix({ type: 'assignment', target: varName, value: this.parseExpression() });
+        }
+        return this.parsePostfix({ type: 'variable', name: varName || 'var' });
       }
       // usr, src, args, and common type keywords used as identifiers
       if (['usr', 'src', 'args', 'global', 'world', 'turf', 'mob', 'obj', 'area', 'datum', 'atom', 'client', 'proc', 'verb', 'icon', 'sound', 'tmp', 'qdel'].includes(token.value)) {
