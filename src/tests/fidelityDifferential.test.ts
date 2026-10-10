@@ -1309,6 +1309,117 @@ public static class ConvertedDMProcs
 }
 }`
     }
+  },
+  // ==== Fidelity wave-2 probes (docs/plans/25) — locate + movement + misc ====
+  {
+    name: 'locate(x,y,z) returns the turf at those coords',
+    dm: `/datum/probe/proc/run()\n\tvar/turf/t = new /turf()\n\tt.x = 12\n\tt.y = 34\n\tt.z = 1\n\treturn locate(12, 34, 1) == t`,
+    expected: '1'
+  },
+  {
+    name: 'locate(/type) finds the first live datum of that type',
+    dm: `/datum/probe/proc/run()\n\tvar/datum/probe/d = new /datum/probe()\n\treturn locate(/datum/probe) == d`,
+    expected: '1'
+  },
+  {
+    name: 'locate(X, container) searches contents recursively',
+    dm: `/datum/probe/proc/run()\n\tvar/obj/c = new /obj()\n\tvar/obj/i = new /obj()\n\ti.loc = c\n\treturn locate(i, c) == i`,
+    expected: '1'
+  },
+  {
+    name: 'locate misses return null',
+    dm: `/datum/probe/proc/run()\n\treturn locate(77, 77, 77)`,
+    expected: 'null'
+  },
+  {
+    name: 'step_to moves one step toward the target',
+    dm: `/datum/probe/proc/run()\n\tvar/mob/m = new /mob()\n\tvar/mob/t = new /mob()\n\tm.x = 10\n\tm.y = 10\n\tt.x = 14\n\tt.y = 10\n\tstep_to(m, t)\n\treturn m.x`,
+    expected: '11'
+  },
+  {
+    name: 'step_to inside trange returns 1 without moving',
+    dm: `/datum/probe/proc/run()\n\tvar/mob/m = new /mob()\n\tvar/mob/t = new /mob()\n\tm.x = 10\n\tm.y = 10\n\tt.x = 12\n\tt.y = 10\n\tstep_to(m, t, 5)\n\treturn m.x`,
+    expected: '10'
+  },
+  {
+    name: 'step_rand lands on an adjacent tile',
+    dm: `/datum/probe/proc/run()\n\tvar/mob/m = new /mob()\n\tm.x = 20\n\tm.y = 20\n\tstep_rand(m)\n\treturn (abs(m.x - 20) <= 1) && (abs(m.y - 20) <= 1) && (m.x != 20 || m.y != 20)`,
+    expected: '1'
+  },
+  {
+    name: 'walk() keeps stepping the atom each tick',
+    dm: `/datum/probe/proc/run()\n\tvar/mob/m = new /mob()\n\tm.x = 30\n\tm.y = 30\n\twalk(m, 4, 1)\n\tsleep(3)\n\treturn m.x - 30`,
+    expected: '2' // dir 4 steps +x each tick; the proc resumes ahead of the same-tick step
+  },
+  {
+    name: 'walk(Ref,0) stops a prior walk',
+    dm: `/datum/probe/proc/run()\n\tvar/mob/m = new /mob()\n\tm.x = 40\n\tm.y = 40\n\twalk(m, 4, 1)\n\tsleep(2)\n\twalk(m, 0)\n\tvar/at = m.x\n\tsleep(2)\n\treturn m.x - at`,
+    expected: '0' // no further steps after the stop
+  },
+  {
+    name: 'ASSERT on a true condition does not abort the proc',
+    dm: `/datum/probe/proc/run()\n\tASSERT(1)\n\treturn 7`,
+    expected: '7'
+  },
+  {
+    name: 'EXCEPTION() produces an /exception datum with message vars',
+    dm: `/datum/probe/proc/run()\n\tvar/e = EXCEPTION("boom")\n\treturn e.desc`,
+    expected: 'boom' // throw/catch binding of the datum is emitter-owned
+  },
+  {
+    name: 'fract() returns the fractional part',
+    dm: `/datum/probe/proc/run()\n\treturn fract(1.75)`,
+    expected: '0.75'
+  },
+  {
+    name: 'fract() of a negative keeps the sign',
+    dm: `/datum/probe/proc/run()\n\treturn fract(-2.5)`,
+    expected: '-0.5'
+  },
+  {
+    name: 'sha1() hashes text deterministically',
+    dm: `/datum/probe/proc/run()\n\treturn sha1("abc")`,
+    expected: 'a9993e364706816aba3e25717850c26c9cd0d89d'
+  },
+  {
+    name: 'num2hex() formats lowercase hex with padding',
+    dm: `/datum/probe/proc/run()\n\treturn num2hex(255, 4)`,
+    expected: '00ff'
+  },
+  {
+    name: 'values_cut_under sums the amounts under the bound',
+    dm: `/datum/probe/proc/run()\n\treturn values_cut_under(list(3, 8), 5)`,
+    expected: '2'
+  },
+  {
+    name: 'values_cut_over sums the amounts over the bound',
+    dm: `/datum/probe/proc/run()\n\treturn values_cut_over(list(3, 8), 5)`,
+    expected: '3'
+  },
+  {
+    name: 'spantext_char() counts the leading needle-char run',
+    dm: `/datum/probe/proc/run()\n\treturn spantext_char("bbba", "b")`,
+    expected: '3' // delegates to the spantext convention (run length)
+  },
+  {
+    name: 'replacetextEx_char() replaces case-sensitively',
+    dm: `/datum/probe/proc/run()\n\treturn replacetextEx_char("one ONE", "one", "1")`,
+    expected: '1 ONE'
+  },
+  {
+    name: 'shutdown() returns null without throwing',
+    dm: `/datum/probe/proc/run()\n\treturn shutdown()`,
+    expected: 'null'
+  },
+  {
+    name: 'vector() exposes x/y/z vars',
+    dm: `/datum/probe/proc/run()\n\tvar/v = vector(1, 2, 3)\n\treturn v.y`,
+    expected: '2'
+  },
+  {
+    name: 'gradient() returns a /gradient datum',
+    dm: `/datum/probe/proc/run()\n\tvar/g = gradient()\n\treturn istype(g, /gradient)`,
+    expected: '1'
   }
 ];
 
