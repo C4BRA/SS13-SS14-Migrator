@@ -321,7 +321,7 @@ state "icon"
     assert(clientEntry.includes('GameClient'), "Content.Client EntryPoint subclasses GameClient (item 73)");
     assert(clientEntry.includes('RegisterIgnore("DMRuntime")'), "Client ignores server-only DMRuntime component (item 73)");
     assert(clientEntry.includes('DoAutoRegistrations') && clientEntry.includes('GenerateNetIds'), "Client runs content auto-registration + net id generation server normally skips (item 73)");
-    assert(clientEntry.includes('RegisterIgnore("dmTile")'), "Client ignores dmTile prototypes it cannot deserialize (item 73)");
+    assert(!clientEntry.includes('RegisterIgnore("dmTile")'), "Client loads dmTile prototypes — DMTilePrototype moved to Content.Shared so the client atlas registers them (W-C client tiles)");
     assert(clientEntry.includes('DebugBuiltinConnectionScreenState'), "Client requests the engine builtin connection screen (item 73)");
     const clientCsproj = fs.readFileSync(path.join(tmpOutputDir, 'Content.Client', 'Content.Client.csproj'), 'utf-8');
     assert(clientCsproj.includes('<OutputType>Exe</OutputType>'), "Content.Client is an executable (item 73)");
@@ -354,6 +354,20 @@ state "icon"
     }
     assert(systemCs.includes('SeedAmbientLight') && systemCs.includes('SetAmbientLight'), "ConvertedDMSystem seeds ambient light via SharedMapSystem.SetAmbientLight (item 75)");
     assert(systemCs.includes('FromSrgb'), "ambient color converted srgb -> linear-light per the pin's DataField contract (item 75)");
+
+
+    // W-C client tiles: dmTile defs register client-side via the shared
+    // entry point so the Clyde atlas contains converted floors.
+    const dmTileDefs = fs.readFileSync(path.join(tmpOutputDir, 'Content.Shared', 'DM', 'DMTileDefs.cs'), 'utf-8');
+    assert(dmTileDefs.includes('[Prototype("dmTile")]') && dmTileDefs.includes('sealed partial class DMTilePrototype'), "DMTilePrototype emitted in Content.Shared — one type on both sides (W-C client tiles)");
+    assert(dmTileDefs.includes('GameShared') && dmTileDefs.includes('PostInit'), "Shared GameShared entry point registers tile defs after proto load (W-C client tiles)");
+    assert(dmTileDefs.includes('EnumeratePrototypes<DMTilePrototype>') && dmTileDefs.includes('tileMan.Register'), "Shared registrar iterates dmTile protos into ITileDefinitionManager (W-C client tiles)");
+    assert(dmTileDefs.includes('StringComparison.Ordinal'), "Tile-def registration sorted ordinal — deterministic client/server TileIds over the wire (W-C client tiles)");
+    assert(dmTileDefs.includes('"dm_space"'), "dm_space pinned to tile id 0 = Tile.IsEmpty (W-C client tiles)");
+    assert(dmTileDefs.includes('tileMan.Initialize()'), "Registrar calls ITileDefinitionManager.Initialize — the call that builds the client atlas (W-C client tiles)");
+    assert(dmTileDefs.includes('ValidateTileSprite'), "Sprite validation lives in shared code — identical effective defs both sides (W-C client tiles)");
+    assert(systemCs.includes('DMTileDefs.EnsureRegistered()'), "Server delegates tile-def registration to the shared registrar (W-C client tiles)");
+    assert(!systemCs.includes('partial class DMTilePrototype'), "DMTilePrototype no longer emitted server-side (moved to Content.Shared)");
 
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;

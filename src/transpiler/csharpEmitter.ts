@@ -460,7 +460,6 @@ namespace Content.Server.DM
 
         private EntityUid _defaultMap;
         private bool _worldInitialized;
-        private bool _tilesRegistered;
 
         /// <summary>grid uid Id -> DM z-level (from the grid's MetaData name
         /// "grid_z<N>" emitted by the map converter).</summary>
@@ -720,16 +719,12 @@ namespace Content.Server.DM
         /// </summary>
         private void RegisterTileDefs()
         {
-            if (_tilesRegistered) return;
-            _tilesRegistered = true;
-            var count = 0;
-            foreach (var tileProto in _protoMan.EnumeratePrototypes<DMTilePrototype>())
-            {
-                ValidateTileSprite(tileProto); // B-3 (item 71)
-                _tileMan.Register(tileProto);
-                count++;
-            }
-            Logger.InfoS("dm", "Registered {Count} converted tile definitions", count);
+            // W-C client tiles: registration now lives in the shared entry
+            // point Content.Shared/DM/DMTileDefs.cs so the client registers
+            // the identical defs (TileId is a raw int on the wire) and builds
+            // its Clyde atlas at PostInit. Idempotent — kept here so map load
+            // can never run ahead of registration regardless of entry order.
+            DMTileDefs.EnsureRegistered();
         }
 
         /// <summary>
@@ -985,50 +980,9 @@ namespace Content.Server.DM
             return table;
         }
 
-        /// <summary>
-        /// dmTile sprites must be a plain PNG whose height is the tile size
-        /// (32px) and whose width is 32*Variants — the pin's tile atlas
-        /// builder throws otherwise. Protos point at .tile32.png files
-        /// written by the RSI converter (W-B tiles, item 75): identical to
-        /// the first-cell crop for 32x32 sources and nearest-resampled for
-        /// free-sized BYOND cells, so they satisfy the rule by construction;
-        /// anything still non-conforming is dropped to a blank tile with a
-        /// warning rather than crashing the client.
-        /// </summary>
-        private void ValidateTileSprite(DMTilePrototype proto)
-        {
-            if (proto.Sprite is not { } sprite) return;
-            try
-            {
-                if (!_resMan.ContentFileExists(sprite))
-                {
-                    Logger.WarningS("dm", "tile {Id}: sprite {Path} missing — blank tile", proto.ID, sprite);
-                    proto.Sprite = null;
-                    return;
-                }
-                using var stream = _resMan.ContentFileRead(sprite);
-                var head = new byte[24];
-                var read = stream.Read(head, 0, head.Length);
-                if (read < head.Length || head[0] != 0x89 || head[1] != 0x50)
-                {
-                    proto.Sprite = null;
-                    return;
-                }
-                var w = (head[16] << 24) | (head[17] << 16) | (head[18] << 8) | head[19];
-                var h = (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
-                if (h != 32 || w % 32 != 0)
-                {
-                    proto.Sprite = null;
-                    return;
-                }
-                proto.Variants = (byte)Math.Min(255, Math.Max(1, w / 32));
-            }
-            catch (Exception ex)
-            {
-                Logger.WarningS("dm", "tile {Id}: sprite check failed ({Ex}) — blank tile", proto.ID, ex.Message);
-                proto.Sprite = null;
-            }
-        }
+        // W-C client tiles: ValidateTileSprite moved to
+        // Content.Shared/DM/DMTileDefs.cs — validation must run identically
+        // on client and server so the effective def set stays the same.
 
         // ==== W-B light (item 75): ambient-light baseline ================
         /// <summary>
@@ -1146,46 +1100,9 @@ namespace Content.Server.DM
         }
     }
 
-    /// <summary>
-    /// Converted /turf type as an engine tile definition (item 69, B-1):
-    /// emitted prototypes (type: dmTile) register into ITileDefinitionManager
-    /// so converted map YAML tiles resolve by name. dmPath carries the DM
-    /// type path so loaded tiles mint their turf datums.
-    /// </summary>
-    [Prototype("dmTile")]
-    public sealed partial class DMTilePrototype : ITileDefinition
-    {
-        [IdDataField]
-        public string ID { get; private set; } = "";
-
-        [DataField("dmPath")]
-        public string DMPath { get; private set; } = "/turf";
-
-        [DataField("name")]
-        public string? NameField { get; private set; }
-
-        public string Name => NameField ?? ID;
-
-        // B-3: setters are public so the sprite validation pass can drop a
-        // missing/oversized tile png and fix Variants before Register.
-        [DataField("sprite")]
-        public ResPath? Sprite { get; set; }
-
-        public Dictionary<Direction, ResPath> EdgeSprites { get; } = new();
-
-        [DataField("edgeSpritePriority")]
-        public int EdgeSpritePriority { get; private set; }
-
-        [DataField("friction")]
-        public float Friction { get; private set; } = 0.2f;
-
-        [DataField("variants")]
-        public byte Variants { get; set; } = 1;
-
-        public ushort TileId { get; private set; }
-
-        public void AssignTileId(ushort id) => TileId = id;
-    }
+    // W-C client tiles: DMTilePrototype moved to Content.Shared/DM/
+    // DMTileDefs.cs (emitted by ss14Template) — one type materializes on
+    // both sides so client and server assign identical TileIds.
 
     // ==== B-4 (item 72): verb/interaction command bridge =================
     // These IConsoleCommand implementations are auto-registered by the

@@ -94,9 +94,204 @@ EndGlobal
   <ItemGroup>
     <ProjectReference Include="..\\SS13.DM.Runtime\\SS13.DM.Runtime.csproj" />
   </ItemGroup>
+  <!-- Engine references go through the official Imports (direct references
+       are rejected by Robust.ProjectReferences.targets): Shared.props gives
+       the shared code Robust.Shared types (prototypes, tile defs, net
+       serialization). Properties.targets wires the serialization source
+       generator — WITHOUT it partial DataField types (DMTilePrototype) get
+       no ISerializationGenerated impl and SerializationManager crashes at
+       boot. -->
+  <Import Project="..\\RobustToolbox\\Imports\\Shared.props" />
+  <Import Project="..\\RobustToolbox\\MSBuild\\Robust.Properties.targets" />
+  <Import Project="..\\RobustToolbox\\MSBuild\\Robust.EntitySystemSubscriptionsGenerator.targets" />
 </Project>`;
     fs.writeFileSync(path.join(sharedDir, 'Content.Shared.csproj'), sharedCsproj, 'utf-8');
     fs.writeFileSync(path.join(sharedDir, 'DummyShared.cs'), 'namespace Content.Shared { public class Dummy { } }', 'utf-8');
+
+    // W-C client tiles: the dmTile prototype class + tile-def registration
+    // live in Content.Shared so ONE type and ONE registrar run on both sides
+    // — the exact mechanism upstream SS14 uses (its shared EntryPoint calls
+    // InitTileDefinitions from PostInit). Tile.TypeId is a raw int on the
+    // wire, so client and server must assign identical ids; and the client's
+    // ClydeTileDefinitionManager only builds its texture atlas when content
+    // calls ITileDefinitionManager.Initialize() — the engine never calls it.
+    const dmSharedDir = path.join(sharedDir, 'DM');
+    fs.mkdirSync(dmSharedDir, { recursive: true });
+    const dmTileDefsCS = `using System;
+using System.Collections.Generic;
+using System.Linq;
+using Robust.Shared.ContentPack;
+using Robust.Shared.IoC;
+using Robust.Shared.Log;
+using Robust.Shared.Map;
+using Robust.Shared.Maths;
+using Robust.Shared.Prototypes;
+using Robust.Shared.Serialization.Manager.Attributes;
+using Robust.Shared.Utility;
+
+namespace Content.Shared.DM
+{
+    /// <summary>
+    /// Converted /turf type as an engine tile definition (item 69, B-1):
+    /// emitted prototypes (type: dmTile) register into ITileDefinitionManager
+    /// so converted map YAML tiles resolve by name. dmPath carries the DM
+    /// type path so loaded tiles mint their turf datums.
+    /// Lives in Content.Shared (moved from Content.Server for W-C client
+    /// tiles) so client and server materialize the same prototype type.
+    /// </summary>
+    [Prototype("dmTile")]
+    public sealed partial class DMTilePrototype : ITileDefinition
+    {
+        [IdDataField]
+        public string ID { get; private set; } = "";
+
+        [DataField("dmPath")]
+        public string DMPath { get; private set; } = "/turf";
+
+        [DataField("name")]
+        public string? NameField { get; private set; }
+
+        public string Name => NameField ?? ID;
+
+        // B-3: setters are public so the sprite validation pass can drop a
+        // missing/oversized tile png and fix Variants before Register.
+        [DataField("sprite")]
+        public ResPath? Sprite { get; set; }
+
+        public Dictionary<Direction, ResPath> EdgeSprites { get; } = new();
+
+        [DataField("edgeSpritePriority")]
+        public int EdgeSpritePriority { get; private set; }
+
+        [DataField("friction")]
+        public float Friction { get; private set; } = 0.2f;
+
+        [DataField("variants")]
+        public byte Variants { get; set; } = 1;
+
+        public ushort TileId { get; private set; }
+
+        public void AssignTileId(ushort id) => TileId = id;
+    }
+
+    /// <summary>
+    /// Shared content entry point (W-C client tiles): the engine's mod loader
+    /// instantiates every GameShared subclass in Content.* assemblies on BOTH
+    /// client and server, and PostInit runs after prototype load — the right
+    /// lifecycle point to register tile defs. On the client this also builds
+    /// the tile texture atlas: ClydeTileDefinitionManager.Initialize (called
+    /// via ITileDefinitionManager.Initialize below) runs _genTextureAtlas
+    /// once over the registered defs; the engine itself never calls it, which
+    /// is why converted floors rendered as nothing before.
+    /// </summary>
+    public sealed class DMTileDefsEntryPoint : GameShared
+    {
+        public override void PostInit()
+        {
+            base.PostInit();
+            DMTileDefs.EnsureRegistered();
+        }
+    }
+
+    /// <summary>
+    /// Registers every converted dmTile prototype into ITileDefinitionManager
+    /// in a deterministic order identical on client and server (W-C client
+    /// tiles), then calls Initialize so the client atlas includes them.
+    /// Idempotent: the shared entry point and ConvertedDMSystem.StartWorld
+    /// both call it — whichever runs first does the registration.
+    /// </summary>
+    public static class DMTileDefs
+    {
+        private static bool _registered;
+
+        public static void EnsureRegistered()
+        {
+            if (_registered) return;
+            _registered = true;
+
+            var protoMan = IoCManager.Resolve<IPrototypeManager>();
+            var tileMan = IoCManager.Resolve<ITileDefinitionManager>();
+            var resMan = IoCManager.Resolve<IResourceManager>();
+
+            var protos = protoMan.EnumeratePrototypes<DMTilePrototype>().ToList();
+
+            // Prototype enumeration is FrozenDictionary order — hash-based,
+            // so the order differs between the server and client processes
+            // (.NET string hashing is seeded per process). TileId is a raw
+            // int in networked tile data, so an explicit deterministic order
+            // is the only way ids match on both sides. dm_space is pinned to
+            // tile id 0 — Tile.IsEmpty, the engine's "no tile" cell every
+            // converted tilemap's 0: entry resolves to (the same hardcoded
+            // space-first hack upstream SS14 uses).
+            protos.Sort((a, b) =>
+            {
+                var aSpace = a.ID == "dm_space";
+                var bSpace = b.ID == "dm_space";
+                if (aSpace != bSpace) return aSpace ? -1 : 1;
+                return string.Compare(a.ID, b.ID, StringComparison.Ordinal);
+            });
+
+            var count = 0;
+            foreach (var tileProto in protos)
+            {
+                ValidateTileSprite(tileProto, resMan);
+                tileMan.Register(tileProto);
+                count++;
+            }
+            tileMan.Initialize();
+            Logger.InfoS("dm", "Registered {0} converted tile definitions", count);
+        }
+
+        /// <summary>
+        /// dmTile sprites must be a plain PNG whose height is the tile size
+        /// (32px) and whose width is 32*Variants — the pin's tile atlas
+        /// builder throws otherwise. Protos point at .tile32.png files
+        /// written by the RSI converter (W-B tiles, item 75): identical to
+        /// the first-cell crop for 32x32 sources and nearest-resampled for
+        /// free-sized BYOND cells, so they satisfy the rule by construction;
+        /// anything still non-conforming is dropped to a blank tile with a
+        /// warning rather than crashing the client. Runs identically on
+        /// client and server (pure resource-file byte reads) so the
+        /// effective def set stays identical.
+        /// </summary>
+        private static void ValidateTileSprite(DMTilePrototype proto, IResourceManager resMan)
+        {
+            if (proto.Sprite is not { } sprite) return;
+            try
+            {
+                if (!resMan.ContentFileExists(sprite))
+                {
+                    Logger.WarningS("dm", "tile {0}: sprite {1} missing — blank tile", proto.ID, sprite);
+                    proto.Sprite = null;
+                    return;
+                }
+                using var stream = resMan.ContentFileRead(sprite);
+                var head = new byte[24];
+                var read = stream.Read(head, 0, head.Length);
+                if (read < head.Length || head[0] != 0x89 || head[1] != 0x50)
+                {
+                    proto.Sprite = null;
+                    return;
+                }
+                var w = (head[16] << 24) | (head[17] << 16) | (head[18] << 8) | head[19];
+                var h = (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
+                if (h != 32 || w % 32 != 0)
+                {
+                    proto.Sprite = null;
+                    return;
+                }
+                proto.Variants = (byte)Math.Min(255, Math.Max(1, w / 32));
+            }
+            catch (Exception ex)
+            {
+                Logger.WarningS("dm", "tile {0}: sprite check failed ({1}) — blank tile", proto.ID, ex.Message);
+                proto.Sprite = null;
+            }
+        }
+    }
+}
+`;
+    fs.writeFileSync(path.join(dmSharedDir, 'DMTileDefs.cs'), dmTileDefsCS, 'utf-8');
 
     // 4. Content.Server Project — references the REAL RobustToolbox.
     const serverDir = path.join(outputDir, 'Content.Server');
@@ -299,10 +494,10 @@ namespace Content.Client
     //   - DMRuntime component: skipping it silently keeps every converted
     //     entity prototype free of "Unknown component" errors; DMRuntime is
     //     not a networked component so nothing else needs it client-side.
-    //   - dmTile prototypes: registered with ITileDefinitionManager by the
-    //     server-side ConvertedDMSystem; the client's PrototypeManager has no
-    //     dmTile kind and an unknown kind fails the WHOLE yaml document,
-    //     which would drop every entity prototype.
+    //   dmTile prototypes load on the client too (W-C client tiles):
+    //     DMTilePrototype lives in Content.Shared and the shared
+    //     DMTileDefsEntryPoint registers the defs + builds the Clyde atlas
+    //     at PostInit, so the client's tilemap resolves converted tiles.
     const clientEntryPointCS = `using System;
 using Robust.Client.Console;
 using Robust.Client.Player;
@@ -346,7 +541,6 @@ namespace Content.Client
             componentFactory.RegisterIgnore("DMRuntime");
             componentFactory.DoAutoRegistrations();
             componentFactory.GenerateNetIds();
-            IoCManager.Resolve<IPrototypeManager>().RegisterIgnore("dmTile");
 
             var res = IoCManager.Resolve<IResourceManager>();
             if (res.ContentFileExists("/autocmds.txt"))
