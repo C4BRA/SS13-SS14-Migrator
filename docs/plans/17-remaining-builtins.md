@@ -60,9 +60,9 @@ One `PROBES` entry per builtin, appended at the end of the existing list
 - `npm run build` clean (tsc strict).
 - `npm test` all green, including the generated-solution compile against the
   pinned RobustToolbox on this VM (`exit 0`).
-- `npm run audit:semantics` — **198/198** probes under dotnet 10
-  (171 pre-existing + 27 new tier-4: one per builtin, plus a second
-  `file2text` missing-file case).
+- `npm run audit:semantics` — **218/218** probes under dotnet 10
+  (upstream B-1/B-2 probes included; 27 of them are the new tier-4 set:
+  one per builtin, plus a second `file2text` missing-file case).
 
 `numStubbedBuiltin` is unchanged by design: that counter tracks call sites of
 builtins that are *deliberately* stubbed (UI/engine surface — `winget`,
