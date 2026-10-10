@@ -1309,6 +1309,118 @@ public static class ConvertedDMProcs
 }
 }`
     }
+  },
+  // ==== W-A parent-call (item 22): defining-type probes ====
+  {
+    // Subtype override -> base's ..() must reach the GRANDPARENT once.
+    // Anchoring at the concrete type re-found /datum/mid/stamp and recursed
+    // forever (the pre-22 stack-overflow bug).
+    name: '..() subtype override chains to grandparent once',
+    dm: `/datum
+	var/hits
+	proc/stamp()
+		src.hits += 1
+/datum/mid
+	proc/stamp()
+		..()
+		src.hits += 10
+/datum/mid/leaf
+	proc/stamp()
+		..()
+		src.hits += 100
+/datum/probe
+	proc/run()
+		var/datum/mid/leaf/d = new /datum/mid/leaf()
+		d.hits = 0
+		d.stamp()
+		return d.hits`,
+    expected: '111'
+  },
+  {
+    // '..()' inside a body only the BASE defines, invoked on a subtype
+    // instance, resolves parent-of-defining — not parent-of-instance.
+    name: '..() inside base-defined body on subtype instance',
+    dm: `/datum
+	proc/who()
+		return 1
+/datum/mid2
+	proc/who()
+		return ..() + 10
+/datum/mid2/leaf2
+	var/dummy = 1
+/datum/probe
+	proc/run()
+		var/datum/mid2/leaf2/d = new /datum/mid2/leaf2()
+		return d.who()`,
+    expected: '11'
+  },
+  {
+    name: '..() with explicit args binds positionally on the parent',
+    dm: `/datum
+	proc/addem(a, b)
+		return a + b
+/datum/mid3
+	proc/addem(a, b)
+		return ..(a * 2, b + 1)
+/datum/probe
+	proc/run()
+		var/datum/mid3/d = new /datum/mid3()
+		return d.addem(3, 4)`,
+    expected: '11'
+  },
+  {
+    // '..(x = v)' named args bind to the RESOLVED ancestor's param names,
+    // not positionally and not to the child's params.
+    name: '..() named args bind by name on the resolved parent',
+    dm: `/datum
+	proc/subt(a, b)
+		return a - b
+/datum/mid4
+	proc/subt(a, b)
+		return ..(b = 10, a = 2)
+/datum/probe
+	proc/run()
+		var/datum/mid4/d = new /datum/mid4()
+		return d.subt(0, 0)`,
+    expected: '-8'
+  },
+  {
+    // BYOND: '..()' with no arguments forwards the current proc's argument
+    // values — the parent sees what the override was called with.
+    name: '..() with no args forwards current arg values',
+    dm: `/datum
+	proc/ident(x)
+		return x
+/datum/mid5
+	proc/ident(x)
+		return ..() + 1
+/datum/probe
+	proc/run()
+		var/datum/mid5/d = new /datum/mid5()
+		return d.ident(41)`,
+    expected: '42'
+  },
+  {
+    // Verbs register under the same (type, name) key; ..() in a verb body
+    // anchors at the declaring type like any proc.
+    name: '..() in a verb body resolves parent-of-defining',
+    dm: `/datum/proc/vtest()
+	src.v = 1
+/datum/probe/verb/vtest()
+	..()
+	src.v += 10
+/datum/probe/proc/run()
+	src.v = 0
+	src.vtest()
+	return src.v`,
+    expected: '11'
+  },
+  {
+    // No ancestor implementation and no /proc fallback: BYOND ..() is null.
+    name: '..() at top of the type chain returns null',
+    dm: `/datum/probe/proc/run()
+	return ..() == null`,
+    expected: '1'
   }
 ];
 

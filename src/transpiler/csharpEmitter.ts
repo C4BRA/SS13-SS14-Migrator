@@ -14,6 +14,10 @@ export class CSharpEmitter {
   private symbols: SymbolTable | null = null;
   private warnedCalls = new Set<string>();
   private currentTypePath = '';
+  // W-A parent-call (item 22): declared parameter names of the proc body
+  // being emitted — a no-arg ..() forwards their CURRENT values to the
+  // parent implementation (BYOND arg pass-through).
+  private currentProcArgs: string[] = [];
   private loopDepth = 0;
   private switchDepth = 0;
   private lambdaDepth = 0;
@@ -309,6 +313,7 @@ namespace Content.Server.DM
         });
 
         this.currentProcName = procName;
+        this.currentProcArgs = procNode.args.map((a: any) => a.name as string); // W-A parent-call
         this.labelNameCounts.clear();
         this.labelStack.length = 0;
 
@@ -2160,13 +2165,40 @@ namespace Content.Server.DM
     if (builtin !== null) {
       return builtin;
     }
-    // DM "..()" — dispatch to the parent type's implementation of the
-    // currently executing proc.
+    // ==== W-A parent-call (item 22) ====
+    // DM "..()" — invoke the DEFINING type's parent implementation of the
+    // currently executing proc. The declaring type path is baked into the
+    // call site: resolving from the concrete instance's DMTypePath re-found
+    // the same body whenever a subtype overrode or inherited it, looping
+    // the override back into itself until stack overflow (the old
+    // single-argument CallParentProc's bug).
+    // No-arg ..() forwards the CURRENT values of this proc's declared
+    // parameters — BYOND passes the same arguments the current proc
+    // received; explicit args (incl. named x = v, emitted as DMNamedArg
+    // markers bound to the resolved ancestor's params) pass through as-is.
     if (node.name === '..') {
-      if (!args) {
-        return `(await comp.CallParentProc("${this.currentProcName}"))`;
+      if (this.globalsMode || !this.currentTypePath || this.currentTypePath.toLowerCase() === '/proc') {
+        // Global procs and global initializers have no parent body: BYOND
+        // has no ..() there at all. Await-wrapped so the 'call' emission is
+        // still a valid expression-statement (a bare DMValue.Null is not).
+        return '(await Task.FromResult(DMValue.Null))';
       }
-      return `(await comp.CallParentProc("${this.currentProcName}", ${args}))`;
+      let argTail = '';
+      if (hasArglist) {
+        argTail = `, ${args}`; // a DMValue[] expression (DMArgsConcat)
+      } else if (node.arguments.length === 0) {
+        argTail = this.currentProcArgs.length > 0
+          ? `, ${this.currentProcArgs.map((n) => `comp.GetVar("${this.escapeString(n)}")`).join(', ')}`
+          : '';
+      } else {
+        const pargs = node.arguments.map((a: any) =>
+          a.type === 'assignment' && typeof a.target === 'string'
+            ? `DMRuntimeHelpers.DMNamedArg("${this.escapeString(a.target)}", ${this.transpileExpression(a.value)})`
+            : this.transpileExpression(a)
+        ).join(', ');
+        argTail = `, ${pargs}`;
+      }
+      return `(await comp.CallParentProc("${this.escapeString(this.currentTypePath)}", "${this.escapeString(this.currentProcName)}"${argTail}))`;
     }
     // User-defined proc - call through runtime. In a global initializer there
     // is no current datum, so route through the GlobalVars bridge. The
