@@ -72,6 +72,13 @@ export class YAMLGenerator {
         components.push({ type: 'Appearance' });
       }
 
+      // B-3 (item 71): every converted /mob gets an Eye — the join path
+      // prefers a converted mob proto (mob_living_carbon_human) over
+      // dm_player_mob, and without Eye an attached session has no camera.
+      if (/^\/mob(\/|$)/.test(irType.path)) {
+        components.push({ type: 'Eye' });
+      }
+
       // B-3 lighting basics: BYOND luminosity/light_range/light_power/
       // light_color map to the server PointLight component.
       const lum = Number(irType.customVars.get('light_range') ?? irType.customVars.get('luminosity')) || 0;

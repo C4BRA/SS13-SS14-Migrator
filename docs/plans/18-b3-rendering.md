@@ -138,7 +138,14 @@ vis_*, maptext*, render_*, screen_loc, gender, suffix, glide_size,
 infra_luminosity, base_icon_state, appearance_flags) and the datum is
 bound to an entity, `EntityAppearanceBridge` republishes the *whole*
 appearance via `AppearanceComponent.SetData` under `DMAppearanceKey`
-(wire-stable enum, append-only).
+(wire-stable enum, append-only). The enum itself is emitted into
+`Content.Shared/DM/DMAppearanceKey.cs` with `[NetSerializable]` —
+RobustSerializer only indexes `[NetSerializable]` types from loaded
+content assemblies, so keeping it in `SS13.DM.Runtime.dll` threw
+`KeyNotFoundException: Type not found` on the first game-state send to
+any client, and a `Content.Server` type would trip the serializer's
+"server specific but has NetSerializable" check. `Content.Shared` is
+the only assembly both sides resolve.
 
 Unassigned reads fall through to BYOND defaults
 (`AppearanceVarDefault`): alpha 255, mouse_opacity 1, icon_state "",
@@ -159,12 +166,41 @@ Var → engine mapping and limits:
 | `luminosity`, `light_range`, `light_power`, `light_color` | YAML `PointLight` seed + appearance data for runtime writes |
 | `transform`, `appearance`, `blend_mode`, `vis_contents`, `maptext*`, `render_*`, `screen_loc` | stored + republish hooks; **no engine equivalent yet** — counted in `AppearanceStubCount` where applicable (documented stub) |
 
+## Client-path fixes (found by e2e test)
+
+The first end-to-end run of a scaffolded RT client against the generated
+paradise server surfaced three blockers this item fixed:
+
+1. **`DMAppearanceKey` could never serialize** (above) — moved to
+   `Content.Shared` + `[NetSerializable]`.
+2. **`JoinGame` inside the `Connected` status event** collapsed
+   `Connecting -> InGame` into one hop; the client's status handler then
+   never saw `Connected` and stayed below the `InGame` runlevel forever
+   (black window). Sessions now queue into `_pendingJoins` and join on
+   the next `Update` tick, guaranteeing >= 1 game-state send while
+   `Connected`.
+3. **`PickPlayerProto` prefers `mob_living_carbon_human`** over
+   `dm_player_mob`, and converted `/mob` protos had no `Eye` — an
+   attached session would get no camera. Every `/mob` proto now carries
+   `type: Eye`.
+
+Out-of-scope blockers the same run confirmed (pre-existing, left for the
+lead): converted `tilemap:` lines lack a `0:` entry so grids fail to
+load (mapConverter scope); `..()`/`CallParentProc` re-resolves through
+the datum's concrete type and infinitely recurses on inherited
+overrides (runtime dispatch scope — needs the executing override's
+defining type, not just a reentry guard); `RegisterSubsystems` calls
+`CallProc` off the IoC thread (unobserved-exception spam); a real
+client needs `RegisterIgnore("dmTile")` + `RegisterIgnore("DMRuntime")`
+in the client entry point (generated `Content.Client` is a stub —
+ss14Template/B-5 scope).
+
 ## Verification
 
 - `npm run build` clean, `npm test` green (incl. generated-solution build
   against the pinned engine).
-- `npm run audit:semantics`: **234/234** (218 baseline + 16 new B-3
-  probes covering alpha/mouse_opacity/layer/invisibility/opacity/pixel
+- `npm run audit:semantics`: **238/238** (218 baseline + 16 B-3 + 4 B-4
+  probes post-merge) covering alpha/mouse_opacity/layer/invisibility/opacity/pixel
   defaults, icon_state/underlays defaults, write-back, overlays+=,
   animate time=0 + tween completion + named-arg isolation, flick
   icon_state + /image overlay restore, image() named args).
@@ -200,3 +236,7 @@ Var → engine mapping and limits:
 - `invisibility`/`mouse_opacity`/`opacity` are published but have no
   engine consumer yet (same visualizer gap).
 - `/icon` datum rendering and `blend_mode` unimplemented (loss counter).
+- `ValidateTileSprite` blanks ~24% of paradise dmTiles (83/352): BYOND
+  tiles can be non-32px (walls 32x40, grass 50x50) while the pin's tile
+  atlas requires height 32 — those tiles stay invisible until a
+  downscale/crop pass exists. The other 264 resolve to valid PNGs.
