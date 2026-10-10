@@ -16,7 +16,7 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 |---|---|
 | `npm run build` | clean (tsc strict) |
 | `npm test` | green; generated solution builds vs real RobustToolbox |
-| Semantic probes | **171 / 171** (`npm run audit:semantics`) |
+| Semantic probes | **238 / 238** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
 | Loss sites (honest, post-12.1) | tg **25,882** · tgmc **17,982** · paradise **25,635** · bee **27,758** |
 | Unresolved bare calls (tg) | **138** (item 67 — remainder are user procs resolved by the registry at call time) |
@@ -209,9 +209,13 @@ JSON history: `docs/audit/10-tgstation-audit.json`, `11-tgstation-audit-post.jso
 
 ### Probe suite
 
-**191/191 passing** (engine-free differential probes). Core semantics (truthiness, lists, `..()`, short-circuit,
+**238/238 passing** (engine-free differential probes). Core semantics (truthiness, lists, `..()`, short-circuit,
 ranges, text, json_encode escapes, float division provenance, step-range continue)
-plus builtin batches and Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …)
+plus builtin batches, Tier-3 (regex, astype, roll, values_*, world.view/tick_lag, …),
+B-2 tick (sleep/spawn FIFO, world.time grid), B-1 loc/contents bridges, tier-4 builtins
+(file2text/md5/url_*/_char family/ohearers/bounds_dist/generator), B-4 verbs/output
+(<< dispatch, CallVerbAsUsr, named-arg binding) and B-3 appearance (var defaults,
+overlays/underlays, animate/flick/image named args).
 item-58 (default args omitted/overridden/expression, assoc identifier keys) and item-59 (labeled continue/break).
 
 ### Loss scoreboard (tgstation, honest view — post-12.1)

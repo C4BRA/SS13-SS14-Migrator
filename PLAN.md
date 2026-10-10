@@ -279,13 +279,41 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       suite). Known limits: `spawn(-1)` half unmodeled, `world.time` write stored not
       read, mid-run `tick_lag` change approximates, subsystem `priority`/`flags`
       ignored (docs/plans/16-b2-tick.md).
-71. [ ] **B-3 — Rendering/appearance layer.** Sprites/RSI on entities, overlays,
-      `animate()`/`flick()` (the remaining appearance stubs), lighting basics. The
-      visual layer behind "visibly rendered". Files: `ConvertedDMSystem.cs`, runtime.
-72. [ ] **B-4 — Input/verbs/UI layer.** Verb/command system, client input, chat,
-      `browse`/topic equivalents. The interaction path. Files: runtime, engine adapter.
-73. [ ] **B-5 — Client boot.** Real Robust.Client content entry (`ContentStart`) so
-      players can connect to the booted server. Files: `ss14Template.ts`.
+71. [x] **B-3 — Rendering/appearance layer.** DONE: atom protos now carry real
+      `Sprite` (RSI + state), `Appearance` channel, `PointLight` (from
+      light_range/luminosity/power/color); `dmTile.sprite` → `.tile.png` crops so
+      converted maps render textured, not blank. rsiWriter rewritten for the pin's
+      flat dir-major RSI v1 layout (DMI is frame-major; old dir remap was wrong).
+      `overlays`/`underlays`/`image()` are composable appearance data; `animate()`/
+      `flick()` real tick-driven (named-arg capture, per-target queues, linear
+      easing) — paradise numStubbedBuiltin 2525 → **1908**. Every runtime
+      appearance-var write republishes via AppearanceComponent under wire-stable
+      DMAppearanceKey. +16 probes (238/238 merged suite). Known limits: linear
+      easing only, no transform/chain/blend_mode, exotic overlays count into
+      AppearanceStubCount (docs/plans/18-b3-rendering.md).
+72. [x] **B-4 — Input/verbs/UI layer.** DONE: server-side interaction path — 8
+      auto-registered `IConsoleCommand`s (`dmverb`/`dmverbon`/`dmclick`/`dmsay`/
+      `dmooc`/`dmtopic`/`dmverbs`/`dmloc`) dispatch into the ProcRegistry with real
+      src/usr binding (`DMVerbRuntime.CallVerbAsUsr` + assoc-list named args);
+      `DMPermissions` ConGroup shim (engine defaults deny client commands);
+      `DMValue.Output` real `<<` dispatcher (list-append/shift/datum sink with
+      writeback + chaining); `/client` datum bound at attach so `mob.client`/
+      `client.mob`/`client << x` resolve; `world << msg` → all InGame consoles.
+      All 8 commands verified dispatching on a live converted server. +4 probes
+      (222/222 suite). Known limits: `/verb set` metadata dropped (parser
+      out-of-scope), alert/input stay Null stubs, dmtopic substitutes the href
+      path (docs/plans/19-b4-verbs.md).
+73. [x] **B-5 — Client boot.** DONE: `Content.Client` emits a real Robust.Client
+      entry — Program boots `ContentStart.Start`, `EntryPoint : GameClient` does
+      client-side registration (DoAutoRegistrations + GenerateNetIds,
+      DMRuntime/dmTile ignores, builtin connect screen); csproj outputs into
+      solution bin per StartType.Content mounts; Resources/manifest.yml enables
+      autoConnect. `scripts/client-smoke.sh` boots server + headless client with
+      `--connect` and asserts the B-1 mob attach — **PASS end-to-end** (client
+      Connected + Full GameState; server 'attached to mob'). Windowed run
+      additionally verified: real GL window, connect screen, two-sided attach.
+      Known limits: headless needs `--cvar res.texturepreloadingenabled=false`;
+      builtin debug connect screen only, no lobby UI (docs/plans/20-b5-client.md).
 74. [ ] **B-6 — M1 gate: minimum playable demo.** One converted map, a player mob that
       spawns, moves, and interacts with one object, visibly rendered — the north-star
       acceptance test for B-1..B-5.
@@ -293,9 +321,10 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       (Oct-2026 heads, baystation onboarded — see AUDIT.md): bay parse 259 errors → 0
       (7 lexer/parser/preprocessor gaps fixed — slash-regex literals, operator-overload
       procs, wrong-arity macro expansion, etc.) which collapsed its unresolved bucket
-      8,960 → 494 and freed blocked code into the IR. Builtins-expansion wave in flight
-      targeting unresolved/stubbed across all corpora. Remaining heavy buckets:
-      `new` partial-args, stubs (~2.1-4.2k per corpus), `new` loc semantics.
+      8,960 → 494 and freed blocked code into the IR. Builtins-expansion wave
+      landed (26 builtins) — paradise unresolved 488 → 352; B-3 appearance wave
+      then cut paradise stubs 2525 → 1908. Remaining heavy buckets:
+      `new` partial-args, stubs (~1.9-4.2k per corpus), `new` loc semantics.
 76. [x] **B-8 — Speed.** DONE: `src/parallel/` worker_threads pool fans out
       preprocess→lex→parse + DMI→RSI + DMM→map per file; `--jobs/-j` (0=auto cap 16,
       1=sequential, output byte-identical — `diff -r` over 1.2GB paradise trees = 0
