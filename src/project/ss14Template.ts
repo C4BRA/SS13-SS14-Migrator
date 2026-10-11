@@ -816,44 +816,58 @@ namespace Content.Client.DM
 # actually works — Return submits, arrows edit/history, Tab completes.
 # Up/Down/Left/Right co-exist with the movement binds: while a LineEdit
 # holds focus the movement Command binds are suppressed by
-# commandWhenUIFocused:false and these Function binds route to the
-# focused control; with no focused control the Function binds no-op.
+# commandWhenUIFocused:false and these State+canFocus binds route to the
+# focused control; with no focused control they no-op. (type: Function
+# doesn't exist at this engine pin — KeyBindingType is State/Toggle/
+# Command only, and canFocus is what reaches a focused control.)
 - function: TextSubmit
   key: Return
-  type: Function
+  type: State
+  canFocus: true
 - function: TextSubmit
   key: NumpadEnter
-  type: Function
+  type: State
+  canFocus: true
 - function: TextReleaseFocus
   key: Escape
-  type: Function
+  type: State
+  canFocus: true
 - function: TextTabComplete
   key: Tab
-  type: Function
+  type: State
+  canFocus: true
 - function: TextHistoryPrev
   key: Up
-  type: Function
+  type: State
+  canFocus: true
 - function: TextHistoryNext
   key: Down
-  type: Function
+  type: State
+  canFocus: true
 - function: TextBackspace
   key: BackSpace
-  type: Function
+  type: State
+  canFocus: true
 - function: TextDelete
   key: Delete
-  type: Function
+  type: State
+  canFocus: true
 - function: TextCursorLeft
   key: Left
-  type: Function
+  type: State
+  canFocus: true
 - function: TextCursorRight
   key: Right
-  type: Function
+  type: State
+  canFocus: true
 - function: TextCursorBegin
   key: Home
-  type: Function
+  type: State
+  canFocus: true
 - function: TextCursorEnd
   key: End
-  type: Function
+  type: State
+  canFocus: true
 `, 'utf-8');
 
     // The engine's content mounts resolve <solution>/RobustToolbox relative
