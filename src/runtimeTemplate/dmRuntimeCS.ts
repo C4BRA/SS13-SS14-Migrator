@@ -1113,6 +1113,78 @@ namespace SS13.DM.Runtime
             return VarInits.TryGetValue(typePath.ToLowerInvariant(), out handler!);
         }
 
+        // ==== W-K mc ====
+
+        /// <summary>
+        /// Declared-abstract DM types (BYOND abstract_type == own path):
+        /// new on one is a runtime error in BYOND. The converted runtime
+        /// degrades it to null + a once-per-type warning (see DMNew) instead
+        /// of a throw storm — the W-I audit measured ~9.9k such throws from
+        /// the abstract /datum/controller/subsystem base alone.
+        /// </summary>
+        private static readonly HashSet<string> AbstractPaths = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> _abstractNewWarned = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Register a type as abstract (emitted for types whose declared
+        /// abstract_type resolves to their own path — BYOND marks them
+        /// non-instantiable).
+        /// </summary>
+        public static void RegisterAbstract(string typePath)
+        {
+            AbstractPaths.Add(typePath.ToLowerInvariant());
+        }
+
+        /// <summary>True when the type is declared abstract (abstract_type = self).</summary>
+        public static bool IsAbstract(string typePath)
+        {
+            return AbstractPaths.Contains(typePath);
+        }
+
+        /// <summary>
+        /// One-shot warning gate for DMNew on an abstract type: returns true
+        /// the first time each path is reported so the caller can log it.
+        /// </summary>
+        public static bool MarkAbstractNewWarned(string typePath)
+        {
+            return _abstractNewWarned.Add(typePath);
+        }
+
+        /// <summary>
+        /// BYOND subtypesof(): every registered type strictly under typePath
+        /// — the argument itself is excluded, which is what keeps the
+        /// abstract /datum/controller/subsystem base out of the MC's
+        /// instantiation list.
+        /// </summary>
+        public static IEnumerable<string> SubtypesOf(string typePath)
+        {
+            var prefix = typePath.ToLowerInvariant() + "/";
+            foreach (var p in RegisteredPaths)
+            {
+                if (p.StartsWith(prefix, StringComparison.Ordinal)) yield return p;
+            }
+        }
+
+        /// <summary>
+        /// The type whose declaration provides typePath's effective proc:
+        /// typePath itself for an own-decl, else the nearest ancestor that
+        /// declares it, else null. The MC uses this to tell a REAL fire() —
+        /// the leaf's own or a concrete ancestor's (e.g. the shared
+        /// /datum/controller/subsystem/processing bucket processor) — from
+        /// the base's SS_NO_FIRE crash stub, which BYOND never wants on the
+        /// fire list.
+        /// </summary>
+        public static string? ResolveProcDeclaringType(string typePath, string procName)
+        {
+            var name = procName.ToLowerInvariant();
+            if (Procs.ContainsKey((typePath.ToLowerInvariant(), name))) return typePath.ToLowerInvariant();
+            foreach (var candidate in DMParentPaths(typePath))
+            {
+                if (Procs.ContainsKey((candidate.ToLowerInvariant(), name))) return candidate;
+            }
+            return null;
+        }
+
         // ==== B-4 verbs/input (item 72) ====
 
         /// <summary>
@@ -1582,6 +1654,60 @@ namespace SS13.DM.Runtime
             return key;
         }
 
+        // ==== W-K mc ====
+
+        /// <summary>
+        /// DM 'throw <expr>' on the C# exception channel: the thrown
+        /// DMValue rides along so a catch(var/exception/e) can rebind it as
+        /// an /exception datum — DM throws carry VALUES, not just error text.
+        /// </summary>
+        public sealed class DMThrownException : System.Exception
+        {
+            public readonly DMValue Value;
+            public DMThrownException(DMValue value)
+                : base("DM throw: " + (value.Type == DMValueType.String ? value.StringValue : value.ToString()))
+            {
+                Value = value;
+            }
+        }
+
+        /// <summary>
+        /// The /exception datum a DM catch(var/exception/e) binds. BYOND
+        /// exception vars: name (short text), desc (full text), file, line —
+        /// file/line stay Null: the engine-free runtime has no DM source
+        /// location (honest gap). An /exception datum re-thrown returns
+        /// itself (rethrow). For a DM 'throw <expr>' the carried value
+        /// also lands on 'value' so caught code can inspect what was thrown.
+        /// </summary>
+        public static DMValue MakeExceptionDatum(System.Exception ex)
+        {
+            if (ex is DMThrownException thrown
+                && thrown.Value.Type == DMValueType.DatumRef
+                && thrown.Value.DatumRef is DMRuntime already
+                && already.DMTypePath == "/exception")
+            {
+                return DMValue.FromDatum(already);
+            }
+            var datum = new DMRuntime { DMTypePath = "/exception" };
+            LiveDatums.Add(datum);
+            ApplyTypeVarInits(datum);
+            string text;
+            if (ex is DMThrownException t)
+            {
+                text = t.Value.Type == DMValueType.String ? (t.Value.StringValue ?? "") : t.Value.ToString();
+                datum.SetVar("value", t.Value);
+            }
+            else
+            {
+                text = ex.Message ?? "";
+            }
+            datum.SetVar("name", DMValue.FromString(text));
+            datum.SetVar("desc", DMValue.FromString(text));
+            datum.SetVar("file", DMValue.Null);
+            datum.SetVar("line", DMValue.Null);
+            return DMValue.FromDatum(datum);
+        }
+
         /// <summary>
         /// The DM /world datum. DMWorld links world.fps and world.tick_lag the
         /// way BYOND does: they are the same value seen two ways
@@ -1678,6 +1804,19 @@ namespace SS13.DM.Runtime
             // new /list() sites would otherwise mint a dead datum).
             if (normalized == "/list")
                 return DMValue.FromList(new DMList());
+            // ==== W-K mc ====
+            // BYOND abstract_type: new on a type marked abstract_type =
+            // itself is a runtime error. Degrade to null + a once-per-type
+            // warning instead of throwing — an unchecked new on an abstract
+            // path was the ~9.9k-throw SS_NO_FIRE storm's cousin (W-I).
+            if (ProcRegistry.IsAbstract(normalized))
+            {
+                if (ProcRegistry.MarkAbstractNewWarned(normalized))
+                {
+                    try { Console.Error.WriteLine($"[DM] new on abstract type {normalized} ignored (BYOND: cannot instantiate abstract type)"); } catch { }
+                }
+                return DMValue.Null;
+            }
             var datum = new DMRuntime { DMTypePath = normalized };
             LiveDatums.Add(datum);
             // W-G input: seed the datum's vars from the type's declared

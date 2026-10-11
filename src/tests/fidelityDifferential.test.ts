@@ -1850,6 +1850,41 @@ public static class ConvertedDMProcs
     name: 'istype obj child is atom',
     dm: `/datum/probe/proc/run()\n\tvar/obj/child/o = new /obj/child\n\treturn istype(o, /atom)`,
     expected: '1'
+  },
+  {
+    // W-K mc: `throw <expr>` emits a real throw (was '// Unknown
+    // statement') and the catch var binds an /exception datum whose name
+    // carries the thrown value — not the raw message string.
+    name: 'throw propagates and catch-var binds an exception datum',
+    dm: `/datum/probe/proc/run()\n\ttry\n\t\tthrow "boom"\n\tcatch(var/exception/e)\n\t\treturn e.name`,
+    expected: 'boom'
+  },
+  {
+    // W-K mc: the thrown DMValue survives on the exception datum's 'value'.
+    name: 'thrown value survives on the exception datum',
+    dm: `/datum/probe/proc/run()\n\ttry\n\t\tthrow 42\n\tcatch(var/exception/e)\n\t\treturn e.value`,
+    expected: '42'
+  },
+  {
+    // W-K mc: rethrow of a caught /exception datum rebinds the same datum.
+    name: 'rethrow of exception datum rebinds it',
+    dm: `/datum/probe/proc/run()\n\ttry\n\t\ttry\n\t\t\tthrow "once"\n\t\tcatch(var/exception/first)\n\t\t\tthrow first\n\tcatch(var/exception/second)\n\t\treturn second.name`,
+    expected: 'once'
+  },
+  {
+    // W-K mc: BYOND abstract_type — new on a self-marked abstract type is a
+    // runtime error in BYOND; the converted runtime returns null (+ a
+    // once-per-type warning) instead of minting a broken datum.
+    name: 'new on abstract_type returns null',
+    dm: `/datum/abs_base\n\tvar/abstract_type = /datum/abs_base\n/datum/probe/proc/run()\n\tvar/x = new /datum/abs_base\n\treturn isnull(x)`,
+    expected: '1'
+  },
+  {
+    // W-K mc: a child of an abstract root is concrete (inherited
+    // abstract_type != its own path) and instantiates normally.
+    name: 'concrete child of abstract root instantiates',
+    dm: `/datum/abs_base2\n\tvar/abstract_type = /datum/abs_base2\n/datum/abs_base2/leaf\n/datum/probe/proc/run()\n\tvar/x = new /datum/abs_base2/leaf\n\treturn isnull(x)`,
+    expected: '0'
   }
 ];
 
