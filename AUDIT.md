@@ -169,6 +169,28 @@ macro-expanded loop-var/var names, `return` at EOF). **All four corpora now pars
 
 The 12.1–12.11 batches are tracked linearly as items 55–67 in `PLAN.md` (universal plan).
 
+### 1.6 Review — W-M / W-N wave (#30, #32, #33), 2026-10-11
+
+Code review of the three PRs merged on 2026-10-11. Findings only: nothing
+below has been fixed. Line numbers are at `410d0c3`.
+
+| ID | Sev | PR | Finding | Where | Suggested fix |
+|---|---|---|---|---|---|
+| R1 | 🟠 | #30 | `?…;verb=x` hrefs call **any** proc, not just verbs, on **any** datum named by `src=` (ref, `/type/path` or entity id). `dmpanel` also lists every proc on the mob (`EnumerateProcs`) as a clickable verb. If a player puts a link in text that ends up in a `browse()` page (for example paper contents), whoever clicks it calls that proc. | `dmRuntimeCS.ts:6694` `RouteHref`; `csharpEmitter.ts:1817` | Allow `verb=` only for procs declared as verbs (the parser already records them, item 34), and resolve `src=` only to datums the page itself registered. |
+| R2 | 🟠 | #30 | `ResolveTopicSrc` matches by substring in both directions (`kv.Value.Contains(v)`). A numeric `src=1` matches `REF[0x1]`, `REF[0x10]` and so on, so the entity-id branch is never reached when the digit appears in any ref. | `dmRuntimeCS.ts:6744` | Match the ref string exactly, then try a type path, then an entity id. |
+| R3 | 🟠 | #30 | `DMUiRuntime.Answer` skips the owner check when the answering session has no DM mob (`usr == null`). Prompt ids are sequential, so a session in the lobby can answer another player's `input()`/`alert()`. | `dmRuntimeCS.ts:6503` | Reject the answer when `usr == null` and the prompt has an owner. |
+| R4 | 🟡 | #30 | A bare `input()`, `alert()` or `browse()` is routed to the UI bridge before user procs are resolved. A type that defines its own `proc/browse()` and calls it bare gets the bridge instead. | `csharpEmitter.ts:2883` | Check `symbols.resolveBareProc(currentTypePath, name)` first, then confirm BYOND's precedence with a probe. |
+| R5 | 🟡 | #30 | An answered prompt resumes its DM proc inside the `dmanswer` command handler (TaskCompletionSource continuation), outside `DMTickScheduler.PumpGate`. On a live server this is the same thread, so there's no race, but DM code runs in the middle of a command instead of on a tick. `dmverb` behaves the same way today. | `dmRuntimeCS.ts:1580` | Resume through `DMTickScheduler.SpawnExpr(0, …)` so it lands on the next pump. |
+| R6 | 🟡 | #33 | `typeDeclaresVar` walks `computeParentPath` (the path prefix) instead of the IR's `parentPath`, so it ignores `parent_type` reparenting (WS4-3). It can then disagree with the IR about whether a name is a field or a global. | `csharpEmitter.ts:2596` | Walk `irType.parentPath`. |
+| R7 | 🟡 | #33 | A comment and docs/plans/34 say the IR drops bare `var/x` decls, so a bare field that collides with a global resolves to the global. That's wrong: bare decls are in `customVars` with a `null` value (verified), so the field correctly wins. | `csharpEmitter.ts:2607`, `docs/plans/34-round-flow.md` | Correct the comment and the doc. |
+| R8 | 🟡 | #33 | Locals and globals are matched case-insensitively (`toLowerCase`), but DM var names are case-sensitive, so a local `Foo` hides a global `foo`. | `csharpEmitter.ts` `isBareGlobalName`, `collectProcLocals` | Compare names as written. |
+| R9 | 🟡 | #33 | Subsystem `Initialize()` runs at construction, in construction order, with no `timeofday` argument. BYOND's MC sorts by `init_order` and calls `Initialize(REALTIMEOFDAY)`, so on real corpora subsystems that depend on each other (jobs before ticker) can initialize in the wrong order. | `csharpEmitter.ts:1005` | Collect the subsystems, sort by `init_order` (descending, as the MC does), then call `Initialize` with a time argument. |
+| R10 | 🟡 | #33 | The `subtypesof` builtin rebuilds the whole type set and walks every type's ancestor chain on every call. With 46k types on tg, and many calls during init, that's slow. | `dmRuntimeCS.ts:1013` | Cache results per path; layouts are fixed after `RegisterProcs`. |
+| R11 | 🟡 | #33 | The join flow depends on `/world/proc/on_player_join`, a hook that neither BYOND nor Paradise defines; only the test fixture provides it (marked shim). On a real converted corpus, joining never reaches job assignment or spawn. The PR and docs/plans/34 describe this as running "on converted paradise". | `csharpEmitter.ts:1177`, `tests/m2-round/code/m2r.dm:112` | Either generate the hook from the corpus's real login path (`/mob/new_player` → `AttemptLateSpawn`), or say clearly that it's fixture-only. |
+| R12 | ❓ | #33 (and #26) | `tests/m2-round/code/paradise_*.dm` (about 1,075 lines) and `tests/m2-slice/code/paradise_*.dm` are verbatim Paradise code, which is AGPL-3.0. They sit in this MIT repo with no license notice. | `tests/m2-round/code/`, `tests/m2-slice/code/` | **Owner decision:** add an AGPL notice and license file for those folders, or replace them with original fixtures. |
+
+#32 (keybinds `type: Function` → `State` + `canFocus`) is correct: at the pinned engine, `KeyBindingType` is `Unknown`/`State`/`Toggle`/`Command` (`Robust.Client/Input/InputManager.cs:952`).
+
 ---
 
 ## 2. Fidelity measurement
