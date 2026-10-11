@@ -329,3 +329,81 @@ runDMMParserTests().catch(err => {
   console.error("Test error:", err);
   process.exit(1);
 });
+// === Plan 32: per-atom map attributes -> entity initialVars ===
+// Real station maps set per-instance vars ({dir=4;icon_state="x"}) on placed
+// atoms. These now ride the DMRuntime component's initialVars, merged over
+// the prototype's declared vars (BYOND instance-overrides-type semantics).
+
+async function runPlan32MapAttrTests() {
+  console.log("=== Running Plan 32 per-atom attribute tests ===");
+  const parser = new DMMParser();
+
+  const dmm = `"aaa" = (/turf/simulated/floor{icon_state="wood"}, /obj/structure/table{dir=4;name="named"}, /area/station{tag="x"})
+"bbb" = (/turf/simulated/wall, /obj/item/sword)
+
+(1,1,1) = {" 
+aaa
+bbb
+"}`;
+  const dmmPath = path.join(process.cwd(), 'temp_test_plan32.dmm');
+  fs.writeFileSync(dmmPath, dmm);
+  const parsed = parser.parseDMM(dmmPath);
+
+  // entryAttrs keeps per-atom attribution the merged `attributes` loses.
+  const def = parsed.definitions.get('aaa');
+  assertEqual(def?.entryAttrs?.[0], { icon_state: '"wood"' }, 'entryAttrs: turf entry attrs');
+  assertEqual(def?.entryAttrs?.[1], { dir: '4', name: '"named"' }, 'entryAttrs: obj entry attrs');
+  assertEqual(def?.entryAttrs?.[2], { tag: '"x"' }, 'entryAttrs: area entry attrs');
+  assertEqual(parsed.definitions.get('bbb')?.entryAttrs, undefined, 'entryAttrs absent when no attrs');
+
+  // Map conversion: attrs land on the entity's DMRuntime initialVars merged
+  // over the prototype's declared vars; turf/area attrs warn once per key.
+  const { MapConverter } = await import('../dmm/mapConverter.js');
+  const outRoot = path.join(process.cwd(), 'temp_test_plan32_out');
+  if (fs.existsSync(outRoot)) fs.rmSync(outRoot, { recursive: true, force: true });
+  fs.mkdirSync(path.join(outRoot, 'Resources', 'Prototypes'), { recursive: true });
+  fs.mkdirSync(path.join(outRoot, 'Resources', 'Maps'), { recursive: true });
+  fs.writeFileSync(path.join(outRoot, 'Resources', 'Prototypes', 'converted_entities.yml'),
+`- type: entity
+  id: obj_structure_table
+  parent: BaseItem
+  components:
+  - type: DMRuntime
+    dmTypePath: /obj/structure/table
+    initialVars:
+      icon_state: "\\"wood\\""
+      custom_var: "42"
+      dir: "1"
+`);
+  const mapPath = path.join(outRoot, 'Resources', 'Maps', 'in.yml');
+  const mapData = new MapConverter().convertDMMToSS14Map(dmmPath, mapPath);
+  const yaml = fs.readFileSync(mapPath, 'utf8');
+
+  // Attributed entity points at a generated variant proto; the variant file
+  // (under Resources/Prototypes/map_variants/) carries the initialVars union.
+  assert(yaml.includes('- proto: obj_structure_table__mv'), 'attributed entity references a variant proto');
+  assert(!yaml.includes('- type: DMRuntime'), 'map yaml entities carry no DMRuntime component');
+  const variantPath = path.join(outRoot, 'Resources', 'Prototypes', 'map_variants', 'in.yml');
+  assert(fs.existsSync(variantPath), 'variant protos file emitted beside Prototypes');
+  const vy = fs.readFileSync(variantPath, 'utf8');
+  assert(vy.includes('parent: obj_structure_table'), 'variant inherits the converted proto');
+  assert(vy.includes('dmTypePath: /obj/structure/table'), 'variant keeps the DM type path');
+  assert(vy.includes('dir: "4"'), 'instance attr dir=4 overrides proto dir=1 in union');
+  assert(vy.includes('name: "\\"named\\""'), 'instance attr name in union');
+  assert(vy.includes('icon_state: "\\"wood\\""'), 'proto initialVars merged in (icon_state kept)');
+  assert(vy.includes('custom_var: "42"'), 'proto initialVars merged in (custom_var kept)');
+  assert(yaml.includes('- proto: obj_item_sword'), 'unattributed entity keeps base proto ref');
+  assertEqual(mapData.warnings.filter(w => w.includes('not mapped')).length, 1,
+    'unmappable turf/area attrs warn once per key');
+  assert(mapData.warnings[0]?.includes('icon_state') && mapData.warnings[0]?.includes('tag'),
+    'warning names union of unmappable attr names');
+
+  fs.unlinkSync(dmmPath);
+  fs.rmSync(outRoot, { recursive: true, force: true });
+  console.log("\n✅ ALL PLAN-32 MAP ATTRIBUTE TESTS PASSED!");
+}
+
+runPlan32MapAttrTests().catch(err => {
+  console.error("Test error:", err);
+  process.exit(1);
+});

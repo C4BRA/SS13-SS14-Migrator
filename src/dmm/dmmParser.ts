@@ -4,6 +4,11 @@ export interface DMMTileDefinition {
   key: string;
   typePaths: string[];
   attributes?: Record<string, string>;
+  // Per-entry attribute sets aligned with typePaths (undefined = no attrs on
+  // that atom). `attributes` above stays the merged tile-level view; this
+  // keeps which atom each {k=v} belonged to so map entities can carry their
+  // own initialVars (real-map dir/icon_state/pixel offsets).
+  entryAttrs?: (Record<string, string> | undefined)[];
 }
 
 export interface DMMGrid {
@@ -169,7 +174,9 @@ export class DMMParser {
     const segments = this.splitTopLevel(inner, ',');
 
     const typePaths: string[] = [];
+    const entryAttrs: (Record<string, string> | undefined)[] = [];
     let attributes: Record<string, string> | undefined;
+    let hasEntryAttrs = false;
 
     for (const seg of segments) {
       // TGM "= /path" continuations: "/obj/foo{layer=5} = /obj/bar" are two
@@ -180,15 +187,22 @@ export class DMMParser {
         const parsed = this.parseEntry(t);
         if (!parsed) continue;
         typePaths.push(parsed.path);
-        if (parsed.attrs && Object.keys(parsed.attrs).length > 0) {
+        const attrs = parsed.attrs && Object.keys(parsed.attrs).length > 0
+          ? parsed.attrs : undefined;
+        entryAttrs.push(attrs);
+        if (attrs) {
+          hasEntryAttrs = true;
           if (!attributes) attributes = {};
-          Object.assign(attributes, parsed.attrs);
+          Object.assign(attributes, attrs);
         }
       }
     }
 
     if (typePaths.length > 0) {
-      mapData.definitions.set(key, { key, typePaths, attributes });
+      mapData.definitions.set(key, {
+        key, typePaths, attributes,
+        entryAttrs: hasEntryAttrs ? entryAttrs : undefined
+      });
     }
   }
 

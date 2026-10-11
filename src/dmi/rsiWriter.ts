@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { DMIMetadata, DMIParser } from './dmiParser.js';
 import { decodePNG, encodePNG } from './pngCodec.js';
 import { toTileImage32 } from './imageScale.js';
@@ -44,7 +45,60 @@ export class RSIWriter {
       }
     }
 
-    const rsiStates = meta.states.map(s => {
+    // Plan 32: real DMIs legally carry duplicate icon_state names (paradise:
+    // ~170 across 32 files). BYOND resolves icon_state FIRST-match, so later
+    // same-name states are unreachable shadow states — and duplicate
+    // stateIds hard-fail the pin's RSI loader. Emit first-wins in BOTH
+    // meta.json and the PNG set (previously the last dup's PNG overwrote the
+    // first's while meta kept both). Identical-image dupes dedupe silently;
+    // distinct-content collisions are reported per name below.
+    const gridwidth = sheet ? Math.floor(sheet.width / meta.width) : 0;
+    const totalCells = sheet ? gridwidth * Math.floor(sheet.height / meta.height) : 0;
+    const cellBases: number[] = [];
+    {
+      let base = 0;
+      for (const s of meta.states) { cellBases.push(base); base += s.frames * s.dirs; }
+    }
+    const seenStates = new Map<string, string>(); // kept name -> content hash
+    const identicalDupes = new Set<string>();
+    const distinctDupes = new Set<string>();
+    let unverifiableDupes = 0;
+    const keptStates: typeof meta.states = [];
+    const keptBases: number[] = [];
+    meta.states.forEach((s, i) => {
+      const hash = sheet && cellBases[i] + s.frames * s.dirs <= totalCells
+        ? this.stateContentHash(sheet, cellBases[i], s, meta.width, meta.height, gridwidth)
+        : '';
+      const keptHash = seenStates.get(s.name);
+      if (keptHash === undefined) {
+        seenStates.set(s.name, hash);
+        keptStates.push(s);
+        keptBases.push(cellBases[i]);
+      } else if (!keptHash || !hash) {
+        unverifiableDupes++;
+      } else if (hash === keptHash) {
+        identicalDupes.add(s.name);
+      } else {
+        distinctDupes.add(s.name);
+      }
+    });
+    if (identicalDupes.size) {
+      meta.warnings.push(
+        `${identicalDupes.size} duplicate icon_state name(s) deduped — identical image, BYOND unreachable shadow states: ${[...identicalDupes].join(', ')}`
+      );
+    }
+    for (const name of distinctDupes) {
+      meta.warnings.push(
+        `state '${name}': duplicate icon_state with DIFFERENT image — kept first (BYOND first-match); later state unreachable`
+      );
+    }
+    if (unverifiableDupes) {
+      meta.warnings.push(
+        `${unverifiableDupes} duplicate icon_state name(s) deduped first-wins — sheet undecodable/out-of-range, content not compared`
+      );
+    }
+
+    const rsiStates = keptStates.map(s => {
       const state: any = {
         name: s.name,
         directions: s.dirs
@@ -68,14 +122,10 @@ export class RSIWriter {
     }, null, 2));
 
     if (sheet) {
-      const gridwidth = Math.floor(sheet.width / meta.width);
-      const rows = Math.floor(sheet.height / meta.height);
-      const totalCells = gridwidth * rows;
-      let cellBase = 0;
-
-      for (const state of meta.states) {
+      for (let ki = 0; ki < keptStates.length; ki++) {
+        const state = keptStates[ki];
         const cellsNeeded = state.frames * state.dirs;
-        cellBase += cellsNeeded;
+        const cellBase = keptBases[ki] + cellsNeeded;
         if (cellsNeeded === 0) continue;
         if (state.dirs !== 1 && state.dirs !== 4 && state.dirs !== 8) {
           meta.warnings.push(`state '${state.name}': dirs=${state.dirs} is not 1/4/8 — emitting anyway, engine may reject`);
@@ -133,6 +183,32 @@ export class RSIWriter {
     }
 
     return meta;
+  }
+
+  /**
+   * Content hash of one state's cells in sheet order (frame-major layout):
+   * captures dims + every cell's pixels, so same-name states with identical
+   * bytes dedupe cleanly while distinct-content collisions are reported.
+   */
+  private stateContentHash(
+    sheet: { width: number; rgba: Buffer },
+    stateBase: number,
+    state: { frames: number; dirs: number },
+    w: number, h: number, gridwidth: number
+  ): string {
+    const hash = crypto.createHash('sha1');
+    hash.update(`${state.frames}x${state.dirs}:`);
+    const rowBytes = w * 4;
+    const stride = sheet.width * 4;
+    for (let i = 0; i < state.frames * state.dirs; i++) {
+      const sx = ((stateBase + i) % gridwidth) * w;
+      const sy = Math.floor((stateBase + i) / gridwidth) * h;
+      for (let y = 0; y < h; y++) {
+        const off = (sy + y) * stride + sx * 4;
+        hash.update(sheet.rgba.subarray(off, off + rowBytes));
+      }
+    }
+    return hash.digest('hex');
   }
 
   private blitCell(
