@@ -250,3 +250,92 @@ runRSIWriterTests().catch(err => {
   console.error("Test error:", err);
   process.exit(1);
 });
+
+// === Plan 32: duplicate icon_state dedupe (first-wins, BYOND semantics) ===
+// Real DMIs contain same-named states; the RSI loader hard-fails on
+// duplicate stateIds. First match wins like BYOND; identical-image dupes
+// dedupe silently, distinct-content collisions get a per-name warning.
+
+function buildDupSheetPng(): { png: Buffer; make: (lastBlue: boolean) => Buffer } {
+  const W = 2, H = 2, cols = 3; // 3 cells of 2x2 in one row
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const dmiText = `# BEGIN DMI
+version = 4.0
+width = 2
+height = 2
+state "solo"
+  dirs = 1
+  frames = 1
+state "dup"
+  dirs = 1
+  frames = 1
+state "dup"
+  dirs = 1
+  frames = 1
+# END DMI`;
+  const textChunkData = Buffer.concat([Buffer.from('DMI'), Buffer.from([0]), Buffer.from(dmiText, 'latin1')]);
+  const textCrc = Buffer.alloc(4);
+  textCrc.writeUInt32BE(crc32(Buffer.concat([Buffer.from('tEXt'), textChunkData])), 0);
+  const textChunk = Buffer.concat([Buffer.alloc(4).fill(0), Buffer.from('tEXt'), textChunkData, textCrc]);
+  textChunk.writeUInt32BE(textChunkData.length, 0);
+
+  const make = (lastBlue: boolean): Buffer => {
+    const rgba = Buffer.alloc(cols * W * H * 4);
+    const paint = (cellIdx: number, r: number, g: number, b: number) => {
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const i = (y * cols * W + cellIdx * W + x) * 4;
+        rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = 255;
+      }
+    };
+    paint(0, 255, 0, 0);                       // "solo"
+    paint(1, 0, 255, 0);                       // "dup" #1 (kept)
+    paint(2, 0, lastBlue ? 0 : 255, lastBlue ? 255 : 0); // "dup" #2 (green or blue)
+    const idatPng = encodePNG({ width: cols * W, height: H, rgba });
+    const ihdrLen = idatPng.readUInt32BE(8);
+    const spliceAt = 8 + 12 + ihdrLen;
+    return Buffer.concat([signature, idatPng.subarray(8, spliceAt), textChunk, idatPng.subarray(spliceAt)]);
+  };
+  return { png: make(false), make };
+}
+
+async function runPlan32DupStateTests() {
+  console.log("=== Running Plan 32 duplicate-state dedupe tests ===");
+  const writer = new RSIWriter();
+  const { make } = buildDupSheetPng();
+
+  // Identical-image duplicate: deduped, one meta entry, no DIFFERENT warning.
+  const samePath = path.join(process.cwd(), 'temp_test_dup_same.dmi');
+  fs.writeFileSync(samePath, make(false));
+  const sameOut = path.join(process.cwd(), 'temp_test_dup_same_rsi');
+  if (fs.existsSync(sameOut)) fs.rmSync(sameOut, { recursive: true, force: true });
+  const sameMeta = writer.convertDMIToRSI(samePath, sameOut);
+  const sameNames = (JSON.parse(fs.readFileSync(path.join(sameOut, 'meta.json'), 'utf8')).states as any[]).map(s => s.name);
+  assertEqual(sameNames, ['solo', 'dup'], 'dup-state identical image: meta keeps one entry');
+  assert(fs.existsSync(path.join(sameOut, 'dup.png')), 'dup-state identical image: kept state png written');
+  assert(sameMeta.warnings.some(w => w.includes('identical image')), 'dup-state identical image reported as identical dedupe');
+  assert(!sameMeta.warnings.some(w => w.includes('DIFFERENT')), 'dup-state identical image raises no collision warning');
+  // First-wins pixels: dup.png decodes to cell 1's green, not cell 2's.
+  const samePng = decodePNG(fs.readFileSync(path.join(sameOut, 'dup.png')));
+  assertEqual([samePng.rgba[0], samePng.rgba[1], samePng.rgba[2]], [0, 255, 0], 'dup-state identical image: kept png is the first state');
+
+  // Distinct-content duplicate: deduped first-wins + collision warning.
+  const diffPath = path.join(process.cwd(), 'temp_test_dup_diff.dmi');
+  fs.writeFileSync(diffPath, make(true));
+  const diffOut = path.join(process.cwd(), 'temp_test_dup_diff_rsi');
+  if (fs.existsSync(diffOut)) fs.rmSync(diffOut, { recursive: true, force: true });
+  const diffMeta = writer.convertDMIToRSI(diffPath, diffOut);
+  const diffNames = (JSON.parse(fs.readFileSync(path.join(diffOut, 'meta.json'), 'utf8')).states as any[]).map(s => s.name);
+  assertEqual(diffNames, ['solo', 'dup'], 'dup-state distinct image: meta keeps one entry');
+  assert(diffMeta.warnings.some(w => w.includes("'dup'") && w.includes('DIFFERENT')), 'dup-state distinct image reported per name');
+  const diffPng = decodePNG(fs.readFileSync(path.join(diffOut, 'dup.png')));
+  assertEqual([diffPng.rgba[0], diffPng.rgba[1], diffPng.rgba[2]], [0, 255, 0], 'dup-state distinct image: kept png is the FIRST state (BYOND)');
+
+  for (const p of [samePath, diffPath]) if (fs.existsSync(p)) fs.unlinkSync(p);
+  for (const d of [sameOut, diffOut]) if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true });
+  console.log("\n✅ ALL PLAN-32 DUP-STATE TESTS PASSED!");
+}
+
+runPlan32DupStateTests().catch(err => {
+  console.error("Test error:", err);
+  process.exit(1);
+});
