@@ -1885,6 +1885,32 @@ public static class ConvertedDMProcs
     name: 'concrete child of abstract root instantiates',
     dm: `/datum/abs_base2\n\tvar/abstract_type = /datum/abs_base2\n/datum/abs_base2/leaf\n/datum/probe/proc/run()\n\tvar/x = new /datum/abs_base2/leaf\n\treturn isnull(x)`,
     expected: '0'
+  },
+  {
+    // Typed vars, step 1: slot reads/writes, an inherited var overridden in
+    // a subtype, and a subtype proc touching the ancestor's slot.
+    name: 'type var slots survive inheritance and overrides',
+    dm: `/obj/p_slot\n\tvar/count = 1\n\tproc/bump()\n\t\tcount += 2\n\t\treturn count\n/obj/p_slot/sub\n\tcount = 10\n\tproc/bump2()\n\t\tcount = count * 2\n\t\treturn count\n/datum/probe/proc/run()\n\tvar/obj/p_slot/sub/o = new /obj/p_slot/sub\n\to.bump()\n\treturn o.bump2()`,
+    expected: '24'
+  },
+  {
+    // A proc local shadows the slot var; the datum field is untouched.
+    name: 'proc local shadows a slot var',
+    dm: `/obj/p_sh\n\tvar/v = "field"\n\tproc/f()\n\t\tvar/v = "local"\n\t\tv = "local2"\n\t\treturn v\n/datum/probe/proc/run()\n\tvar/obj/p_sh/o = new /obj/p_sh\n\tvar/r = o.f()\n\treturn "[r]-[o.v]"`,
+    expected: 'local2-field'
+  },
+  {
+    // A slot write is visible to by-name reads from outside, and initial()
+    // still reports the declared default.
+    name: 'slot writes are visible by name and keep initial()',
+    dm: `/datum/p_d\n\tvar/hp = 5\n\tproc/hurt()\n\t\thp = 1\n\t\treturn initial(hp)\n/datum/probe/proc/run()\n\tvar/datum/p_d/d = new /datum/p_d\n\tvar/i = d.hurt()\n\treturn "[i]-[d.hp]"`,
+    expected: '5-1'
+  },
+  {
+    // Built-in atom vars (name, icon_state) live in /atom's slots.
+    name: 'atom built-in vars read and write through slots',
+    dm: `/obj/p_b\n\tname = "box"\n\ticon_state = "closed"\n\tproc/open()\n\t\ticon_state = "open"\n\t\treturn "[name]:[icon_state]"\n/datum/probe/proc/run()\n\tvar/obj/p_b/o = new /obj/p_b\n\tvar/r = o.open()\n\treturn "[r]:[o.icon_state]"`,
+    expected: 'box:open:open'
   }
 ];
 

@@ -33,6 +33,7 @@ async function runTests() {
   await import('./preprocessor.test.js');
   await import('./runtimeTemplate.test.js');
   await import('./symbolTable.test.js');
+  await import('./varLayout.test.js');
   await import('./parallelDeterminism.test.js');
 
   // Test 1: DM Lexer

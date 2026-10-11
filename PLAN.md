@@ -343,3 +343,18 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       diffs, determinism test added). Paradise 62.5s → 22.2s wall (**2.8×**) on 8
       cores; DMI was the real bottleneck (36.3s→5.9s), not parse (12.0s→4.7s). Emit
       stays serial (~8s, now dominant — flagged in docs/plans/15-b8-speed.md).
+77. [x] **C-1 — Typed vars, step 1: slot layouts.** First step of the design-doc
+      migration (typed components, static dispatch). Every type now has a fixed
+      var slot layout: its parent's layout plus the vars it adds (`/atom` adds
+      `name`/`desc`/`icon`/`icon_state`; `loc`/`contents`/`x`/`y`/`z`/`type`/
+      `parent_type`/`vars`/`verbs` stay in the dictionary), so an inherited var
+      keeps its index in every descendant. `src/ir/varLayout.ts` computes the
+      layouts; the emitter registers them (`DMVarLayouts.Register(path, parent,
+      own)`) and emits `comp.GetVarSlot(i, "x")` / `comp.SetVarSlot(i, "x", v)`
+      for vars it resolves on the proc's own type. The runtime stores declared
+      vars in a `DMValue[]` and falls back to by-name access when the layout,
+      receiver or a shadowing proc local doesn't match, so semantics are
+      unchanged. **tg: 178,137 of 709,596 var accesses (25.1%) use slots** (the
+      rest are mostly proc locals and params — step 4). Probes 303 → 307/307
+      (4 slot probes). A slot read is ~2× a by-name read in a Release
+      micro-benchmark with one proc frame open; the frame check now dominates.

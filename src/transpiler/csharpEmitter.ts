@@ -6,6 +6,7 @@ import { DMLexer } from '../parser/dmLexer.js';
 import { DiagnosticCollector } from '../diagnostics.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
 import { SymbolTable } from '../ir/symbolTable.js';
+import { computeVarLayouts, VarLayout } from '../ir/varLayout.js';
 
 export class CSharpEmitter {
   private tempCounter = 0;
@@ -53,6 +54,10 @@ export class CSharpEmitter {
    *  context (no `comp`, no current datum): src is Null, bare calls go
    *  through GlobalVars.CallGlobal, and new() uses a null datum. */
   private globalsMode = false;
+  // Typed vars, step 1: per-type slot layouts, and how many var accesses
+  // were emitted as slot accesses vs. by-name lookups.
+  private varLayouts: Map<string, VarLayout> = new Map();
+  public varAccessStats = { slot: 0, named: 0 };
 
   private nextTemp(): string {
     return `__dm_t${this.tempCounter++}`;
@@ -307,6 +312,17 @@ namespace Content.Server.DM
 `);
     const pathRegs: string[] = [];
     const procRegs: string[] = [];
+
+    // Typed vars, step 1: register every type's slot layout (its parent and
+    // the vars it adds); the runtime rebuilds full layouts from these.
+    this.varLayouts = computeVarLayouts(irMap);
+    for (const layout of this.varLayouts.values()) {
+      const parent = layout.parentPath && this.varLayouts.has(layout.parentPath)
+        ? `"${this.escapeString(layout.parentPath)}"`
+        : 'null';
+      const own = layout.own.map(n => `"${this.escapeString(n)}"`).join(', ');
+      pathRegs.push(`            DMVarLayouts.Register("${this.escapeString(layout.path)}", ${parent}, new string[] { ${own} });`);
+    }
 
     // Pass 1: registrations (small) + the member names. Both passes use the
     // same deduped member names. Var-only types get a RegisterPath entry
@@ -1862,7 +1878,7 @@ namespace Content.Server.DM
       case 'AssignmentStatement':
         if (CSharpEmitter.MOVE_VARS.has(stmt.assignmentTarget))
           return `${pad}await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
-        return `${pad}comp.SetVar("${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
+        return `${pad}${this.emitVarWrite(stmt.assignmentTarget, this.transpileExpression(stmt.assignmentValue))};\n`;
 
       case 'VarDeclStatement':
         // W-H: 'var/x' is a proc local — declare it on the frame so writes
@@ -2129,7 +2145,7 @@ namespace Content.Server.DM
           if (stmt.expression.type === 'binary' && stmt.expression.operator === '<<') {
             const lhs = stmt.expression.left as any;
             if (lhs?.type === 'variable' && !['src', 'usr', 'world', 'args', 'loc', 'contents'].includes(lhs.name)) {
-              return `${pad}comp.SetVar("${lhs.name}", DMValue.Output(${this.transpileExpression(lhs)}, ${this.transpileExpression(stmt.expression.right)}));\n`;
+              return `${pad}${this.emitVarWrite(lhs.name, `DMValue.Output(${this.transpileExpression(lhs)}, ${this.transpileExpression(stmt.expression.right)})`)};\n`;
             }
             return `${pad}_ = ${expr};\n`;
           }
@@ -2272,7 +2288,7 @@ namespace Content.Server.DM
         }
         if (CSharpEmitter.MOVE_VARS.has((node as any).target))
           return `(await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
-        return `comp.SetVar("${(node as any).target}", ${this.transpileExpression((node as any).value)})`;
+        return this.emitVarWrite((node as any).target, this.transpileExpression((node as any).value));
       case 'property_assignment': {
         // GLOB.x = v writes through the generated GlobalVars registry.
         const paTarget = (node as any).target;
@@ -2292,7 +2308,7 @@ namespace Content.Server.DM
           if (this.globalsMode) {
             return `(await GlobalVars.Set("${ia.target.name}", DMListSet(await GlobalVars.Get("${ia.target.name}"), ${indexCode}, ${valueCode})))`;
           }
-          return `comp.SetVar("${ia.target.name}", DMListSet(comp.GetVar("${ia.target.name}"), ${indexCode}, ${valueCode}))`;
+          return this.emitVarWrite(ia.target.name, `DMListSet(${this.emitVarRead(ia.target.name)}, ${indexCode}, ${valueCode})`);
         }
         // GLOB.registry["k"] = v writes through the generated GlobalVars registry.
         if (ia.target?.type === 'property' && ia.target.target?.type === 'variable' && ia.target.target.name === 'GLOB') {
@@ -2363,7 +2379,36 @@ namespace Content.Server.DM
     // .contents yields live membership (item 69, B-1).
     if (node.name === 'loc' || node.name === 'contents')
       return `DMRuntimeHelpers.DMGetProperty(DMValue.FromDatum(comp), "${node.name}")`;
-    return `comp.GetVar("${node.name}")`;
+    return this.emitVarRead(node.name);
+  }
+
+  /** Slot index of `name` in the current type's layout, when the access can
+   *  use one: a type-level proc body (not /proc globals or GlobalVars init). */
+  private varSlot(name: string): number | undefined {
+    if (this.globalsMode || !this.currentTypePath || this.currentTypePath.toLowerCase() === '/proc') return undefined;
+    return this.varLayouts.get(this.currentTypePath)?.index.get(name);
+  }
+
+  /** A var read on `comp`: a slot read when statically resolved, else by name. */
+  private emitVarRead(name: string): string {
+    const slot = this.varSlot(name);
+    if (slot !== undefined) {
+      this.varAccessStats.slot++;
+      return `comp.GetVarSlot(${slot}, "${name}")`;
+    }
+    this.varAccessStats.named++;
+    return `comp.GetVar("${name}")`;
+  }
+
+  /** A var write on `comp`: a slot write when statically resolved, else by name. */
+  private emitVarWrite(name: string, valueCode: string): string {
+    const slot = this.varSlot(name);
+    if (slot !== undefined) {
+      this.varAccessStats.slot++;
+      return `comp.SetVarSlot(${slot}, "${name}", ${valueCode})`;
+    }
+    this.varAccessStats.named++;
+    return `comp.SetVar("${name}", ${valueCode})`;
   }
 
   private normalizeTypePath(p: string): string {
