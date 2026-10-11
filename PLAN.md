@@ -12,8 +12,8 @@ notes are archived in `docs/plans/` (appendices, not trackers).
 | Gate | Value |
 |---|---|
 | Items done / open (Part A) | **67 / 0** — the conversion pipeline is complete |
-| Items done / open (Part B) | **2 / 7** — playability phases; 68, 69 (first increment) done |
-| Semantic probes | **171 / 171** (`npm run audit:semantics`) |
+| Items done / open (Part B) | **9 / 0** — M1 playable demo proven 5/5 (m1-gate); wave-5 post-M1 items 77–80 done |
+| Semantic probes | **329 / 329** (`npm run audit:semantics`) |
 | Boot gate | **4 / 4 corpora boot clean** — tgstation 45,967 · tgmc 26,853 · paradise 28,849 · beestation 34,803 types: transpile seconds → build 0 errors → server Ready, port 1212 |
 | Perf audit | 427× emission duplication fixed (17.9 GB → 46 MB tgmc); streaming output; COW define maps (parse −28%); split emitted classes (CLR 65,536 method/type cap); full loop-advance hang audit: **no hang paths found** |
 | Loss sites (honest, post-12.1) | tg **25,882** (tgmc/paradise/bee rows stale — refresh in item 75) |
@@ -343,3 +343,39 @@ ordered toward M1; the later phases (fidelity, speed) are independently valuable
       diffs, determinism test added). Paradise 62.5s → 22.2s wall (**2.8×**) on 8
       cores; DMI was the real bottleneck (36.3s→5.9s), not parse (12.0s→4.7s). Emit
       stays serial (~8s, now dominant — flagged in docs/plans/15-b8-speed.md).
+
+---
+
+## Part C — Post-M1 waves (wave-5, 2026-10-11)
+
+77. [x] **W-K — Master controller/subsystem instantiation.** Concrete non-abstract
+       subtypes instantiated (was the abstract base → all `/datum/controller`
+       dead); init_order sort; wait/can_fire/SS_NO_FIRE gates honored per-fire;
+       `Initialize()` called on every subsystem post-New (NO_FIRE gates fire()
+       only). Paradise: SS_NO_FIRE 9.9k → 0, **90 subsystems ticking**. Plus
+       throw/catch-var `/exception` datum binding + `abstract_type` guard.
+       (docs/plans/31-mc-subsystems.md, PR #29)
+78. [x] **W-L — Real paradise station map (boxstation) e2e.** 255×255 map:
+       convert 22.8s / 36,392 entities / 353 turf defs; `__mv<N>` variant protos
+       preserve 18,184 braced-attr placements; RSI dup-stateIds 168→0 via content
+       hash; dmm stage profiled 75s→5s (91.4s/20.4GB → 22.8s/6.5GB total);
+       server Ready ~147s; client attaches, dmclick reaches converted paradise
+       `Click()`. Open: real-map movement veto (turf Enter inside converted
+       code), `{attached}` autocmd uid, map-pick ordering. (docs/plans/32-real-map.md, PR #35)
+79. [x] **W-M — UI strategy spike.** BYOND UI is emulable at the text floor:
+       verbs/Topic/input/alert via DMUiRuntime + `dmanswer`/`dmlink` console
+       bridge (working prototype). .dmf skin emulation explicitly not worth it
+       (~10x cost); M2 north star = ui_interact/ui_act → BoundUserInterface
+       adapter. (docs/plans/33-ui-strategy.md, PR #30)
+80. [x] **W-N — Round-flow slice.** STicker → lobby → join → job assignment →
+       landmark spawn wearing job_outfit; `current_state=PLAYING`,
+       `SetRunLevel(GAME)`; `scripts/m2-round.sh` 5/5. Fixed bare writes to
+       declared /global/var silently binding nothing (`SSticker = src`,
+       `GLOB.player_list +=`), `var/list x = list()` expr-inits never seeding
+       (broke SSjobs.name_occupations), MC Initialize(); +5 builtins
+       (subtypesof, shuffle, pickweight, english_list, sortList).
+       (docs/plans/34-round-flow.md, PR #33)
+
+*Also merged wave-5-adjacent: PR #32 keybinds `type: Function`→`State`+`canFocus`
+(pin enum has no Function; canFocus routes to focused LineEdit) — verified
+windowed incl. negative-control crash repro.*

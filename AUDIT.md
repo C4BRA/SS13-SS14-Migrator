@@ -1,6 +1,6 @@
 # dm2ss14 — Audit (single source of truth)
 
-**Last updated:** 2026-08-02 · **HEAD baseline:** `4699c83` (Tier-3 builtins) + Plan 12 re-audit  
+**Last updated:** 2026-10-11 · **HEAD baseline:** `328ea54` (wave-5 closeout)  
 **Severity:** 🔴 Critical · 🟠 High (silent wrong) · 🟡 Medium · 🟢 Fixed / low  
 
 This file replaces the former split of `AUDIT.md`, `FIDELITY-AUDIT.md`,
@@ -12,18 +12,24 @@ corpus snapshots remain under `docs/audit/*.json`. Implementation plans stay in
 
 ## 0. Current status (read this first)
 
+**Wave-5 closeout (2026-10-11):** W-K master controller (concrete-subtype instantiation, `Initialize()` ordering, throw/`/exception` + abstract_type) · W-L real paradise station map end-to-end (variant protos `__mv<N>` for 18,184 braced-attr atoms, RSI dup-stateId dedupe, 3-step perf profile 91s/20.4GB → 22.8s/6.5GB) · W-M UI strategy (text-protocol bridge viable; ui_interact/ui_act→BUI = M2 north star) · W-N round-flow (bare-global binding, `var/list` expr-init seeding, +5 builtins). Open follow-ups in `docs/plans/{31,32,33,34}-*.md`: real-map `step_*`/`Move` no-op (turf Enter veto inside converted paradise code), `{attached}` autocmd resolves client uid not server mob, `StartWorld` picks first-sorted map file, `doMove` NRE, missing RSI states (`power_cond_white`), held-key repeat, multi-client.
+
 | Gate | Result |
 |---|---|
 | `npm run build` | clean (tsc strict) |
 | `npm test` | green; generated solution builds vs real RobustToolbox |
-| Semantic probes | **298 / 298** (`npm run audit:semantics`) |
+| Semantic probes | **329 / 329** (`npm run audit:semantics`) |
 | Compile-proof (tgstation) | **45,183 procs → 0 C# errors** (real engine, `engine.pin`) |
 | Loss sites (honest, wave-4) | tg **22,616** · paradise **21,311** (W-D/W-F/W-I waves; tgmc/bee not re-measured) |
 | Stubbed procs (wave-4) | tg **773** · paradise **905** (was 3,062 / 1,915) |
 | Paradise boot DM-errors | **189** lines (was **9,464** — W-I corpus playability pass) |
 | Unresolved bare calls (tg) | **138** (item 67 — remainder are user procs resolved by the registry at call time) |
 | Parse diagnostics | **tg 0 · tgmc 0 · paradise 0 · bee 0** (item 56 — all four corpora parse clean) |
-| Open fix wave | **none — all 67 PLAN.md items complete** |
+| Subsystems firing (paradise) | **90 ticking on world.time grid** (W-K — was silently 0; SS_NO_FIRE 9.9k → 0) |
+| Real-map gate (boxstation) | convert **22.8s** · **36,392** map entities · server Ready **~147s** · click dispatches converted `Click()` (W-L) |
+| Round-flow slice | **5/5** `scripts/m2-round.sh` — SSticker → lobby → job → landmark spawn (W-N) |
+| RSI duplicate stateIds | **0** (was 168 excess across 32 files — content-hash dedupe, W-L) |
+| Open fix wave | **none — all 67 PLAN.md items + wave-5 complete** |
 
 **Bottom line:** The converter is semantically healthier than its own harness
 admits. Plan 11 REDs are largely fixed. Remaining work is (1) measurement honesty,
