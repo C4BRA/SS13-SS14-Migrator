@@ -788,6 +788,10 @@ namespace Content.Server.DM
             // group setup; the shim allows only our dm* command names for
             // player sessions (the server console bypasses the check anyway).
             IoCManager.Resolve<IConGroupController>().Implementation = new DMPermissions();
+            // ==== W-M ui (docs/plans/33) ====
+            // input()/alert() prompts render to the owning session's console;
+            // dmanswer resolves them (engine-free: deterministic default).
+            DMUiRuntime.PromptHook = PushDMPrompt;
         }
 
         /// <summary>
@@ -1450,6 +1454,33 @@ namespace Content.Server.DM
                 Logger.ErrorS("dm", "Client datum bind failed: {Ex}", ex.Message);
             }
         }
+
+        // ==== W-M ui (docs/plans/33) ====
+
+        /// <summary>
+        /// DMUiRuntime.PromptHook — render an input()/alert() question to
+        /// the owning session's console. No session = auto-default (BYOND
+        /// closes orphan prompts the same way rather than blocking a proc
+        /// on an answer that can never arrive).
+        /// </summary>
+        private void PushDMPrompt(DMUiPrompt prompt)
+        {
+            var session = prompt.Usr != null ? SessionForDatum(prompt.Usr) : null;
+            if (session == null)
+            {
+                Logger.InfoS("dm.ui", "DMUI prompt {Id} unresolved — no session, auto-default", prompt.Id);
+                DMUiRuntime.AnswerDefault(prompt);
+                return;
+            }
+            var head = prompt.Kind == "alert" ? "ALERT" : "INPUT";
+            var title = prompt.Title.Length > 0 ? prompt.Title + " — " : "";
+            _conHost.WriteLine(session, "== " + head + " #" + prompt.Id + ": " + title + prompt.Message);
+            for (var i = 0; i < prompt.Options.Count; i++)
+                _conHost.WriteLine(session, "   [" + (i + 1) + "] " + prompt.Options[i].ToString());
+            _conHost.WriteLine(session, prompt.Options.Count > 0
+                ? "   dmanswer " + prompt.Id + " <n|text>   ('(cancel)' aborts)"
+                : "   dmanswer " + prompt.Id + " <text>     ('(cancel)' aborts)");
+        }
     }
 
     // W-C client tiles: DMTilePrototype moved to Content.Shared/DM/
@@ -1739,6 +1770,90 @@ namespace Content.Server.DM
         }
     }
 
+    // ==== W-M ui (docs/plans/33): text-UI commands =======================
+    // The console bridge for the DM message-loop UI: dmlinks/dmlink follow
+    // browse() links (Topic()/verb hrefs), dmpanel renders the verb panel
+    // BYOND skins generate as ?src=..;verb=.. links, and dmanswer resolves
+    // input()/alert() prompts the DMUiRuntime bridge queued.
+
+    /// <summary>dmanswer &lt;id&gt; [answer] — answer a pending input()/alert() prompt.</summary>
+    public sealed class DMAnswerCommand : IConsoleCommand
+    {
+        public string Command => "dmanswer";
+        public string Description => "Answer a converted input()/alert() prompt: dmanswer <id> [answer]";
+        public string Help => "dmanswer <id> [answer]";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            if (args.Length < 1) { shell.WriteLine(Help); return; }
+            if (!long.TryParse(args[0], out var id)) { shell.WriteError("dmanswer: first arg must be a prompt id"); return; }
+            var answer = string.Join(" ", args.Skip(1));
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (!DMUiRuntime.Answer(mob, id, answer))
+                shell.WriteError($"dmanswer: no pending prompt #{id} for you");
+        }
+    }
+
+    /// <summary>dmlinks — list the numbered links a browse() page registered.</summary>
+    public sealed class DMLinksCommand : IConsoleCommand
+    {
+        public string Command => "dmlinks";
+        public string Description => "List pending browse()/panel links for your mob.";
+        public string Help => "dmlinks";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmlinks: no DM mob attached"); return; }
+            var links = DMUiRuntime.LinksFor(mob);
+            if (links.Count == 0) { shell.WriteLine("dmlinks: no pending links — browse a page or run dmpanel first"); return; }
+            shell.WriteLine("links (dmlink <n>):");
+            for (var i = 0; i < links.Count; i++)
+                shell.WriteLine($"  [{i + 1}] {links[i].Value}    ({links[i].Key})");
+        }
+    }
+
+    /// <summary>dmlink &lt;n&gt; — follow browse() link n (Topic()/verb href click).</summary>
+    public sealed class DMLinkCommand : IConsoleCommand
+    {
+        public string Command => "dmlink";
+        public string Description => "Follow a browse() link by number (fires Topic() or a verb href).";
+        public string Help => "dmlink <n>";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            if (args.Length < 1 || !int.TryParse(args[0], out var n)) { shell.WriteLine(Help); return; }
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmlink: no DM mob attached"); return; }
+            DMCommands.Fire(shell, DMUiRuntime.RouteLink(mob, n), $"link {n}");
+        }
+    }
+
+    /// <summary>dmpanel — the BYOND verb/stat panel: your mob's verbs as links.</summary>
+    public sealed class DMPanelCommand : IConsoleCommand
+    {
+        public string Command => "dmpanel";
+        public string Description => "Render your mob's verb panel as followable links.";
+        public string Help => "dmpanel";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmpanel: no DM mob attached"); return; }
+            var names = ProcRegistry.EnumerateProcs(mob.DMTypePath).OrderBy(n => n).ToList();
+            if (names.Count == 0) { shell.WriteLine("dmpanel: mob has no verbs"); return; }
+            DMUiRuntime.RegisterVerbLinks(mob, mob, names);
+            var links = DMUiRuntime.LinksFor(mob);
+            shell.WriteLine("verbs (dmlink <n>):");
+            for (var i = Math.Max(0, links.Count - names.Count); i < links.Count; i++)
+                shell.WriteLine($"  [{i + 1}] {links[i].Value}");
+        }
+    }
+
     /// <summary>
     /// Client command permission shim (B-4, item 72): without an
     /// implementation, ConGroupController.CanCommand returns false and every
@@ -1751,7 +1866,9 @@ namespace Content.Server.DM
     {
         private static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
         {
-            "dmverb", "dmverbon", "dmclick", "dmsay", "dmooc", "dmtopic", "dmverbs", "dmloc"
+            "dmverb", "dmverbon", "dmclick", "dmsay", "dmooc", "dmtopic", "dmverbs", "dmloc",
+            // ==== W-M ui (docs/plans/33): text-UI commands ====
+            "dmanswer", "dmlinks", "dmlink", "dmpanel"
         };
 
         public bool CanCommand(ICommonSession session, string cmdName) => Allowed.Contains(cmdName);
@@ -2413,6 +2530,29 @@ namespace Content.Server.DM
   }
 
   private transpileBinary(node: any): string {
+    // ==== W-M ui (docs/plans/33) ====
+    // input()'s `as T`/`in L` selection modifiers parse as ordinary binary
+    // operators; an `in`/`as` whose LEFT operand is an input() call is
+    // really a pick-list/type constraint on the prompt — emit the async
+    // UI bridge instead of In()/the cast no-op.
+    if (node.operator === 'in' || node.operator === 'as') {
+      const asTypeHolder = node.operator === 'in' ? node.left : node;
+      let callNode = asTypeHolder;
+      let asTypeExpr = 'DMValue.Null';
+      if (asTypeHolder?.type === 'binary' && asTypeHolder.operator === 'as'
+          && asTypeHolder.left?.type === 'call') {
+        callNode = asTypeHolder.left;
+        asTypeExpr = this.uiAsTypeExpr(asTypeHolder.right);
+      }
+      if (callNode?.type === 'call' && !callNode.target
+          && callNode.name?.toLowerCase() === 'input') {
+        const argsArr = this.uiInputArgsArray(callNode);
+        const pickExpr = node.operator === 'in'
+          ? this.transpileExpression(node.right)
+          : 'DMValue.Null';
+        return `(await DMUiRuntime.InputAsync(${argsArr}, ${asTypeExpr}, ${pickExpr}))`;
+      }
+    }
     const left = this.transpileExpression(node.left);
     const right = this.transpileExpression(node.right);
 
@@ -2473,6 +2613,45 @@ namespace Content.Server.DM
       case '~': return `DMValue.BitwiseNot(${operand})`;
       default: return operand;
     }
+  }
+
+  // ==== W-M ui (docs/plans/33) ====
+  // input()/alert() args as a DMValue[]: arglist() spreads via DMArgsConcat;
+  // named args (message="x") become DMNamedArg markers the runtime binds.
+  private uiInputArgsArray(node: any): string {
+    const hasArglist = node.arguments.some((a: any) => a.type === 'call' && a.name === 'arglist');
+    if (hasArglist) {
+      return `DMRuntimeHelpers.DMArgsConcat(${node.arguments.map((a: any) =>
+        a.type === 'call' && a.name === 'arglist'
+          ? `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a.arguments[0])})`
+          : `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a)})`
+      ).join(', ')})`;
+    }
+    const parts = node.arguments.map((a: any) =>
+      a.type === 'assignment' && typeof a.target === 'string'
+        ? `DMRuntimeHelpers.DMNamedArg("${this.escapeString(a.target)}", ${this.transpileExpression(a.value)})`
+        : this.transpileExpression(a)
+    );
+    return `new DMValue[] { ${parts.join(', ')} }`;
+  }
+
+  // `input(x) as <T>` — T parses as a variable (num/text/anything/mob), a
+  // literal, or a call; emit it as the DMValue string the runtime matches.
+  private uiAsTypeExpr(node: any): string {
+    if (!node) return 'DMValue.Null';
+    if (node.type === 'variable' || node.type === 'identifier') {
+      return `DMValue.FromString("${this.escapeString(node.name)}")`;
+    }
+    if (node.type === 'literal' && (node.literalType === 'string' || node.literalType === 'path')) {
+      return `DMValue.FromString("${this.escapeString(String(node.value))}")`;
+    }
+    if (node.type === 'literal' && node.literalType === 'null') {
+      return 'DMValue.FromString("null")';
+    }
+    if (node.type === 'call' && node.name) {
+      return `DMValue.FromString("${this.escapeString(node.name)}")`;
+    }
+    return 'DMValue.Null';
   }
 
   private transpileCall(node: any): string {
@@ -2550,6 +2729,21 @@ namespace Content.Server.DM
       if (nameArg.type === 'literal' && nameArg.literalType === 'string') {
         return `DMRuntimeHelpers.DMInitial(${this.transpileExpression(node.arguments[0])}, "${this.escapeString(nameArg.value)}")`;
       }
+    }
+
+    // ==== W-M ui (docs/plans/33) ====
+    // The UI builtins route through the async text-UI bridge (DMUiRuntime)
+    // instead of the Null stubs — target-ed calls (foo.input()) stay on the
+    // ordinary proc path below. `input`/`alert` suspend the proc until a
+    // dmanswer arrives (engine-free: deterministic default); `browse`
+    // builds a payload 'usr << browse(...)' renders to text + links.
+    const uiName = node.name.toLowerCase();
+    if (uiName === 'input' || uiName === 'alert' || uiName === 'browse') {
+      if (uiName === 'input')
+        return `(await DMUiRuntime.InputAsync(${this.uiInputArgsArray(node)}, DMValue.Null, DMValue.Null))`;
+      if (uiName === 'alert')
+        return `(await DMUiRuntime.AlertAsync(${args || ''}))`;
+      return `DMUiRuntime.MakeBrowse(${args || ''})`;
     }
 
     // Built-in DM procs (names are case-insensitive — fold before the lookup,

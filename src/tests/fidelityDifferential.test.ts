@@ -1885,6 +1885,64 @@ public static class ConvertedDMProcs
     name: 'concrete child of abstract root instantiates',
     dm: `/datum/abs_base2\n\tvar/abstract_type = /datum/abs_base2\n/datum/abs_base2/leaf\n/datum/probe/proc/run()\n\tvar/x = new /datum/abs_base2/leaf\n\treturn isnull(x)`,
     expected: '0'
+  },
+  // ==== W-M ui (docs/plans/33): input()/alert()/browse() text-UI bridge ====
+  // Engine-free path: prompts resolve to their deterministic default (the
+  // live round-trip is proven by the dmanswer/dmlink commands server-side).
+  {
+    name: 'W-M alert() returns the first button engine-free',
+    dm: `/datum/probe/proc/run()\n\treturn alert("Proceed?","T","Yes","No")`,
+    expected: 'Yes'
+  },
+  {
+    name: 'W-M alert() single default Ok button',
+    dm: `/datum/probe/proc/run()\n\treturn alert("hi")`,
+    expected: 'Ok'
+  },
+  {
+    name: 'W-M input() returns its default arg engine-free',
+    dm: `/datum/probe/proc/run()\n\treturn input("name?","T","def")`,
+    expected: 'def'
+  },
+  {
+    name: 'W-M input() with no default is null',
+    dm: `/datum/probe/proc/run()\n\treturn input("x")`,
+    expected: 'null'
+  },
+  {
+    name: 'W-M input(...) in list picks the default-matching element',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list("a","b")\n\treturn input("pick","T","b") in L`,
+    expected: 'b'
+  },
+  {
+    name: 'W-M input(...) in list with no default picks first element',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list("a","b")\n\treturn input("p") in L`,
+    expected: 'a'
+  },
+  {
+    name: 'W-M input(...) as num keeps a numeric default numeric',
+    dm: `/datum/probe/proc/run()\n\treturn input("n","T",42) as num`,
+    expected: '42'
+  },
+  {
+    name: 'W-M input(...) as text returns the default',
+    dm: `/datum/probe/proc/run()\n\treturn input("m","t","x") as text`,
+    expected: 'x'
+  },
+  {
+    name: 'W-M input(...) as num in list filters non-numbers',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list("a",7,9)\n\treturn input("p") as num in L`,
+    expected: '7'
+  },
+  {
+    name: 'W-M usr << browse() returns the target for chaining',
+    dm: `/datum/probe/proc/run()\n\tvar/r = (usr << browse("<b>hi</b>"))\n\treturn r == usr`,
+    expected: '1'
+  },
+  {
+    name: 'W-M browse() returns a real payload value',
+    dm: `/datum/probe/proc/run()\n\treturn browse("x") != null`,
+    expected: '1'
   }
 ];
 
