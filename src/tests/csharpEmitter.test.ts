@@ -123,7 +123,10 @@ async function runCSharpEmitterTests() {
     proc/run()
         return stuff
 `);
-  assertContains(tlv, `return comp.GetVar("stuff");`, 'Type-level list value does not break proc parsing');
+  // Typed vars, step 1: a declared type var resolves to its fixed slot
+  // (/atom's name, desc, icon, icon_state take slots 0-3).
+  assertContains(tlv, `return comp.GetVarSlot(4, "stuff");`, 'Type-level list value does not break proc parsing');
+  assertContains(tlv, `DMVarLayouts.Register("/obj/foo", "/obj", new string[] { "stuff" });`, 'Type var layout registered with its parent');
 
   // Test 13: User proc call with zero args
   const zc = transpileProc(`/obj/foo/proc/run()

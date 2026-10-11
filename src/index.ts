@@ -189,6 +189,12 @@ export class DM2SS14Transpiler {
         console.log(`      Symbol pass: all bare/method call targets resolved against declared procs.`);
       }
 
+      const { slot, named } = this.csharpEmitter.varAccessStats;
+      if (slot + named > 0) {
+        const pct = ((slot / (slot + named)) * 100).toFixed(1);
+        console.log(`      Typed vars: ${slot} of ${slot + named} var accesses use fixed slots (${pct}%).`);
+      }
+
       stageTimes['emit'] = Date.now() - emitStart;
 
       // 4. Convert DMI icons to RSI

@@ -31,7 +31,7 @@ assert(contentBlocks > 0, `Found ${contentBlocks} C# content blocks in the runti
 assert(totalBackticks === contentBlocks * 2,
   `Template literal integrity: ${totalBackticks} backticks vs ${contentBlocks} blocks x2 (a stray backtick in a C# comment would break this)`);
 
-const EXPECTED_FILES = ['DMValue.cs', 'DMList.cs', 'DMRuntime.cs', 'DMTickScheduler.cs', 'DMRuntimeHelpers.cs', 'RustGAdapterStubs.cs'];
+const EXPECTED_FILES = ['DMValue.cs', 'DMList.cs', 'DMRuntime.cs', 'DMVarLayouts.cs', 'DMTickScheduler.cs', 'DMRuntimeHelpers.cs', 'RustGAdapterStubs.cs'];
 const files = DMRuntimeCS.getRuntimeCSFiles();
 assert(files.length === EXPECTED_FILES.length, `getRuntimeCSFiles returns ${files.length} files (expected ${EXPECTED_FILES.length})`);
 for (const expected of EXPECTED_FILES) {

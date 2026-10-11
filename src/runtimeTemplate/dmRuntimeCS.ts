@@ -498,8 +498,99 @@ namespace SS13.DM.Runtime
     /// </summary>
     public class DMRuntime
     {
-        public string DMTypePath { get; set; } = "/datum";
+        private string _dmTypePath = "/datum";
+        public string DMTypePath
+        {
+            get => _dmTypePath;
+            set { _dmTypePath = value; RebindVarLayout(); }
+        }
+
+        /// <summary>
+        /// Vars with no slot in this datum's layout (undeclared names, or a
+        /// type with no registered layout). Declared vars live in _slots.
+        /// </summary>
         public Dictionary<string, DMValue> Variables { get; } = new();
+
+        // Typed vars, step 1: declared vars live in a fixed slot array laid
+        // out by DMVarLayouts. A default DMValue is Null, so an unset slot
+        // reads exactly like a missing dictionary entry.
+        private DMVarLayout? _varLayout;
+        private DMValue[]? _slots;
+
+        public DMVarLayout? VarLayout => _varLayout;
+
+        private void RebindVarLayout()
+        {
+            var next = DMVarLayouts.For(_dmTypePath);
+            if (ReferenceEquals(next, _varLayout)) return;
+            if (_varLayout != null && _slots != null)
+            {
+                for (var i = 0; i < _slots.Length; i++)
+                {
+                    if (_slots[i].Type != DMValueType.Null) Variables[_varLayout.Names[i]] = _slots[i];
+                }
+            }
+            _varLayout = next;
+            _slots = next == null ? null : new DMValue[next.Names.Length];
+            if (next != null && Variables.Count > 0)
+            {
+                for (var i = 0; i < next.Names.Length; i++)
+                {
+                    if (Variables.Remove(next.Names[i], out var v)) _slots![i] = v;
+                }
+            }
+        }
+
+        /// <summary>Datum var storage read, bypassing proc-local frames.</summary>
+        internal bool TryGetStored(string name, out DMValue val)
+        {
+            if (_varLayout != null && _varLayout.Index.TryGetValue(name, out var i))
+            {
+                val = _slots![i];
+                return val.Type != DMValueType.Null;
+            }
+            return Variables.TryGetValue(name, out val);
+        }
+
+        /// <summary>Datum var storage write, bypassing proc-local frames.</summary>
+        internal void Store(string name, DMValue val)
+        {
+            if (_varLayout != null && _varLayout.Index.TryGetValue(name, out var i)) _slots![i] = val;
+            else Variables[name] = val;
+        }
+
+        /// <summary>
+        /// Slot read emitted for a var the transpiler resolved statically.
+        /// The name must be the same interned literal the layout registered;
+        /// on any mismatch (unregistered type, unexpected receiver) or when a
+        /// proc local shadows the name, this falls back to GetVar.
+        /// </summary>
+        public DMValue GetVarSlot(int index, string name)
+        {
+            var l = _varLayout;
+            if (l != null && (uint)index < (uint)l.Names.Length && (object)l.Names[index] == (object)name
+                && LocalFrameFor(name) == null)
+            {
+                return _slots![index];
+            }
+            return GetVar(name);
+        }
+
+        /// <summary>Slot write counterpart of <see cref="GetVarSlot"/>.</summary>
+        public DMValue SetVarSlot(int index, string name, DMValue val)
+        {
+            var l = _varLayout;
+            if (GetType() == typeof(DMRuntime) && l != null && (uint)index < (uint)l.Names.Length
+                && (object)l.Names[index] == (object)name && LocalFrameFor(name) == null)
+            {
+                if (!InitialValues.ContainsKey(name)) InitialValues[name] = val;
+                _slots![index] = val;
+                if (val.Type == DMValueType.List && val.ListValue != null) val.ListValue.RefCount++;
+                DMRuntimeHelpers.OnDatumVarChanged(this, name);
+                return val;
+            }
+            return SetVar(name, val);
+        }
 
         // W-F new: depth-of-chain cursor for BYOND's implicit New() ..()
         // chain — the ancestor path whose New most recently ran on THIS
@@ -579,7 +670,7 @@ namespace SS13.DM.Runtime
             var frame = LocalFrameFor(name); // W-H: proc locals shadow datum vars
             if (frame != null)
                 return frame.Vars.TryGetValue(name, out var lv) ? lv : DMValue.Null;
-            return Variables.TryGetValue(name, out var val) ? val : DMValue.Null;
+            return TryGetStored(name, out var val) ? val : DMValue.Null;
         }
 
         /// <summary>
@@ -599,7 +690,7 @@ namespace SS13.DM.Runtime
                 return val;
             }
             if (!InitialValues.ContainsKey(name)) InitialValues[name] = val;
-            Variables[name] = val;
+            Store(name, val);
             // The variable now also references the list: bump the COW counter.
             if (val.Type == DMValueType.List && val.ListValue != null) val.ListValue.RefCount++;
             // B-3 (item 71): appearance vars republish to the engine.
@@ -1317,6 +1408,93 @@ namespace SS13.DM.Runtime
                 }
             }
             return names;
+        }
+    }
+}
+`
+      },
+      {
+        filename: 'DMVarLayouts.cs',
+        content: `using System;
+using System.Collections.Generic;
+
+namespace SS13.DM.Runtime
+{
+    /// <summary>
+    /// Fixed var slot layout for one DM type (typed vars, step 1). A type's
+    /// layout is its parent's layout followed by the vars the type adds, so
+    /// a var declared on an ancestor has the SAME slot index in every
+    /// descendant. The transpiler computes the same indices at conversion
+    /// time and emits slot reads/writes for vars it can resolve statically.
+    /// </summary>
+    public sealed class DMVarLayout
+    {
+        public readonly string Path;
+        public readonly string[] Names;
+        public readonly Dictionary<string, int> Index;
+
+        public DMVarLayout(string path, string[] names)
+        {
+            Path = path;
+            Names = names;
+            Index = new Dictionary<string, int>(names.Length, StringComparer.Ordinal);
+            for (var i = 0; i < names.Length; i++) Index[names[i]] = i;
+        }
+    }
+
+    /// <summary>
+    /// Registry of per-type var layouts. Generated code registers each
+    /// type's parent and the var names it adds; layouts are built lazily on
+    /// first use. Types that were never registered get no layout and keep
+    /// dictionary storage.
+    /// </summary>
+    public static class DMVarLayouts
+    {
+        private static readonly object _lock = new object();
+        private static readonly Dictionary<string, (string? Parent, string[] Own)> _decls =
+            new Dictionary<string, (string? Parent, string[] Own)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, DMVarLayout?> _built =
+            new Dictionary<string, DMVarLayout?>(StringComparer.OrdinalIgnoreCase);
+
+        public static void Register(string path, string? parent, string[] own)
+        {
+            lock (_lock)
+            {
+                _decls[path] = (parent, own);
+                _built.Clear();
+            }
+        }
+
+        public static DMVarLayout? For(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            lock (_lock)
+            {
+                return Build(path, 0);
+            }
+        }
+
+        private static DMVarLayout? Build(string path, int depth)
+        {
+            if (_built.TryGetValue(path, out var cached)) return cached;
+            if (depth > 256 || !_decls.TryGetValue(path, out var decl))
+            {
+                _built[path] = null;
+                return null;
+            }
+            var names = new List<string>();
+            if (decl.Parent != null)
+            {
+                var parent = Build(decl.Parent, depth + 1);
+                if (parent != null) names.AddRange(parent.Names);
+            }
+            foreach (var n in decl.Own)
+            {
+                if (!names.Contains(n)) names.Add(n);
+            }
+            var layout = new DMVarLayout(path, names.ToArray());
+            _built[path] = layout;
+            return layout;
         }
     }
 }
@@ -6046,7 +6224,7 @@ namespace SS13.DM.Runtime
         /// </summary>
         public static void SeedVar(DMRuntime datum, string name, DMValue val)
         {
-            datum.Variables[name] = val;
+            datum.Store(name, val);
             datum.InitialValues[name] = val;
         }
 
