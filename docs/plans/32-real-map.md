@@ -107,7 +107,8 @@ Verified log evidence (each step cross-checked in server/client logs):
 
 ## Known limits / honest gaps
 
-- **Movement chain silently no-ops on the real map.** `forceMove`, `doMove`,
+- **Movement chain silently no-ops on the real map** *(refined by the windowed
+  pass below: teleports relocate but NRE mid-move; step-based moves veto)*.
   `Move`, `abstract_move` — called via `dmverbon` on the mob with turf-coord
   destinations — all execute without error but leave coords unchanged.
   Narrowed: targeting resolves the right mob datum (HasProc passes, no "no
@@ -135,6 +136,33 @@ Verified log evidence (each step cross-checked in server/client logs):
   out of scope).
 - **Area datums are never minted** (unmappable) — area-level overrides
   (`req_access` etc.) on map tiles are warned and dropped.
+
+## Windowed pass (follow-up, persistent testing agent)
+
+A windowed RobustToolbox client on llvmpipe/VNC confirmed the headless
+findings visually and added two sharper results:
+
+- **Full Cyberiad renders** — departments, corridors, airlocks, machinery,
+  docks at ~10 px/tile; ambient light applied. Mob sprite visible; the
+  viewport eye follows the attached mob (teleport to space → lone human on
+  starfield — unambiguous attach evidence).
+- **`doMove`/`forceMove` DO relocate the mob** (1,1,1 → 66,147,1 → back), but
+  `doMove` throws `NullReferenceException` mid-move — the loc write + attach
+  bridge succeed, the fault lands in the post-move notification path.
+  `step_*`/`Move`/`walk` still silently no-op — consistent with a turf
+  `Enter` veto cancelling steps (forceMove bypasses Enter checks by design).
+- **`StartWorld()` loads the first *sorted* `/Maps/**/*.yml` that loads.**
+  With all generated station maps restored, `EventStructures/
+  splashscreen_empty.yml` sorts before `stations/boxstation.yml` and gets
+  served instead — boxstation only loaded in the headless run because it was
+  the sole file present. Needs a deterministic/configured map pick
+  (ConvertedDMSystem / emit scope). Workaround: a sort-first `aaa_` copy.
+- **Sprite-state coverage gaps** are visible: e.g. `state '"2-8"' does not
+  exist in RSI power_cond_white.rsi` → checkerboard placeholder bands on
+  cables/pipes/signage. Structure renders; some icon states are missing from
+  the converted RSIs (dmi coverage item, logged).
+- Stale `type: Function` binds also linger in `bin/*/Resources/keybinds.yml`
+  copies — same flagged emitter bug, other mount points.
 
 ## Verification
 
