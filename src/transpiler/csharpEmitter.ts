@@ -321,6 +321,19 @@ namespace Content.Server.DM
       const typeInit = this.typeVarInitRegistration(irMap, pathKey, irType);
       if (typeInit) pathRegs.push(typeInit);
 
+      // ==== W-K mc ====
+      // BYOND abstract_type: a type whose declared abstract_type equals its
+      // own path cannot be instantiated with new (paradise marks abstract
+      // roots like /datum/instrument/* this way). Register it so DMNew can
+      // no-op + warn once instead of minting a broken datum; children
+      // inherit an abstract_type that is NOT their own path and stay
+      // concrete.
+      const absType = irType.customVars.get('abstract_type');
+      if (typeof absType === 'string'
+          && absType.trim().replace(/\/+$/, '').toLowerCase() === pathKey) {
+        pathRegs.push(`            ProcRegistry.RegisterAbstract("${pathKey}");`);
+      }
+
       if (irType.procs.size === 0) {
         // Var-only types still register their path so typesof() enumerates
         // them (WS9-4).
@@ -900,31 +913,101 @@ namespace Content.Server.DM
         /// type is DMNew'd one at a time on the IoC thread — matching
         /// BYOND's in-order boot — and a failing New() is logged and
         /// skipped instead of silently faulting a fire-and-forget task.
+        /// ==== W-K mc ====
+        /// The enumeration now mirrors BYOND's Master: every type in
+        /// subtypesof(/datum/controller/subsystem) — strict DESCENDANTS —
+        /// gets instantiated (its New()/PreInit wires the SS* globals), and
+        /// only a type whose effective fire/process resolves to a REAL
+        /// declaration goes on the tick loop. The old loop DMNew'd every
+        /// /datum/controller path with a fire/process decl INCLUDING the
+        /// base itself, whose fire() is the SS_NO_FIRE crash stub — every
+        /// cadence fired the crash (the ~9.9k-throw storm W-I measured).
+        /// Instantiation order is the BYOND init_order sort (highest first,
+        /// stable on ties). Per-tick the callback honors can_fire (BYOND's
+        /// drop-from-list gate) and the datum's own wait var.
         /// </summary>
         private async Task RegisterSubsystemsAsync(DMRuntime worldDatum)
         {
+            var candidates = new List<(string TypePath, string ProcName, double InitOrder, int Index)>();
+            var index = 0;
             foreach (var typePath in new List<string>(ProcRegistry.RegisteredPaths))
             {
                 if (!typePath.StartsWith("/datum/controller", StringComparison.OrdinalIgnoreCase)) continue;
-                string procName;
-                // TryGet first: a fire/process declared on the leaf type wins;
-                // TryGetInherited only walks ancestors (the SS13
-                // /datum/controller/subsystem shape) and missed leaf decls.
-                if (ProcRegistry.TryGet(typePath, "fire", out _) || ProcRegistry.TryGetInherited(typePath, "fire", out _)) procName = "fire";
-                else if (ProcRegistry.TryGet(typePath, "process", out _) || ProcRegistry.TryGetInherited(typePath, "process", out _)) procName = "process";
-                else continue;
+                if (typePath == "/datum/controller/subsystem") continue; // W-K: subtypesof excludes the base itself — its fire() is the SS_NO_FIRE crash stub
+                if (ProcRegistry.IsAbstract(typePath)) continue;
+
+                var isSubsystem = typePath.StartsWith("/datum/controller/subsystem/", StringComparison.OrdinalIgnoreCase);
+                // A fire/process that resolves to the base's declaration IS
+                // the crash stub — BYOND's MC never puts such a subsystem on
+                // the fire list. Anything else (own decl or a concrete
+                // ancestor like /datum/controller/subsystem/processing) is
+                // a real cadence target.
+                var fireSite = ProcRegistry.ResolveProcDeclaringType(typePath, "fire");
+                var processSite = ProcRegistry.ResolveProcDeclaringType(typePath, "process");
+                string? procName = null;
+                if (fireSite != null && fireSite != "/datum/controller/subsystem") procName = "fire";
+                else if (processSite != null && processSite != "/datum/controller/subsystem") procName = "process";
+                if (procName == null && !isSubsystem) continue; // non-subsystem controllers keep the old fire/process gate
+                candidates.Add((typePath, procName ?? "", SubsystemInitOrder(typePath), index++));
+            }
+            // BYOND sorts subsystem types by initial(init_order), highest
+            // first (cmp_subsystem_init); sortTim is stable, so ties keep
+            // registry order.
+            candidates.Sort((a, b) =>
+                b.InitOrder != a.InitOrder ? b.InitOrder.CompareTo(a.InitOrder) : a.Index.CompareTo(b.Index));
+            foreach (var (typePath, procName, _, _idx) in candidates)
+            {
                 try
                 {
                     var datum = await DMRuntimeHelpers.DMNew(worldDatum, typePath);
                     if (datum.DatumRef is not DMRuntime subsystem) continue;
+                    if (procName.Length == 0)
+                    {
+                        // Instantiated like every other subtype (its New()/
+                        // PreInit ran) but never cadenced — BYOND only
+                        // fires subsystems that implement fire/process.
+                        Logger.InfoS("dm", "DM subsystem {Type} instantiated (no real fire/process — not on the tick loop)", typePath);
+                        continue;
+                    }
+                    // BYOND MC skips flagged subsystems in the fire loop:
+                    // SS_NO_FIRE ((1<<1) = 2) is set by utility subsystems
+                    // that declare a real fire() yet must not be cadenced
+                    // (paradise: SSprofiler, SSnightshift, ...). Checked once
+                    // post-New for the early-exit + log, and re-read every
+                    // tick in the callback — master.dm:320's
+                    // 'if(SS.flags & SS_NO_FIRE) continue' is per-fire, so
+                    // flags set later (PreInit, runtime toggles) also drop
+                    // the subsystem off the list.
+                    var dmFlags = subsystem.GetVar("flags");
+                    if (dmFlags.Type == DMValueType.Number && (((long)dmFlags.NumberValue) & 2) != 0)
+                    {
+                        Logger.InfoS("dm", "DM subsystem {Type} instantiated (SS_NO_FIRE flag — not on the tick loop)", typePath);
+                        continue;
+                    }
                     double nextFireDs = 0;
+                    var firstFire = true;
                     DMTickScheduler.RegisterTickCallback(async () =>
                     {
                         if (DMTickScheduler.NowDs < nextFireDs) return;
+                        // BYOND fire-loop gate: flags & SS_NO_FIRE (checked
+                        // each tick — paradise flags utility subsystems in
+                        // PreInit/runtime toggles, not just at New time).
+                        var tickFlags = subsystem.GetVar("flags");
+                        if (tickFlags.Type == DMValueType.Number && (((long)tickFlags.NumberValue) & 2) != 0) return;
+                        // BYOND MC gate: a subsystem whose can_fire clears
+                        // (admin SS_NO_FIRE, runtime pause) drops off the
+                        // fire list until it comes back.
+                        var canFire = subsystem.GetVar("can_fire");
+                        if (canFire.Type == DMValueType.Number && canFire.NumberValue <= 0) return;
                         var wait = subsystem.GetVar("wait");
                         var waitDs = wait.Type == DMValueType.Number && wait.NumberValue > 0
                             ? wait.NumberValue : DMTickScheduler.TickLag;
                         nextFireDs = DMTickScheduler.NowDs + waitDs;
+                        if (firstFire)
+                        {
+                            firstFire = false;
+                            Logger.InfoS("dm", "DM subsystem {Type} first {Proc}() at world.time={Time}", typePath, procName, DMTickScheduler.WorldTimeDs);
+                        }
                         // Per-tick elapsed time in deciseconds (tick_lag) is
                         // passed as the conventional fire/process argument.
                         await subsystem.CallProc(procName, DMValue.FromNumber(DMTickScheduler.TickLag));
@@ -936,6 +1019,20 @@ namespace Content.Server.DM
                     Logger.ErrorS("dm", "DM subsystem {Type} init failed: {Ex}", typePath, ex.Message);
                 }
             }
+        }
+
+        /// <summary>
+        /// W-K: initial(init_order) without construction — seeds a throwaway
+        /// datum's type vars and reads the declared default back, matching
+        /// BYOND's cmp_subsystem_init (which sorts on initial(), not live
+        /// state). Non-scalar init_order exprs degrade to 0.
+        /// </summary>
+        private static double SubsystemInitOrder(string typePath)
+        {
+            var probe = new DMRuntime { DMTypePath = typePath };
+            DMRuntimeHelpers.ApplyTypeVarInits(probe);
+            var v = probe.GetVar("init_order");
+            return v.Type == DMValueType.Number ? v.NumberValue : 0;
         }
 
         /// <summary>
@@ -2044,9 +2141,11 @@ namespace Content.Server.DM
         return '';
 
       case 'TryStatement': {
-        // DM try/catch: the catch var binds to the exception message (the
-        // runtime has no DM exception datums — documented approximation).
-        // Previously the whole statement silently dropped (WS5-9).
+        // DM try/catch. W-K mc: the catch var is a declared proc local
+        // bound to an /exception datum (name/desc/file/line, plus the
+        // thrown value on 'value' for DM throw) — not the raw message
+        // string it used to get. Previously the whole statement silently
+        // dropped (WS5-9).
         let tryCode = `${pad}try\n${pad}{\n`;
         for (const s of stmt.tryBody || []) {
           tryCode += this.transpileStatement(s, indent + 4);
@@ -2055,7 +2154,8 @@ namespace Content.Server.DM
         if (stmt.catchBody && stmt.catchBody.length > 0) {
           tryCode += `${pad}catch (System.Exception __dmEx)\n${pad}{\n`;
           if (stmt.catchVar) {
-            tryCode += `${pad}    comp.SetVar("${stmt.catchVar}", DMValue.FromString(__dmEx.Message));\n`;
+            tryCode += `${pad}    comp.DeclareLocal("${stmt.catchVar}");\n`;
+            tryCode += `${pad}    comp.SetVar("${stmt.catchVar}", DMRuntimeHelpers.MakeExceptionDatum(__dmEx));\n`;
           }
           for (const s of stmt.catchBody) {
             tryCode += this.transpileStatement(s, indent + 4);
@@ -2085,6 +2185,17 @@ namespace Content.Server.DM
         labelCode += `${pad}${scope.exit}: ;\n`;
         this.labelStack.pop();
         return labelCode;
+      }
+
+      case 'ThrowStatement': {
+        // ==== W-K mc ====
+        // DM `throw <expr>` raises the VALUE on the exception channel so
+        // an enclosing try/catch receives it (parsed since W-I but emitted
+        // as '// Unknown statement' until now). DMThrownException carries
+        // the DMValue; the catch side rebinds it as an /exception datum
+        // via MakeExceptionDatum — including rethrow of a caught datum.
+        const thrown = stmt.value ? this.transpileExpression(stmt.value) : 'DMValue.Null';
+        return `${pad}throw new DMRuntimeHelpers.DMThrownException(${thrown});\n`;
       }
 
       default:

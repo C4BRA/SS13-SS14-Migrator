@@ -504,11 +504,51 @@ async function runCSharpEmitterTests() {
   assertContains(systemCS, 'private async Task RegisterSubsystemsAsync(', 'subsystem registration is an async on-thread chain');
   assertContains(systemCS, '_ = RegisterSubsystemsAsync(worldDatum);', 'RegisterSubsystems starts the chain on the calling thread');
   assertContains(systemCS, 'await DMRuntimeHelpers.DMNew(worldDatum, typePath)', 'subsystem DMNew is awaited on the calling thread');
-  assertContains(systemCS, 'ProcRegistry.TryGet(typePath, "fire"', 'leaf-declared fire() resolves via TryGet');
-  assertContains(systemCS, 'ProcRegistry.TryGet(typePath, "process"', 'leaf-declared process() resolves via TryGet');
-  assertContains(systemCS, 'TryGetInherited(typePath, "fire"', 'inherited fire() still resolves (SS13 /datum/controller/subsystem shape)');
+  // W-K mc: resolution now goes through ResolveProcDeclaringType — same
+  // leaf-then-ancestor coverage (leaf decl wins, else nearest declaring
+  // ancestor) but it also reports WHICH type provides the proc so the
+  // base's SS_NO_FIRE crash stub can be told apart from a real decl.
+  assertContains(systemCS, 'ResolveProcDeclaringType(typePath, "fire")', 'leaf-declared + inherited fire() resolves via declaring-type lookup');
+  assertContains(systemCS, 'ResolveProcDeclaringType(typePath, "process")', 'leaf-declared + inherited process() resolves via declaring-type lookup');
   assertContains(systemCS, 'DM subsystem {Type} on the tick loop', 'subsystem registration still logs');
   assertContains(systemCS, 'DM subsystem {Type} init failed', 'a failing subsystem New() logs instead of silently faulting');
+
+  // Test 48: W-K mc — the subsystem registry enumerates CONCRETE subtypes
+  // the way BYOND's Master does (subtypesof excludes the abstract base
+  // whose fire() is the SS_NO_FIRE crash stub), skips declared-abstract
+  // types, instantiates every concrete subsystem, and only cadences types
+  // whose effective fire/process resolves to a REAL decl — not the base
+  // stub. Instantiation order follows init_order (highest first).
+  assertContains(systemCS, 'typePath == "/datum/controller/subsystem"', 'abstract /datum/controller/subsystem base excluded from instantiation');
+  assertContains(systemCS, 'ProcRegistry.IsAbstract(typePath)', 'declared-abstract types skipped');
+  assertContains(systemCS, 'ResolveProcDeclaringType(typePath, "fire")', 'fire() resolution distinguishes a real decl from the base crash stub');
+  assertContains(systemCS, 'ResolveProcDeclaringType(typePath, "process")', 'process() resolution distinguishes a real decl from the base crash stub');
+  assertContains(systemCS, '"can_fire"', 'can_fire gate honors the MC drop-from-list rule');
+  assertContains(systemCS, '"init_order"', 'subsystems ordered by declared init_order like the BYOND MC');
+  assertContains(systemCS, 'first {Proc}() at world.time=', 'first-fire evidence line on the world.time grid');
+
+  // Test 49: W-K mc — DM `throw <expr>` emits a real exception carrying
+  // the thrown DMValue (was '// Unknown statement: ThrowStatement'), and
+  // catch(var/e) binds an /exception datum via MakeExceptionDatum.
+  const throwEmit = transpileProc(`/datum/probe/proc/run()
+    try
+        throw "boom"
+    catch(var/exception/e)
+        return e.name
+`);
+  assertContains(throwEmit, 'throw new DMRuntimeHelpers.DMThrownException(', 'DM throw emits a real exception throw carrying the DMValue');
+  assert(!throwEmit.includes('// Unknown statement'), 'ThrowStatement no longer emits an Unknown-statement comment');
+  assertContains(throwEmit, 'DMRuntimeHelpers.MakeExceptionDatum(__dmEx)', 'catch-var binds an /exception datum');
+  assertContains(throwEmit, 'comp.DeclareLocal("e")', 'catch-var declared as a proc local');
+
+  // Test 50: W-K mc — types whose declared abstract_type equals their own
+  // path register as abstract so DMNew can no-op + warn once.
+  const absEmit = transpileProc(`/datum/abs_root
+    var/abstract_type = /datum/abs_root
+/datum/probe/proc/run()
+    return 1
+`);
+  assertContains(absEmit, 'ProcRegistry.RegisterAbstract("/datum/abs_root")', 'abstract_type = self registers the type as abstract');
 
   console.log("\n✅ ALL C# EMITTER REGRESSION TESTS PASSED!");
 }
