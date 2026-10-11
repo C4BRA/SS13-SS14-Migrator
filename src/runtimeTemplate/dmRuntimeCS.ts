@@ -311,6 +311,14 @@ namespace SS13.DM.Runtime
             // log — see ConvertedDMSystem), else stdout.
             if (target.Type == DMValueType.DatumRef)
             {
+                // W-M ui (docs/plans/33): 'usr << browse(html,opts)' — the
+                // browse payload renders to text + numbered links over the
+                // ordinary output channel rather than a skin browser.
+                if (message.DatumRef is DMBrowseDoc browseDoc)
+                {
+                    DMUiRuntime.RenderBrowse(target, browseDoc);
+                    return target;
+                }
                 if (DMVerbRuntime.OutputBridge != null)
                     DMVerbRuntime.OutputBridge(target, message);
                 else
@@ -1084,6 +1092,104 @@ namespace SS13.DM.Runtime
             // engine-free; GetWidth/GetHeight return the DMI default of 32.
             Register("/icon", "getwidth", (comp, args) => Task.FromResult(DMValue.FromNumber(32)));
             Register("/icon", "getheight", (comp, args) => Task.FromResult(DMValue.FromNumber(32)));
+
+            // ==== W-N roundflow ====
+            // Global-proc builtins the SS13 round-flow code paths need.
+            // Registered as /proc handlers so CallProc's /proc fallback
+            // resolves them (same channel generated corpus procs use).
+
+            // subtypesof(path): every registered type whose canonical
+            // ancestor chain contains <path> (proper subtypes only — the
+            // path itself is not included, matching BYOND).
+            Register("/proc", "subtypesof", (comp, args) =>
+            {
+                var result = new DMList();
+                if (args.Length == 0) return Task.FromResult(DMValue.FromList(result));
+                var target = args[0];
+                string t;
+                if (target.Type == DMValueType.Path) t = target.StringValue.ToLowerInvariant();
+                else if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime d) t = d.DMTypePath.ToLowerInvariant();
+                else t = target.ToString().ToLowerInvariant();
+                if (!t.StartsWith("/")) t = "/" + t;
+                var universe = new HashSet<string>(RegisteredPaths);
+                foreach (var k in DMRuntimeHelpers.TypeVarInits.Keys) universe.Add(k.ToLowerInvariant());
+                foreach (var p in universe)
+                {
+                    if (p == t) continue;
+                    if (DMParentPaths(p).Any(a => a == t))
+                        result.Add(DMValue.FromPath(p));
+                }
+                return Task.FromResult(DMValue.FromList(result));
+            });
+
+            // shuffle(list): in-place Fisher-Yates permutation (BYOND
+            // shuffles the list itself and returns null).
+            Register("/proc", "shuffle", (comp, args) =>
+            {
+                if (args.Length > 0 && args[0].Type == DMValueType.List && args[0].ListValue is DMList list)
+                {
+                    var rng = new Random();
+                    for (var i = list.Count - 1; i > 0; i--)
+                    {
+                        var j = rng.Next(i + 1);
+                        var tmp = list.Get(i + 1);
+                        list.Set(i + 1, list.Get(j + 1));
+                        list.Set(j + 1, tmp);
+                    }
+                }
+                return Task.FromResult(DMValue.Null);
+            });
+
+            // pickweight(assoc list of item->weight): weighted random pick.
+            Register("/proc", "pickweight", (comp, args) =>
+            {
+                if (args.Length == 0 || args[0].Type != DMValueType.List) return Task.FromResult(DMValue.Null);
+                var l = args[0].ListValue;
+                double total = 0;
+                var entries = new List<(DMValue Item, double W)>();
+                foreach (var kv in l.AssocEntries) { var w = Math.Max(0, kv.Value.ToNumber()); total += w; entries.Add((kv.Key, w)); }
+                for (var i = 1; i <= l.PositionalCount; i++) { var v = l.Get(i); var w = Math.Max(0, v.ToNumber()); total += w; entries.Add((v, w)); }
+                if (total <= 0 || entries.Count == 0) return Task.FromResult(DMValue.Null);
+                var roll = new Random().NextDouble() * total;
+                foreach (var e in entries) { roll -= e.W; if (roll <= 0) return Task.FromResult(e.Item); }
+                return Task.FromResult(entries[entries.Count - 1].Item);
+            });
+
+            // english_list(list, empty_text, and_text, comma_text):
+            // human-readable "a, b and c" joining (proc-registration form
+            // used by ticker announcements).
+            Register("/proc", "english_list", (comp, args) =>
+            {
+                if (args.Length == 0 || args[0].Type != DMValueType.List) return Task.FromResult(DMValue.FromString(""));
+                var l = args[0].ListValue;
+                var items = new List<string>();
+                for (var i = 1; i <= l.PositionalCount; i++) items.Add(l.Get(i).ToString());
+                var andText = args.Length > 2 ? args[2].ToString() : " and ";
+                var commaText = args.Length > 3 ? args[3].ToString() : ", ";
+                string s;
+                if (items.Count == 0) s = args.Length > 1 ? args[1].ToString() : "";
+                else if (items.Count == 1) s = items[0];
+                else if (items.Count == 2) s = items[0] + andText + items[1];
+                else s = string.Join(commaText, items.Take(items.Count - 1)) + andText + items[items.Count - 1];
+                return Task.FromResult(DMValue.FromString(s));
+            });
+
+            // sortList(list): ascending sort copy (BYOND sorts by value).
+            Register("/proc", "sortlist", (comp, args) =>
+            {
+                if (args.Length == 0 || args[0].Type != DMValueType.List) return Task.FromResult(DMValue.Null);
+                var l = args[0].ListValue;
+                var items = new List<DMValue>();
+                for (var i = 1; i <= l.PositionalCount; i++) items.Add(l.Get(i));
+                items.Sort((a, b) =>
+                {
+                    if (a.Type == DMValueType.Number && b.Type == DMValueType.Number) return a.NumberValue.CompareTo(b.NumberValue);
+                    return string.Compare(a.ToString(), b.ToString(), StringComparison.Ordinal);
+                });
+                var outList = new DMList();
+                foreach (var it in items) outList.Add(it);
+                return Task.FromResult(DMValue.FromList(outList));
+            });
         }
 
         public static void Register(string typePath, string procName, Func<DMRuntime, DMValue[], Task<DMValue>> handler, string[] paramNames = null)
@@ -3445,6 +3551,9 @@ namespace SS13.DM.Runtime
         private static readonly System.Collections.Generic.Dictionary<object, string> RefIds =
             new System.Collections.Generic.Dictionary<object, string>();
         private static int RefCounter = 0;
+
+        // ==== W-M ui (docs/plans/33): Topic() src= resolution reads the ref table ====
+        internal static System.Collections.Generic.IReadOnlyDictionary<object, string> RefIdMap => RefIds;
 
         /// <summary>
         /// DM ref(value): stable reference string ("REF[0x...]") for datums;
@@ -6281,6 +6390,547 @@ namespace SS13.DM.Runtime
                 }
             }
             return turf;
+        }
+    }
+
+    // ==== W-M ui (docs/plans/33): DM text-UI bridge ====
+    // BYOND's interactive UI is a message loop: browse() sends HTML to a
+    // skin browser control whose <a href='?params'> clicks fire Topic();
+    // input()/alert() open modal prompts that suspend the calling proc; and
+    // the stat/verb panels are themselves href lists routed through Topic.
+    // The converted runtime has no skin/browser layer, so this bridge keeps
+    // the DM-side semantics on the proven console channel:
+    //   browse(html)    -> text-rendered page + numbered links (dmlink <n>)
+    //   input()/alert() -> a question pushed to the session's console;
+    //                      'dmanswer <id> <text>' resumes the suspended proc
+    //   ?verb= links    -> the verb panel (dmpanel): BYOND's own panels
+    //                      were '?src=<ref>;verb=y' hrefs, so routing the
+    //                      same link shape is the faithful emulation.
+    // Engine-free (probes/headless): prompts resolve to their deterministic
+    // default so converted logic stays runnable without a client.
+
+    /// <summary>A 'usr << browse(html, opts)' payload awaiting a target.</summary>
+    public sealed class DMBrowseDoc
+    {
+        public string Html = "";
+        public string Options = "";
+    }
+
+    /// <summary>One pending input()/alert() question for a session.</summary>
+    public sealed class DMUiPrompt
+    {
+        public long Id;
+        public string Kind = "input";             // "input" | "alert"
+        public DMRuntime? Usr;                    // null = whoever answers first
+        public string Title = "";
+        public string Message = "";
+        public string AsType = "";                // DM 'as' modifier (num/text/mob/...)
+        public List<DMValue> Options = new List<DMValue>();  // pick elements / buttons
+        public DMValue DefaultValue = DMValue.Null;
+        public readonly TaskCompletionSource<DMValue> Answer = new TaskCompletionSource<DMValue>();
+    }
+
+    /// <summary>
+    /// Runtime state for the text-UI bridge: the pending-prompt table
+    /// dmanswer resolves, the per-session link registry browsed pages feed,
+    /// and the href -> Topic()/verb router emulating browser-control clicks.
+    /// </summary>
+    public static class DMUiRuntime
+    {
+        /// <summary>Engine-side prompt renderer (installed by the generated
+        /// system). Null engine-free: prompts resolve to their default.</summary>
+        public static Action<DMUiPrompt>? PromptHook;
+
+        private static long _nextPromptId;
+        private static readonly Dictionary<long, DMUiPrompt> Pending = new Dictionary<long, DMUiPrompt>();
+        private static readonly Dictionary<DMRuntime, List<KeyValuePair<string, string>>> Links =
+            new Dictionary<DMRuntime, List<KeyValuePair<string, string>>>();
+        private const int MaxLinks = 64;
+        private const int MaxPendingPerUsr = 32;
+
+        // ---------- argument normalization ----------
+
+        private sealed class PromptArgs
+        {
+            public DMRuntime? User;
+            public DMValue Message = DMValue.Null;
+            public DMValue Title = DMValue.Null;
+            public DMValue Default = DMValue.Null;
+            public readonly List<DMValue> Extra = new List<DMValue>();
+        }
+
+        private static bool TryUnwrapArg(DMValue arg, out string? name, out DMValue value)
+        {
+            name = null; value = DMValue.Null;
+            if (arg.Type != DMValueType.List || arg.ListValue == null || arg.ListValue.PositionalCount != 2)
+                return false;
+            var k = arg.ListValue.Get(1);
+            if (k.Type != DMValueType.String) return false;
+            name = k.StringValue;
+            value = arg.ListValue.Get(2);
+            return true;
+        }
+
+        private static DMRuntime? UserDatum(DMValue v)
+        {
+            var d = v.DatumRef as DMRuntime;
+            return d != null && (d.IsType("/mob") || d.IsType("/client")) ? d : null;
+        }
+
+        /// <summary>
+        /// input()/alert() args -> named slots. The first positional arg is
+        /// the user (a /mob or /client datum — BYOND's signature); named
+        /// args (usr/message/title/default/buttonN) bind by name; the rest
+        /// fill message/title/default/extras positionally.
+        /// </summary>
+        private static PromptArgs SplitPromptArgs(DMValue[] raw)
+        {
+            var pa = new PromptArgs();
+            var slot = 0;
+            foreach (var arg in raw)
+            {
+                var v = arg;
+                if (TryUnwrapArg(arg, out var name, out var named))
+                {
+                    v = named;
+                    switch ((name ?? "").ToLowerInvariant())
+                    {
+                        case "usr": case "user": case "mob": pa.User = UserDatum(v) ?? pa.User; continue;
+                        case "message": pa.Message = v; continue;
+                        case "title": pa.Title = v; continue;
+                        case "default": pa.Default = v; continue;
+                        default: pa.Extra.Add(v); continue;
+                    }
+                }
+                // The usr slot is checked only at position 0 and does NOT
+                // consume the message position (BYOND: a non-mob first arg
+                // is the message, a mob one is usr).
+                if (slot == 0 && UserDatum(v) != null) { pa.User = v.DatumRef as DMRuntime; continue; }
+                switch (slot++)
+                {
+                    case 0: pa.Message = v; break;
+                    case 1: pa.Title = v; break;
+                    case 2: pa.Default = v; break;
+                    default: pa.Extra.Add(v); break;
+                }
+            }
+            return pa;
+        }
+
+        // ---------- prompt construction ----------
+
+        private static string AsText(DMValue v) => v.Type == DMValueType.String ? v.ToString() : "";
+
+        private static bool MatchesAsType(DMValue el, string asType)
+        {
+            var d = el.DatumRef as DMRuntime;
+            switch (asType)
+            {
+                case "num": return el.Type == DMValueType.Number;
+                case "text": case "message": case "password": case "color": case "command_text": case "key":
+                    return el.Type == DMValueType.String;
+                case "mob": case "usr": return d != null && d.IsType("/mob");
+                case "obj": return d != null && d.IsType("/obj");
+                case "turf": return d != null && d.IsType("/turf");
+                case "area": return d != null && d.IsType("/area");
+                case "atom": return d != null && d.IsType("/atom");
+                default: return true;   // "anything", unknown kinds, no modifier
+            }
+        }
+
+        private static List<DMValue> ExtractOptions(DMValue pickList, string asType)
+        {
+            var options = new List<DMValue>();
+            if (pickList.Type != DMValueType.List || pickList.ListValue == null) return options;
+            var l = pickList.ListValue;
+            for (var i = 1; i <= l.PositionalCount; i++)
+            {
+                var el = l.Get(i);
+                if (MatchesAsType(el, asType)) options.Add(el);
+            }
+            return options;
+        }
+
+        /// <summary>
+        /// What the prompt resolves to with no interactive answer: the
+        /// default-matching option, else the default itself when given, else
+        /// the first option, else the raw default (Null).
+        /// </summary>
+        private static DMValue DefaultForPrompt(DMUiPrompt p)
+        {
+            if (p.Options.Count > 0)
+            {
+                if (p.DefaultValue.Type != DMValueType.Null)
+                {
+                    for (var i = 0; i < p.Options.Count; i++)
+                        if (p.Options[i].ToString() == p.DefaultValue.ToString()) return p.Options[i];
+                    return p.DefaultValue;
+                }
+                return p.Options[0];
+            }
+            return p.DefaultValue;
+        }
+
+        private static DMUiPrompt NewPrompt(PromptArgs pa, string kind, List<DMValue> options, string asType)
+        {
+            var p = new DMUiPrompt
+            {
+                Id = ++_nextPromptId,
+                Kind = kind,
+                Usr = pa.User ?? (DMRuntimeHelpers.CurrentUsr.DatumRef as DMRuntime),
+                Title = pa.Title.ToString(),
+                Message = pa.Message.ToString(),
+                AsType = asType,
+                Options = options,
+                DefaultValue = pa.Default,
+            };
+            lock (Pending)
+            {
+                // Bound the pending pile per user — an unanswered flood would
+                // otherwise pin procs forever; the oldest resolves by default.
+                var count = 0;
+                DMUiPrompt? oldest = null;
+                foreach (var q in Pending.Values)
+                {
+                    if (!ReferenceEquals(q.Usr, p.Usr)) continue;
+                    count++;
+                    if (oldest == null || q.Id < oldest.Id) oldest = q;
+                }
+                if (count >= MaxPendingPerUsr && oldest != null)
+                {
+                    Pending.Remove(oldest.Id);
+                    oldest.Answer.TrySetResult(DefaultForPrompt(oldest));
+                }
+                Pending[p.Id] = p;
+            }
+            return p;
+        }
+
+        private static async Task<DMValue> AwaitAnswer(DMUiPrompt p)
+        {
+            if (PromptHook == null)
+            {
+                // Engine-free (probes/headless): the deterministic default,
+                // exactly like answering with the preselection.
+                lock (Pending) Pending.Remove(p.Id);
+                return DefaultForPrompt(p);
+            }
+            try { PromptHook(p); }
+            catch (Exception e)
+            {
+                lock (Pending) Pending.Remove(p.Id);
+                Console.WriteLine("[DM] UI prompt hook failed: " + e.Message);
+                p.Answer.TrySetResult(DefaultForPrompt(p));
+            }
+            return await p.Answer.Task;
+        }
+
+        // ---------- DM-side entry points (emitted code calls these) ----------
+
+        /// <summary>DM browse(html, opts) — builds the payload value.</summary>
+        public static DMValue MakeBrowse(params DMValue[] args)
+        {
+            var doc = new DMBrowseDoc();
+            if (args.Length > 0) doc.Html = args[0].ToString();
+            if (args.Length > 1) doc.Options = args[1].ToString();
+            return DMValue.FromRef(doc);
+        }
+
+        /// <summary>DM input(usr?, message, title, default) [as T] [in L].</summary>
+        public static Task<DMValue> InputAsync(DMValue[] args, DMValue asType, DMValue pickList)
+        {
+            var pa = SplitPromptArgs(args);
+            var asText = AsText(asType);
+            var options = ExtractOptions(pickList, asText);
+            return AwaitAnswer(NewPrompt(pa, "input", options, asText));
+        }
+
+        /// <summary>DM alert(usr?, message, title, button1, button2, button3).</summary>
+        public static Task<DMValue> AlertAsync(params DMValue[] args)
+        {
+            var pa = SplitPromptArgs(args);
+            // For alert the 4th+ positional args are the buttons — the
+            // "default" slot folds in as button1.
+            var buttons = pa.Extra;
+            if (pa.Default.Type != DMValueType.Null) buttons.Insert(0, pa.Default);
+            if (buttons.Count == 0) buttons.Add(DMValue.FromString("Ok"));
+            return AwaitAnswer(NewPrompt(pa, "alert", buttons, ""));
+        }
+
+        // ---------- answering (engine/command side) ----------
+
+        /// <summary>Pending prompts for a session, oldest first.</summary>
+        public static List<DMUiPrompt> PendingFor(DMRuntime? usr)
+        {
+            var list = new List<DMUiPrompt>();
+            lock (Pending)
+                foreach (var p in Pending.Values)
+                    if (usr == null || ReferenceEquals(p.Usr, usr)) list.Add(p);
+            list.Sort((a, b) => a.Id.CompareTo(b.Id));
+            return list;
+        }
+
+        /// <summary>Resolve a prompt without a session answer (detach/overflow).</summary>
+        public static void AnswerDefault(DMUiPrompt p)
+        {
+            lock (Pending) Pending.Remove(p.Id);
+            p.Answer.TrySetResult(DefaultForPrompt(p));
+        }
+
+        /// <summary>dmanswer: complete prompt 'id' with a text/pick answer.</summary>
+        public static bool Answer(DMRuntime? usr, long id, string answer)
+        {
+            DMUiPrompt? p;
+            lock (Pending)
+            {
+                if (!Pending.TryGetValue(id, out p) || p == null) return false;
+                if (usr != null && p.Usr != null && !ReferenceEquals(p.Usr, usr)) return false;
+                Pending.Remove(id);
+            }
+            p.Answer.TrySetResult(ResolveAnswer(p, answer));
+            return true;
+        }
+
+        private static DMValue ResolveAnswer(DMUiPrompt p, string answer)
+        {
+            var text = (answer ?? "").Trim();
+            if (text.Equals("(cancel)", StringComparison.OrdinalIgnoreCase)) return DMValue.Null;
+            if (text.Length == 0) return DefaultForPrompt(p);
+            if (p.Options.Count > 0)
+            {
+                if (long.TryParse(text, out var n) && n >= 1 && n <= p.Options.Count)
+                    return p.Options[(int)n - 1];
+                for (var i = 0; i < p.Options.Count; i++)
+                    if (p.Options[i].ToString() == text) return p.Options[i];
+                for (var i = 0; i < p.Options.Count; i++)
+                    if (p.Options[i].ToString().Equals(text, StringComparison.OrdinalIgnoreCase)) return p.Options[i];
+                for (var i = 0; i < p.Options.Count; i++)
+                    if (p.Options[i].ToString().IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0)
+                        return p.Options[i];
+                return DMValue.Null;
+            }
+            if (p.Kind == "input" && p.AsType == "num")
+            {
+                return DMValue.FromNumber(
+                    double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : 0);
+            }
+            return DMValue.FromString(text);
+        }
+
+        // ---------- browse() rendering + link registry ----------
+
+        /// <summary>'usr << browse(doc)' — render to lines over the output bridge.</summary>
+        public static void RenderBrowse(DMValue target, DMBrowseDoc doc)
+        {
+            var usr = target.DatumRef as DMRuntime ?? DMRuntimeHelpers.CurrentUsr.DatumRef as DMRuntime;
+            var lines = usr != null ? RenderLines(usr, doc) : new List<string> { StripHtml(doc.Html) };
+            for (var i = 0; i < lines.Count; i++)
+            {
+                if (DMVerbRuntime.OutputBridge != null) DMVerbRuntime.OutputBridge(target, DMValue.FromString(lines[i]));
+                else Console.WriteLine("[DM] " + target + " << " + lines[i]);
+            }
+        }
+
+        /// <summary>HTML page -> console lines; registers links for 'usr'.</summary>
+        public static List<string> RenderLines(DMRuntime usr, DMBrowseDoc doc)
+        {
+            var lines = new List<string>();
+            var window = ParseWindowOption(doc.Options);
+            if (window.Length > 0) lines.Add("== " + window + " ==");
+            var text = StripHtml(doc.Html);
+            if (text.Length > 0)
+                lines.AddRange(text.Split('\\n'));
+            var fresh = ExtractLinks(doc.Html);
+            if (fresh.Count > 0)
+            {
+                AddLinks(usr, fresh);
+                var table = LinksFor(usr);
+                lines.Add("links (dmlink <n>):");
+                for (var i = Math.Max(0, table.Count - fresh.Count); i < table.Count; i++)
+                    lines.Add("  [" + (i + 1) + "] " + table[i].Value);
+            }
+            if (lines.Count == 0) lines.Add("(empty browse window)");
+            return lines;
+        }
+
+        private static string ParseWindowOption(string opts)
+        {
+            if (string.IsNullOrEmpty(opts)) return "";
+            var segs = opts.Split(';');
+            for (var i = 0; i < segs.Length; i++)
+            {
+                var pair = segs[i].Split(new[] { '=' }, 2);
+                if (pair.Length == 2 && pair[0].Trim().Equals("window", StringComparison.OrdinalIgnoreCase))
+                    return pair[1].Trim();
+            }
+            return "";
+        }
+
+        private static readonly Regex AnchorRx =
+            new Regex(@"(?is)<a\\b[^>]*?href\\s*=\\s*['""]([^'""]+)['""][^>]*>(.*?)</a>", RegexOptions.Compiled);
+        private static readonly Regex HrefRx =
+            new Regex(@"(?i)href\\s*=\\s*['""]([^'""]+)['""]", RegexOptions.Compiled);
+
+        /// <summary>&lt;a href&gt; links in document order (label text stripped).</summary>
+        public static List<KeyValuePair<string, string>> ExtractLinks(string html)
+        {
+            var found = new List<KeyValuePair<string, string>>();
+            if (string.IsNullOrEmpty(html)) return found;
+            foreach (Match m in AnchorRx.Matches(html))
+            {
+                var label = DecodeEntities(Regex.Replace(m.Groups[2].Value, "<[^>]+>", "")).Trim();
+                if (label.Length == 0) label = m.Groups[1].Value;
+                found.Add(new KeyValuePair<string, string>(m.Groups[1].Value, label));
+            }
+            foreach (Match m in HrefRx.Matches(html))
+            {
+                var href = m.Groups[1].Value;
+                var seen = false;
+                for (var i = 0; i < found.Count; i++)
+                    if (found[i].Key == href) { seen = true; break; }
+                if (!seen) found.Add(new KeyValuePair<string, string>(href, href));
+            }
+            return found;
+        }
+
+        private static string DecodeEntities(string s)
+        {
+            return s.Replace("&nbsp;", " ").Replace("&lt;", "<").Replace("&gt;", ">")
+                    .Replace("&quot;", "\\"").Replace("&#39;", "'").Replace("&amp;", "&");
+        }
+
+        /// <summary>Text render of browse HTML: block tags -> newlines, tags stripped.</summary>
+        public static string StripHtml(string html)
+        {
+            if (string.IsNullOrEmpty(html)) return "";
+            var s = Regex.Replace(html, "\\r\\n?", "\\n");
+            s = Regex.Replace(s, @"(?i)<\\s*(br|/p|/div|/tr|/li|/h[1-6]|hr)\\b[^>]*>", "\\n");
+            s = Regex.Replace(s, "<[^>]+>", "");
+            s = DecodeEntities(s);
+            s = Regex.Replace(s, "\\n{3,}", "\\n\\n");
+            return s.Trim();
+        }
+
+        private static void AddLinks(DMRuntime usr, List<KeyValuePair<string, string>> links)
+        {
+            if (links.Count == 0) return;
+            List<KeyValuePair<string, string>>? table;
+            lock (Links)
+            {
+                if (!Links.TryGetValue(usr, out table) || table == null)
+                    Links[usr] = table = new List<KeyValuePair<string, string>>();
+            }
+            lock (table)
+            {
+                for (var i = 0; i < links.Count; i++)
+                {
+                    table.Add(links[i]);
+                    while (table.Count > MaxLinks) table.RemoveAt(0);
+                }
+            }
+        }
+
+        /// <summary>Link table snapshot for a datum (oldest first).</summary>
+        public static List<KeyValuePair<string, string>> LinksFor(DMRuntime usr)
+        {
+            lock (Links)
+            {
+                if (Links.TryGetValue(usr, out var table))
+                    lock (table) return new List<KeyValuePair<string, string>>(table);
+            }
+            return new List<KeyValuePair<string, string>>();
+        }
+
+        /// <summary>
+        /// dmpanel: register '?src=...;verb=...' links — the same shape a
+        /// BYOND stat/verb panel generates for its own entries.
+        /// </summary>
+        public static void RegisterVerbLinks(DMRuntime usr, DMRuntime src, List<string> verbs)
+        {
+            var srcRef = DMRuntimeHelpers.Ref(DMValue.FromDatum(src)).ToString();
+            var pairs = new List<KeyValuePair<string, string>>();
+            for (var i = 0; i < verbs.Count; i++)
+                pairs.Add(new KeyValuePair<string, string>("?src=" + srcRef + ";verb=" + verbs[i], verbs[i]));
+            AddLinks(usr, pairs);
+        }
+
+        // ---------- href -> Topic()/verb routing ----------
+
+        /// <summary>dmlink n: follow the n-th pending link for 'usr'.</summary>
+        public static Task<DMValue> RouteLink(DMRuntime usr, int index)
+        {
+            var table = LinksFor(usr);
+            if (index < 1 || index > table.Count) return Task.FromResult(DMValue.Null);
+            return RouteHref(usr, table[index - 1].Key);
+        }
+
+        /// <summary>
+        /// Emulate a BYOND browser-control click: '?...;verb=x' fires the
+        /// verb; any other '?' href fires Topic(href, href_list) on src
+        /// (falling back to usr, then world — BYOND's own resolution order).
+        /// </summary>
+        public static async Task<DMValue> RouteHref(DMRuntime usr, string rawHref)
+        {
+            var href = (rawHref ?? "").Trim();
+            if (href.StartsWith("byond://", StringComparison.OrdinalIgnoreCase))
+                href = href.Substring("byond://".Length);
+            if (href.StartsWith("?", StringComparison.Ordinal))
+                href = href.Substring(1);
+            if (href.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || href.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                || href.StartsWith("byond.cgi", StringComparison.OrdinalIgnoreCase))
+            {
+                return DMValue.Null;   // external link — BYOND opens a real browser
+            }
+            var hrefList = new DMList();
+            DMRuntime? src = null;
+            string? verb = null;
+            var segs = href.Split(';', '&');
+            for (var i = 0; i < segs.Length; i++)
+            {
+                var pair = segs[i].Split(new[] { '=' }, 2);
+                if (pair.Length != 2 || pair[0].Trim().Length == 0) continue;
+                var key = pair[0].Trim();
+                var val = DecodeUrl(pair[1].Trim());
+                hrefList.SetAssoc(key, DMValue.FromString(val));
+                if (key.Equals("src", StringComparison.OrdinalIgnoreCase))
+                    src = ResolveTopicSrc(val);
+                else if (key.Equals("verb", StringComparison.OrdinalIgnoreCase))
+                    verb = val;
+            }
+            var target = src ?? usr;
+            if (verb != null && verb.Length > 0)
+                return await DMVerbRuntime.CallVerbAsUsr(target, usr, verb);
+            var topicTarget = target ?? DMVerbRuntime.DatumForPath("/world");
+            if (topicTarget == null) return DMValue.Null;
+            return await DMVerbRuntime.CallVerbAsUsr(
+                topicTarget, usr, "Topic",
+                DMValue.FromString(href), DMValue.FromList(hrefList));
+        }
+
+        private static string DecodeUrl(string s)
+        {
+            try { return WebUtility.UrlDecode(s); }
+            catch { return s; }
+        }
+
+        /// <summary>
+        /// 'src' param -> datum: ref() strings ("REF[0xN]", or whatever the
+        /// ref-tag interpolation produces — contains-match both ways),
+        /// /type/paths, and numeric entity ids.
+        /// </summary>
+        private static DMRuntime? ResolveTopicSrc(string val)
+        {
+            var v = (val ?? "").Trim();
+            if (v.Length == 0) return null;
+            foreach (var kv in DMRuntimeHelpers.RefIdMap)
+            {
+                if (kv.Key is DMRuntime d && (v.Contains(kv.Value) || kv.Value.Contains(v)))
+                    return d;
+            }
+            if (v.StartsWith("/")) return DMVerbRuntime.DatumForPath(v);
+            if (long.TryParse(v, out var id)) return DMVerbRuntime.DatumForEntityId(id);
+            return null;
         }
     }
 }

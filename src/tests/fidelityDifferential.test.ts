@@ -1911,6 +1911,170 @@ public static class ConvertedDMProcs
     name: 'atom built-in vars read and write through slots',
     dm: `/obj/p_b\n\tname = "box"\n\ticon_state = "closed"\n\tproc/open()\n\t\ticon_state = "open"\n\t\treturn "[name]:[icon_state]"\n/datum/probe/proc/run()\n\tvar/obj/p_b/o = new /obj/p_b\n\tvar/r = o.open()\n\treturn "[r]:[o.icon_state]"`,
     expected: 'box:open:open'
+  },
+  // ==== W-M ui (docs/plans/33): input()/alert()/browse() text-UI bridge ====
+  // Engine-free path: prompts resolve to their deterministic default (the
+  // live round-trip is proven by the dmanswer/dmlink commands server-side).
+  {
+    name: 'W-M alert() returns the first button engine-free',
+    dm: `/datum/probe/proc/run()\n\treturn alert("Proceed?","T","Yes","No")`,
+    expected: 'Yes'
+  },
+  {
+    name: 'W-M alert() single default Ok button',
+    dm: `/datum/probe/proc/run()\n\treturn alert("hi")`,
+    expected: 'Ok'
+  },
+  {
+    name: 'W-M input() returns its default arg engine-free',
+    dm: `/datum/probe/proc/run()\n\treturn input("name?","T","def")`,
+    expected: 'def'
+  },
+  {
+    name: 'W-M input() with no default is null',
+    dm: `/datum/probe/proc/run()\n\treturn input("x")`,
+    expected: 'null'
+  },
+  {
+    name: 'W-M input(...) in list picks the default-matching element',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list("a","b")\n\treturn input("pick","T","b") in L`,
+    expected: 'b'
+  },
+  {
+    name: 'W-M input(...) in list with no default picks first element',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list("a","b")\n\treturn input("p") in L`,
+    expected: 'a'
+  },
+  {
+    name: 'W-M input(...) as num keeps a numeric default numeric',
+    dm: `/datum/probe/proc/run()\n\treturn input("n","T",42) as num`,
+    expected: '42'
+  },
+  {
+    name: 'W-M input(...) as text returns the default',
+    dm: `/datum/probe/proc/run()\n\treturn input("m","t","x") as text`,
+    expected: 'x'
+  },
+  {
+    name: 'W-M input(...) as num in list filters non-numbers',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list("a",7,9)\n\treturn input("p") as num in L`,
+    expected: '7'
+  },
+  {
+    name: 'W-M usr << browse() returns the target for chaining',
+    dm: `/datum/probe/proc/run()\n\tvar/r = (usr << browse("<b>hi</b>"))\n\treturn r == usr`,
+    expected: '1'
+  },
+  {
+    name: 'W-M browse() returns a real payload value',
+    dm: `/datum/probe/proc/run()\n\treturn browse("x") != null`,
+    expected: '1'
+  },
+
+  // --- W-N roundflow semantics ---
+  {
+    // BYOND: a bare write to a declared /global/var binds the GLOBAL, not
+    // a same-named datum var. Before W-N the write silently landed on the
+    // datum (NEW_SS_GLOBAL's `SSticker = src` bound nothing).
+    name: 'bare write to declared global binds the global',
+    dm: `/global/var/g_x\n/datum/probe/proc/run()\n\tg_x = 7\n\treturn g_x`,
+    expected: '7'
+  },
+  {
+    // Read side of the same resolution: an unshadowed global name reads
+    // GlobalVars, so a write from one datum is visible to another.
+    name: 'bare global read sees another datum\'s write',
+    dm: `/global/var/g_y = 3\n/datum/probe2/proc/setit()\n\tg_y = 42\n/datum/probe/proc/run()\n\tvar/datum/probe2/d = new /datum/probe2\n\td.setit()\n\treturn g_y`,
+    expected: '42'
+  },
+  {
+    // BYOND resolution order: proc locals shadow globals — a `var/` decl
+    // with the global's name must NOT route to GlobalVars.
+    name: 'proc local shadows declared global',
+    dm: `/global/var/g_z = 11\n/datum/probe/proc/run()\n\tvar/g_z = 5\n\tg_z = 9\n\treturn g_z`,
+    expected: '9'
+  },
+  {
+    // ...and the global itself is untouched by the shadowed write.
+    name: 'shadowed write leaves the global intact',
+    dm: `/global/var/g_w = 11\n/datum/probe2/proc/getw()\n\treturn g_w\n/datum/probe/proc/run()\n\tvar/g_w = 5\n\tg_w = 9\n\tvar/datum/probe2/d = new /datum/probe2\n\treturn d.getw()`,
+    expected: '11'
+  },
+  {
+    // Datum fields shadow globals: a type var named like a global resolves
+    // the field (BYOND locals > fields > globals). The probe driver datum
+    // has no TypeVarInits seeds, so the field read is null — anything other
+    // than the global's 1 proves the field won resolution.
+    name: 'datum var shadows declared global',
+    dm: `/global/var/g_field = 1\n/datum/probe\n\tvar/g_field = 77\n/datum/probe/proc/run()\n\treturn g_field`,
+    expected: 'null'
+  },
+  {
+    // SUBSYSTEM_DEF shape: `SSx = src` inside New() binds the global — the
+    // NEW_SS_GLOBAL expansion paradise uses to publish singleton subsystems.
+    name: 'NEW_SS_GLOBAL-style assignment binds global in New',
+    dm: `/global/var/datum/subsys_holder/SSsys\n/datum/subsys_holder/New()\n\tSSsys = src\n/datum/subsys_holder/proc/ping()\n\treturn "pong"\n/datum/probe/proc/run()\n\tnew /datum/subsys_holder()\n\treturn SSsys.ping()`,
+    expected: 'pong'
+  },
+  {
+    // subtypesof(/datum/job) enumerates declared descendants (proper
+    // subtypes only — the parent itself is excluded).
+    name: 'subtypesof returns declared subtypes',
+    dm: `/datum/job\n/datum/job/alpha\n/datum/job/beta\n/datum/probe/proc/run()\n\treturn length(subtypesof(/datum/job))`,
+    expected: '2'
+  },
+  {
+    // subtypesof respects the sugar tree: /obj children are subtypes of
+    // /atom/movable and /atom too.
+    name: 'subtypesof obj sees canonical ancestors',
+    dm: `/obj/sub_a\n/datum/probe/proc/run()\n\treturn length(subtypesof(/atom/movable)) >= 1 && length(subtypesof(/atom)) >= 1`,
+    expected: '1'
+  },
+  {
+    // subtypesof entries are real type paths: `new T()` instantiates them.
+    name: 'subtypesof entries instantiate via new T()',
+    dm: `/datum/job/alpha\n\tvar/tag = "a1"\n/datum/probe/proc/run()\n\tvar/n = 0\n\tfor (var/T in subtypesof(/datum/job))\n\t\tvar/datum/job/J = new T()\n\t\tn += J ? 1 : 0\n\treturn n`,
+    expected: '1'
+  },
+  {
+    // shuffle(L) permutes in place and returns null (BYOND).
+    name: 'shuffle permutes list in place',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list(1, 2, 3, 4, 5)\n\tvar/r = shuffle(L)\n\treturn length(L) + (r == null ? 100 : 0)`,
+    expected: '105'
+  },
+  {
+    // pickweight picks from an assoc weight list.
+    name: 'pickweight returns an entry',
+    dm: `/datum/probe/proc/run()\n\tvar/L = list("a" = 1)\n\treturn pickweight(L)`,
+    expected: 'a'
+  },
+  {
+    // english_list joins "a, b and c" style.
+    name: 'english_list joins with and',
+    dm: `/datum/probe/proc/run()\n\treturn english_list(list("a", "b", "c"))`,
+    expected: 'a, b and c'
+  },
+  {
+    // sortList returns an ascending copy.
+    name: 'sortList sorts ascending',
+    dm: `/datum/probe/proc/run()\n\tvar/L = sortList(list(3, 1, 2))\n\treturn L[1] * 100 + L[2] * 10 + L[3]`,
+    expected: '123'
+  },
+  {
+    // `var/list/x = list()` is a real initializer — TypeVarInits must seed
+    // an empty DM list so assoc writes (`x[k]=v`) land instead of indexing
+    // null (which silently stored null; broke SSjobs.name_occupations).
+    name: 'var/list decl seeds empty list for assoc writes',
+    dm: `/datum/probe\n\tvar/list/store = list()\n/datum/probe/proc/run()\n\tvar/datum/probe/d = new /datum/probe\n\td.store["k"] = 9\n\treturn d.store["k"]`,
+    expected: '9'
+  },
+  {
+    // The seeded list is present even before any write — islist() sees a
+    // list, not null (BYOND: var decl initializers run at construction; an
+    // empty list is falsy, so ?: is not the test).
+    name: 'var/list decl is a list before first write',
+    dm: `/datum/probe\n\tvar/list/store = list()\n/datum/probe/proc/run()\n\tvar/datum/probe/d = new /datum/probe\n\treturn islist(d.store)`,
+    expected: '1'
   }
 ];
 

@@ -454,6 +454,26 @@ state "icon"
     assert(dmClientInput.includes('CalculateBounds'), "Sprite hit-test uses renderer bounds (W-G input)");
     assert(dmClientInput.includes('class DMControlsCommand') && dmClientInput.includes('dmverbs'), "dmcontrols lists controls + points at dmverbs (W-G input)");
 
+    // W-M ui (docs/plans/33): text-UI bridge — emitted code routes
+    // input()/alert()/browse() through DMUiRuntime, and the generated system
+    // carries the dmanswer/dmlinks/dmlink/dmpanel command surface.
+    const uiDM = `/datum/probe/proc/run()\n    var/L = list("a","b")\n    var/a = input("pick","T","b") in L\n    var/b = input("n") as num\n    var/c = alert("Proceed?","T","Yes","No")\n    usr << browse("<b>hi</b> <a href='?verb=x'>go</a>","window=w")\n    return a`;
+    const uiParser = new DMParser(new DMLexer(uiDM).tokenize());
+    const uiNodes = uiParser.parse();
+    const uiProcs = new CSharpEmitter().generateProcsCS(irGen.generateIR(uiNodes), uiParser.globalVars);
+    assert(uiProcs.includes('await DMUiRuntime.InputAsync(new DMValue[] { DMValue.FromString("pick"), DMValue.FromString("T"), DMValue.FromString("b") }, DMValue.Null, comp.GetVar("L"))'), "input(...) in L emits InputAsync with the pick list (W-M ui)");
+    assert(uiProcs.includes('await DMUiRuntime.InputAsync(new DMValue[] { DMValue.FromString("n") }, DMValue.FromString("num"), DMValue.Null)'), "input(...) as num emits InputAsync with the type text (W-M ui)");
+    assert(uiProcs.includes('await DMUiRuntime.AlertAsync(DMValue.FromString("Proceed?")'), "alert() emits AlertAsync (W-M ui)");
+    assert(uiProcs.includes('DMUiRuntime.MakeBrowse(DMValue.FromString(') && uiProcs.includes('DMValue.Output(DMRuntimeHelpers.CurrentUsr'), "usr << browse(html,opts) emits MakeBrowse into DMValue.Output (W-M ui)");
+    assert(!uiProcs.includes('DMRuntimeHelpers.Input(') && !uiProcs.includes('DMRuntimeHelpers.Alert('), "input/alert no longer emit the Null stubs (W-M ui)");
+    assert(runtimeCs.includes('class DMUiRuntime') && runtimeCs.includes('TaskCompletionSource<DMValue>'), "Runtime carries DMUiRuntime prompt machinery (W-M ui)");
+    assert(runtimeCs.includes('RouteHref') && runtimeCs.includes('RegisterVerbLinks'), "Runtime routes ?href clicks to Topic()/verbs (W-M ui)");
+    assert(runtimeCs.includes('class DMBrowseDoc') && runtimeCs.includes('RenderBrowse'), "browse() payload renders via RenderBrowse (W-M ui)");
+    assert(systemCs.includes('DMUiRuntime.PromptHook = PushDMPrompt'), "Generated system installs the prompt hook (W-M ui)");
+    assert(systemCs.includes('class DMAnswerCommand') && systemCs.includes('class DMLinkCommand'), "dmanswer/dmlink commands emitted (W-M ui)");
+    assert(systemCs.includes('class DMLinksCommand') && systemCs.includes('class DMPanelCommand'), "dmlinks/dmpanel commands emitted (W-M ui)");
+    assert(systemCs.includes('"dmanswer"') && systemCs.includes('"dmpanel"'), "W-M commands whitelisted in DMPermissions (W-M ui)");
+
     // Test 6: Zip File Extraction & Conversion
     const AdmZip = (await import('adm-zip')).default;
     const testZipPath = path.join(process.cwd(), 'temp_test_repo.zip');

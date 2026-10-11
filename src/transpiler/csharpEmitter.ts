@@ -5,12 +5,24 @@ import { DMGlobalVarDeclNode, DMParser, ExpressionNode } from '../parser/dmParse
 import { DMLexer } from '../parser/dmLexer.js';
 import { DiagnosticCollector } from '../diagnostics.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
-import { SymbolTable } from '../ir/symbolTable.js';
+import { SymbolTable, computeParentPath } from '../ir/symbolTable.js';
 import { computeVarLayouts, VarLayout } from '../ir/varLayout.js';
 
 export class CSharpEmitter {
   private tempCounter = 0;
   private currentProcName = '';
+
+  // ==== W-N roundflow ====
+  // Declared /global/var names (lowercased). Bare reads/writes of these
+  // names inside proc bodies route through the generated GlobalVars
+  // registry, matching BYOND's resolution order — locals > datum vars
+  // (incl. ancestors) > globals. Without this, an unshadowed global write
+  // like NEW_SS_GLOBAL's `SSticker = src` landed on a stray datum var and
+  // the declared global stayed Null forever.
+  private declaredGlobalNames = new Set<string>();
+  private currentProcLocals = new Set<string>();
+  private typeVarNameCache = new Map<string, Set<string>>();
+  private currentIrMap: Map<string, DMIRType> | null = null;
   /** Corpus-wide symbol table (item 64): bare/method calls are resolved
    *  against declared procs and unknowns warn once. Runtime registry stays
    *  the fallback. */
@@ -290,6 +302,11 @@ ${part.members}    }
                       sinks: { head: (chunk: string) => void; pair: (reg: string | null, member: string | null) => void; close: () => void; tail: (chunk: string) => void }): void {
     this.pathClassNameMap.clear();
     this.usedClassNames.clear();
+    // W-N roundflow: remember the corpus's declared /global/var names and
+    // the IR map so bare-identifier reads/writes can resolve globals.
+    this.declaredGlobalNames = new Set((globals || []).map(g => String(g.name).toLowerCase()));
+    this.currentIrMap = irMap;
+    this.typeVarNameCache.clear();
     sinks.head(`using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -391,6 +408,10 @@ namespace Content.Server.DM
       this.currentTypePath = pathKey;
 
       for (const [procName, procNode] of irType.procs.entries()) {
+        // W-N: collect the proc's local names up front (args + every
+        // hoisted `var/` decl + loop vars) so global-vs-local resolution
+        // in transpileVariable sees locals even before their decl line.
+        this.currentProcLocals = this.collectProcLocals(procNode);
         const csharpProcName = this.nextProcMemberName(procName, usedProcMembers);
         let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntime comp, DMValue[] args)\n        {\n`;
 
@@ -590,6 +611,15 @@ ${initStatements.join('')}            return DMValue.Null;
     for (const [k, v] of irType.customVars) {
       const init = this.scalarVarInit(k, v);
       if (init) sets.push(`DMRuntimeHelpers.SeedVar(c, "${this.escapeString(k)}", ${init});`);
+    }
+    // ==== W-N roundflow ====
+    // scalarVarInit skips expression inits; `var/list/x = list()` is a real
+    // DM initializer, not an expression to defer — seed an empty DM list so
+    // assoc writes (`x[k]=v`) and `+=` work on first use instead of indexing
+    // null (which silently stores null and loses every dict entry).
+    for (const [k, v] of irType.customVars) {
+      const s = v === null || v === undefined ? '' : String(v).trim();
+      if (/^(new)?list\s*\(\s*\)$/i.test(s)) sets.push(`DMRuntimeHelpers.SeedVar(c, "${this.escapeString(k)}", DMRuntimeHelpers.MakeList());`);
     }
     if (sets.length === 0) return null;
     return `            DMRuntimeHelpers.TypeVarInits["${this.escapeString(pathKey)}"] = c => { ${sets.join(' ')} };`;
@@ -804,6 +834,10 @@ namespace Content.Server.DM
             // group setup; the shim allows only our dm* command names for
             // player sessions (the server console bypasses the check anyway).
             IoCManager.Resolve<IConGroupController>().Implementation = new DMPermissions();
+            // ==== W-M ui (docs/plans/33) ====
+            // input()/alert() prompts render to the owning session's console;
+            // dmanswer resolves them (engine-free: deterministic default).
+            DMUiRuntime.PromptHook = PushDMPrompt;
         }
 
         /// <summary>
@@ -977,6 +1011,15 @@ namespace Content.Server.DM
                 {
                     var datum = await DMRuntimeHelpers.DMNew(worldDatum, typePath);
                     if (datum.DatumRef is not DMRuntime subsystem) continue;
+                    // ==== W-N roundflow ====
+                    // BYOND's MC calls subsystem Initialize() after
+                    // construction (distinct from New — where SS13 puts
+                    // SetupOccupations/ticker boot). Fire it here when the
+                    // type declares one; a no-op for types that don't.
+                    // Runs for every instantiated subsystem — NO_FIRE only
+                    // gates fire(), not Initialize().
+                    if (subsystem.CanCallProc("initialize"))
+                        await subsystem.CallProc("initialize");
                     if (procName.Length == 0)
                     {
                         // Instantiated like every other subtype (its New()/
@@ -1145,6 +1188,31 @@ namespace Content.Server.DM
             // B-4 (item 72): bind a DM /client datum to the session so
             // mob.client / client.mob / 'client << x' resolve for corpus code.
             BindClientDatum(session, uid);
+
+            // W-N roundflow: when the corpus defines
+            // /world/proc/on_player_join the engine hands the join to DM
+            // code — on converted paradise this runs the real
+            // AttemptLateSpawn pipeline (job assignment -> landmark
+            // forceMove -> EquipRank). Scheduled on the next tick pump so
+            // it executes serialized with subsystem fire() calls; when no
+            // hook is registered the B-1 attach above is the whole join
+            // (same behavior as before).
+            if (EntityManager.TryGetComponent(uid, out DMRuntimeComponent? joinComp)
+                && DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum
+                && DMVerbRuntime.HasProc(worldDatum, "on_player_join"))
+            {
+                var mobDatum = joinComp.Runtime;
+                var clientVal = mobDatum.GetVar("client");
+                // SpawnExpr (DMValue delay + Func<Task<DMValue>>) — the pump
+                // awaits the whole DM call inside the serialized gate.
+                DMTickScheduler.SpawnExpr(DMValue.FromNumber(0), async () =>
+                {
+                    await DMVerbRuntime.CallVerbAsUsr(worldDatum, mobDatum, "on_player_join",
+                        DMValue.FromDatum(mobDatum), clientVal);
+                    return DMValue.Null;
+                });
+                Logger.InfoS("dm", "Join hook on_player_join scheduled for {Name}", session.Name);
+            }
         }
 
         /// <summary>
@@ -1452,6 +1520,7 @@ namespace Content.Server.DM
             try
             {
                 if (!EntityManager.TryGetComponent(uid, out DMRuntimeComponent? comp)) return;
+                // W-N: GLOB.clients bookkeeping lives in the corpus hook.
                 var client = new DMRuntime { DMTypePath = "/client" };
                 client.SetVar("mob", DMValue.FromDatum(comp.Runtime));
                 client.SetVar("key", DMValue.FromString(session.Name));
@@ -1465,6 +1534,33 @@ namespace Content.Server.DM
             {
                 Logger.ErrorS("dm", "Client datum bind failed: {Ex}", ex.Message);
             }
+        }
+
+        // ==== W-M ui (docs/plans/33) ====
+
+        /// <summary>
+        /// DMUiRuntime.PromptHook — render an input()/alert() question to
+        /// the owning session's console. No session = auto-default (BYOND
+        /// closes orphan prompts the same way rather than blocking a proc
+        /// on an answer that can never arrive).
+        /// </summary>
+        private void PushDMPrompt(DMUiPrompt prompt)
+        {
+            var session = prompt.Usr != null ? SessionForDatum(prompt.Usr) : null;
+            if (session == null)
+            {
+                Logger.InfoS("dm.ui", "DMUI prompt {Id} unresolved — no session, auto-default", prompt.Id);
+                DMUiRuntime.AnswerDefault(prompt);
+                return;
+            }
+            var head = prompt.Kind == "alert" ? "ALERT" : "INPUT";
+            var title = prompt.Title.Length > 0 ? prompt.Title + " — " : "";
+            _conHost.WriteLine(session, "== " + head + " #" + prompt.Id + ": " + title + prompt.Message);
+            for (var i = 0; i < prompt.Options.Count; i++)
+                _conHost.WriteLine(session, "   [" + (i + 1) + "] " + prompt.Options[i].ToString());
+            _conHost.WriteLine(session, prompt.Options.Count > 0
+                ? "   dmanswer " + prompt.Id + " <n|text>   ('(cancel)' aborts)"
+                : "   dmanswer " + prompt.Id + " <text>     ('(cancel)' aborts)");
         }
     }
 
@@ -1755,6 +1851,90 @@ namespace Content.Server.DM
         }
     }
 
+    // ==== W-M ui (docs/plans/33): text-UI commands =======================
+    // The console bridge for the DM message-loop UI: dmlinks/dmlink follow
+    // browse() links (Topic()/verb hrefs), dmpanel renders the verb panel
+    // BYOND skins generate as ?src=..;verb=.. links, and dmanswer resolves
+    // input()/alert() prompts the DMUiRuntime bridge queued.
+
+    /// <summary>dmanswer &lt;id&gt; [answer] — answer a pending input()/alert() prompt.</summary>
+    public sealed class DMAnswerCommand : IConsoleCommand
+    {
+        public string Command => "dmanswer";
+        public string Description => "Answer a converted input()/alert() prompt: dmanswer <id> [answer]";
+        public string Help => "dmanswer <id> [answer]";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            if (args.Length < 1) { shell.WriteLine(Help); return; }
+            if (!long.TryParse(args[0], out var id)) { shell.WriteError("dmanswer: first arg must be a prompt id"); return; }
+            var answer = string.Join(" ", args.Skip(1));
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (!DMUiRuntime.Answer(mob, id, answer))
+                shell.WriteError($"dmanswer: no pending prompt #{id} for you");
+        }
+    }
+
+    /// <summary>dmlinks — list the numbered links a browse() page registered.</summary>
+    public sealed class DMLinksCommand : IConsoleCommand
+    {
+        public string Command => "dmlinks";
+        public string Description => "List pending browse()/panel links for your mob.";
+        public string Help => "dmlinks";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmlinks: no DM mob attached"); return; }
+            var links = DMUiRuntime.LinksFor(mob);
+            if (links.Count == 0) { shell.WriteLine("dmlinks: no pending links — browse a page or run dmpanel first"); return; }
+            shell.WriteLine("links (dmlink <n>):");
+            for (var i = 0; i < links.Count; i++)
+                shell.WriteLine($"  [{i + 1}] {links[i].Value}    ({links[i].Key})");
+        }
+    }
+
+    /// <summary>dmlink &lt;n&gt; — follow browse() link n (Topic()/verb href click).</summary>
+    public sealed class DMLinkCommand : IConsoleCommand
+    {
+        public string Command => "dmlink";
+        public string Description => "Follow a browse() link by number (fires Topic() or a verb href).";
+        public string Help => "dmlink <n>";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            if (args.Length < 1 || !int.TryParse(args[0], out var n)) { shell.WriteLine(Help); return; }
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmlink: no DM mob attached"); return; }
+            DMCommands.Fire(shell, DMUiRuntime.RouteLink(mob, n), $"link {n}");
+        }
+    }
+
+    /// <summary>dmpanel — the BYOND verb/stat panel: your mob's verbs as links.</summary>
+    public sealed class DMPanelCommand : IConsoleCommand
+    {
+        public string Command => "dmpanel";
+        public string Description => "Render your mob's verb panel as followable links.";
+        public string Help => "dmpanel";
+
+        public void Execute(IConsoleShell shell, string argStr, string[] args)
+        {
+            var entMan = IoCManager.Resolve<IEntityManager>();
+            var mob = DMCommands.MobDatum(entMan, shell.Player);
+            if (mob == null) { shell.WriteError("dmpanel: no DM mob attached"); return; }
+            var names = ProcRegistry.EnumerateProcs(mob.DMTypePath).OrderBy(n => n).ToList();
+            if (names.Count == 0) { shell.WriteLine("dmpanel: mob has no verbs"); return; }
+            DMUiRuntime.RegisterVerbLinks(mob, mob, names);
+            var links = DMUiRuntime.LinksFor(mob);
+            shell.WriteLine("verbs (dmlink <n>):");
+            for (var i = Math.Max(0, links.Count - names.Count); i < links.Count; i++)
+                shell.WriteLine($"  [{i + 1}] {links[i].Value}");
+        }
+    }
+
     /// <summary>
     /// Client command permission shim (B-4, item 72): without an
     /// implementation, ConGroupController.CanCommand returns false and every
@@ -1767,7 +1947,9 @@ namespace Content.Server.DM
     {
         private static readonly HashSet<string> Allowed = new(StringComparer.OrdinalIgnoreCase)
         {
-            "dmverb", "dmverbon", "dmclick", "dmsay", "dmooc", "dmtopic", "dmverbs", "dmloc"
+            "dmverb", "dmverbon", "dmclick", "dmsay", "dmooc", "dmtopic", "dmverbs", "dmloc",
+            // ==== W-M ui (docs/plans/33): text-UI commands ====
+            "dmanswer", "dmlinks", "dmlink", "dmpanel"
         };
 
         public bool CanCommand(ICommonSession session, string cmdName) => Allowed.Contains(cmdName);
@@ -1878,6 +2060,10 @@ namespace Content.Server.DM
       case 'AssignmentStatement':
         if (CSharpEmitter.MOVE_VARS.has(stmt.assignmentTarget))
           return `${pad}await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
+        // W-N roundflow: bare writes to declared /global/var names bind
+        // the global (locals > datum vars > globals), not a datum var.
+        if (this.isBareGlobalName(stmt.assignmentTarget))
+          return `${pad}await GlobalVars.Set("${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
         return `${pad}${this.emitVarWrite(stmt.assignmentTarget, this.transpileExpression(stmt.assignmentValue))};\n`;
 
       case 'VarDeclStatement':
@@ -2288,6 +2474,11 @@ namespace Content.Server.DM
         }
         if (CSharpEmitter.MOVE_VARS.has((node as any).target))
           return `(await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
+        // W-N roundflow: bare writes to declared /global/var names bind
+        // the global, not a same-named datum var (SUBSYSTEM_DEF's
+        // NEW_SS_GLOBAL depends on this to bind SSticker/SSjobs/...).
+        if (this.isBareGlobalName((node as any).target))
+          return `(await GlobalVars.Set("${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
         return this.emitVarWrite((node as any).target, this.transpileExpression((node as any).value));
       case 'property_assignment': {
         // GLOB.x = v writes through the generated GlobalVars registry.
@@ -2308,6 +2499,9 @@ namespace Content.Server.DM
           if (this.globalsMode) {
             return `(await GlobalVars.Set("${ia.target.name}", DMListSet(await GlobalVars.Get("${ia.target.name}"), ${indexCode}, ${valueCode})))`;
           }
+          // W-N roundflow: same global routing for list index write-back.
+          if (this.isBareGlobalName(ia.target.name))
+            return `(await GlobalVars.Set("${ia.target.name}", DMListSet(await GlobalVars.Get("${ia.target.name}"), ${indexCode}, ${valueCode})))`;
           return this.emitVarWrite(ia.target.name, `DMListSet(${this.emitVarRead(ia.target.name)}, ${indexCode}, ${valueCode})`);
         }
         // GLOB.registry["k"] = v writes through the generated GlobalVars registry.
@@ -2379,6 +2573,10 @@ namespace Content.Server.DM
     // .contents yields live membership (item 69, B-1).
     if (node.name === 'loc' || node.name === 'contents')
       return `DMRuntimeHelpers.DMGetProperty(DMValue.FromDatum(comp), "${node.name}")`;
+    // W-N roundflow: an unshadowed declared /global/var resolves through
+    // the generated GlobalVars registry (locals > datum vars > globals).
+    if (this.isBareGlobalName(node.name))
+      return `(await GlobalVars.Get("${node.name}"))`;
     return this.emitVarRead(node.name);
   }
 
@@ -2413,6 +2611,67 @@ namespace Content.Server.DM
 
   private normalizeTypePath(p: string): string {
     return (p || '').replace(/\/+$/, '');
+  }
+
+  // ==== W-N roundflow ====
+  /** All local names visible inside a proc body: declared args plus every
+   *  `var/` declaration, for-loop variable and catch var anywhere in the
+   *  AST (BYOND hoists `var/` decls to proc scope). */
+  private collectProcLocals(procNode: any): Set<string> {
+    const locals = new Set<string>();
+    for (const arg of procNode.args || []) locals.add(String(arg.name).toLowerCase());
+    const visit = (n: any) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { for (const e of n) visit(e); return; }
+      if (typeof n.varName === 'string') locals.add(n.varName.toLowerCase());
+      if (typeof n.loopVariable === 'string') locals.add(n.loopVariable.toLowerCase());
+      if (typeof n.catchVar === 'string') locals.add(n.catchVar.toLowerCase());
+      for (const key of Object.keys(n)) {
+        const v = n[key];
+        if (v && typeof v === 'object') visit(v);
+      }
+    };
+    visit(procNode.statements || []);
+    return locals;
+  }
+
+  /** Does `typePath` (or any ancestor per the DM type tree) declare a var
+   *  named `name`? Consults the IR's merged decl list + customVars so an
+   *  inherited field correctly shadows a same-named /global/var. */
+  private typeDeclaresVar(typePath: string, name: string): boolean {
+    const lower = name.toLowerCase();
+    let cur: string | null = this.normalizeTypePath(typePath);
+    const seen = new Set<string>();
+    while (cur && cur !== '/' && !seen.has(cur)) {
+      seen.add(cur);
+      let names = this.typeVarNameCache.get(cur);
+      if (!names) {
+        names = new Set<string>();
+        const irType = this.currentIrMap?.get(cur);
+        // customVars holds every declared var that carries an initializer
+        // (the IR drops bare `var/x` decls). A bare field that collides
+        // with a global name is a documented edge — BYOND would prefer
+        // the field, we resolve the global (docs/plans/34-round-flow.md).
+        if (irType?.customVars) for (const k of irType.customVars.keys()) names.add(String(k).toLowerCase());
+        this.typeVarNameCache.set(cur, names);
+      }
+      if (names.has(lower)) return true;
+      cur = computeParentPath(cur);
+    }
+    return false;
+  }
+
+  /** BYOND identifier resolution: a bare name that is a declared
+   *  /global/var, is NOT a proc local, and is NOT a var on the current
+   *  type (incl. ancestors) is a global access — emit through the
+   *  generated GlobalVars registry. */
+  private isBareGlobalName(name: string): boolean {
+    if (this.globalsMode) return true;
+    const lower = name.toLowerCase();
+    if (!this.declaredGlobalNames.has(lower)) return false;
+    if (this.currentProcLocals.has(lower)) return false;
+    if (this.currentTypePath && this.typeDeclaresVar(this.currentTypePath, name)) return false;
+    return true;
   }
 
   // ==== W-F new ====
@@ -2458,6 +2717,29 @@ namespace Content.Server.DM
   }
 
   private transpileBinary(node: any): string {
+    // ==== W-M ui (docs/plans/33) ====
+    // input()'s `as T`/`in L` selection modifiers parse as ordinary binary
+    // operators; an `in`/`as` whose LEFT operand is an input() call is
+    // really a pick-list/type constraint on the prompt — emit the async
+    // UI bridge instead of In()/the cast no-op.
+    if (node.operator === 'in' || node.operator === 'as') {
+      const asTypeHolder = node.operator === 'in' ? node.left : node;
+      let callNode = asTypeHolder;
+      let asTypeExpr = 'DMValue.Null';
+      if (asTypeHolder?.type === 'binary' && asTypeHolder.operator === 'as'
+          && asTypeHolder.left?.type === 'call') {
+        callNode = asTypeHolder.left;
+        asTypeExpr = this.uiAsTypeExpr(asTypeHolder.right);
+      }
+      if (callNode?.type === 'call' && !callNode.target
+          && callNode.name?.toLowerCase() === 'input') {
+        const argsArr = this.uiInputArgsArray(callNode);
+        const pickExpr = node.operator === 'in'
+          ? this.transpileExpression(node.right)
+          : 'DMValue.Null';
+        return `(await DMUiRuntime.InputAsync(${argsArr}, ${asTypeExpr}, ${pickExpr}))`;
+      }
+    }
     const left = this.transpileExpression(node.left);
     const right = this.transpileExpression(node.right);
 
@@ -2518,6 +2800,45 @@ namespace Content.Server.DM
       case '~': return `DMValue.BitwiseNot(${operand})`;
       default: return operand;
     }
+  }
+
+  // ==== W-M ui (docs/plans/33) ====
+  // input()/alert() args as a DMValue[]: arglist() spreads via DMArgsConcat;
+  // named args (message="x") become DMNamedArg markers the runtime binds.
+  private uiInputArgsArray(node: any): string {
+    const hasArglist = node.arguments.some((a: any) => a.type === 'call' && a.name === 'arglist');
+    if (hasArglist) {
+      return `DMRuntimeHelpers.DMArgsConcat(${node.arguments.map((a: any) =>
+        a.type === 'call' && a.name === 'arglist'
+          ? `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a.arguments[0])})`
+          : `DMRuntimeHelpers.DMArgList(${this.transpileExpression(a)})`
+      ).join(', ')})`;
+    }
+    const parts = node.arguments.map((a: any) =>
+      a.type === 'assignment' && typeof a.target === 'string'
+        ? `DMRuntimeHelpers.DMNamedArg("${this.escapeString(a.target)}", ${this.transpileExpression(a.value)})`
+        : this.transpileExpression(a)
+    );
+    return `new DMValue[] { ${parts.join(', ')} }`;
+  }
+
+  // `input(x) as <T>` — T parses as a variable (num/text/anything/mob), a
+  // literal, or a call; emit it as the DMValue string the runtime matches.
+  private uiAsTypeExpr(node: any): string {
+    if (!node) return 'DMValue.Null';
+    if (node.type === 'variable' || node.type === 'identifier') {
+      return `DMValue.FromString("${this.escapeString(node.name)}")`;
+    }
+    if (node.type === 'literal' && (node.literalType === 'string' || node.literalType === 'path')) {
+      return `DMValue.FromString("${this.escapeString(String(node.value))}")`;
+    }
+    if (node.type === 'literal' && node.literalType === 'null') {
+      return 'DMValue.FromString("null")';
+    }
+    if (node.type === 'call' && node.name) {
+      return `DMValue.FromString("${this.escapeString(node.name)}")`;
+    }
+    return 'DMValue.Null';
   }
 
   private transpileCall(node: any): string {
@@ -2595,6 +2916,21 @@ namespace Content.Server.DM
       if (nameArg.type === 'literal' && nameArg.literalType === 'string') {
         return `DMRuntimeHelpers.DMInitial(${this.transpileExpression(node.arguments[0])}, "${this.escapeString(nameArg.value)}")`;
       }
+    }
+
+    // ==== W-M ui (docs/plans/33) ====
+    // The UI builtins route through the async text-UI bridge (DMUiRuntime)
+    // instead of the Null stubs — target-ed calls (foo.input()) stay on the
+    // ordinary proc path below. `input`/`alert` suspend the proc until a
+    // dmanswer arrives (engine-free: deterministic default); `browse`
+    // builds a payload 'usr << browse(...)' renders to text + links.
+    const uiName = node.name.toLowerCase();
+    if (uiName === 'input' || uiName === 'alert' || uiName === 'browse') {
+      if (uiName === 'input')
+        return `(await DMUiRuntime.InputAsync(${this.uiInputArgsArray(node)}, DMValue.Null, DMValue.Null))`;
+      if (uiName === 'alert')
+        return `(await DMUiRuntime.AlertAsync(${args || ''}))`;
+      return `DMUiRuntime.MakeBrowse(${args || ''})`;
     }
 
     // Built-in DM procs (names are case-insensitive — fold before the lookup,
