@@ -1001,6 +1001,104 @@ namespace SS13.DM.Runtime
             // engine-free; GetWidth/GetHeight return the DMI default of 32.
             Register("/icon", "getwidth", (comp, args) => Task.FromResult(DMValue.FromNumber(32)));
             Register("/icon", "getheight", (comp, args) => Task.FromResult(DMValue.FromNumber(32)));
+
+            // ==== W-N roundflow ====
+            // Global-proc builtins the SS13 round-flow code paths need.
+            // Registered as /proc handlers so CallProc's /proc fallback
+            // resolves them (same channel generated corpus procs use).
+
+            // subtypesof(path): every registered type whose canonical
+            // ancestor chain contains <path> (proper subtypes only — the
+            // path itself is not included, matching BYOND).
+            Register("/proc", "subtypesof", (comp, args) =>
+            {
+                var result = new DMList();
+                if (args.Length == 0) return Task.FromResult(DMValue.FromList(result));
+                var target = args[0];
+                string t;
+                if (target.Type == DMValueType.Path) t = target.StringValue.ToLowerInvariant();
+                else if (target.Type == DMValueType.DatumRef && target.DatumRef is DMRuntime d) t = d.DMTypePath.ToLowerInvariant();
+                else t = target.ToString().ToLowerInvariant();
+                if (!t.StartsWith("/")) t = "/" + t;
+                var universe = new HashSet<string>(RegisteredPaths);
+                foreach (var k in DMRuntimeHelpers.TypeVarInits.Keys) universe.Add(k.ToLowerInvariant());
+                foreach (var p in universe)
+                {
+                    if (p == t) continue;
+                    if (DMParentPaths(p).Any(a => a == t))
+                        result.Add(DMValue.FromPath(p));
+                }
+                return Task.FromResult(DMValue.FromList(result));
+            });
+
+            // shuffle(list): in-place Fisher-Yates permutation (BYOND
+            // shuffles the list itself and returns null).
+            Register("/proc", "shuffle", (comp, args) =>
+            {
+                if (args.Length > 0 && args[0].Type == DMValueType.List && args[0].ListValue is DMList list)
+                {
+                    var rng = new Random();
+                    for (var i = list.Count - 1; i > 0; i--)
+                    {
+                        var j = rng.Next(i + 1);
+                        var tmp = list.Get(i + 1);
+                        list.Set(i + 1, list.Get(j + 1));
+                        list.Set(j + 1, tmp);
+                    }
+                }
+                return Task.FromResult(DMValue.Null);
+            });
+
+            // pickweight(assoc list of item->weight): weighted random pick.
+            Register("/proc", "pickweight", (comp, args) =>
+            {
+                if (args.Length == 0 || args[0].Type != DMValueType.List) return Task.FromResult(DMValue.Null);
+                var l = args[0].ListValue;
+                double total = 0;
+                var entries = new List<(DMValue Item, double W)>();
+                foreach (var kv in l.AssocEntries) { var w = Math.Max(0, kv.Value.ToNumber()); total += w; entries.Add((kv.Key, w)); }
+                for (var i = 1; i <= l.PositionalCount; i++) { var v = l.Get(i); var w = Math.Max(0, v.ToNumber()); total += w; entries.Add((v, w)); }
+                if (total <= 0 || entries.Count == 0) return Task.FromResult(DMValue.Null);
+                var roll = new Random().NextDouble() * total;
+                foreach (var e in entries) { roll -= e.W; if (roll <= 0) return Task.FromResult(e.Item); }
+                return Task.FromResult(entries[entries.Count - 1].Item);
+            });
+
+            // english_list(list, empty_text, and_text, comma_text):
+            // human-readable "a, b and c" joining (proc-registration form
+            // used by ticker announcements).
+            Register("/proc", "english_list", (comp, args) =>
+            {
+                if (args.Length == 0 || args[0].Type != DMValueType.List) return Task.FromResult(DMValue.FromString(""));
+                var l = args[0].ListValue;
+                var items = new List<string>();
+                for (var i = 1; i <= l.PositionalCount; i++) items.Add(l.Get(i).ToString());
+                var andText = args.Length > 2 ? args[2].ToString() : " and ";
+                var commaText = args.Length > 3 ? args[3].ToString() : ", ";
+                string s;
+                if (items.Count == 0) s = args.Length > 1 ? args[1].ToString() : "";
+                else if (items.Count == 1) s = items[0];
+                else if (items.Count == 2) s = items[0] + andText + items[1];
+                else s = string.Join(commaText, items.Take(items.Count - 1)) + andText + items[items.Count - 1];
+                return Task.FromResult(DMValue.FromString(s));
+            });
+
+            // sortList(list): ascending sort copy (BYOND sorts by value).
+            Register("/proc", "sortlist", (comp, args) =>
+            {
+                if (args.Length == 0 || args[0].Type != DMValueType.List) return Task.FromResult(DMValue.Null);
+                var l = args[0].ListValue;
+                var items = new List<DMValue>();
+                for (var i = 1; i <= l.PositionalCount; i++) items.Add(l.Get(i));
+                items.Sort((a, b) =>
+                {
+                    if (a.Type == DMValueType.Number && b.Type == DMValueType.Number) return a.NumberValue.CompareTo(b.NumberValue);
+                    return string.Compare(a.ToString(), b.ToString(), StringComparison.Ordinal);
+                });
+                var outList = new DMList();
+                foreach (var it in items) outList.Add(it);
+                return Task.FromResult(DMValue.FromList(outList));
+            });
         }
 
         public static void Register(string typePath, string procName, Func<DMRuntime, DMValue[], Task<DMValue>> handler, string[] paramNames = null)

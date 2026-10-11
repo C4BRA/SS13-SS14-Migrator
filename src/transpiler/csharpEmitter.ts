@@ -5,11 +5,23 @@ import { DMGlobalVarDeclNode, DMParser, ExpressionNode } from '../parser/dmParse
 import { DMLexer } from '../parser/dmLexer.js';
 import { DiagnosticCollector } from '../diagnostics.js';
 import { transpileBuiltinCall } from './builtinMappings.js';
-import { SymbolTable } from '../ir/symbolTable.js';
+import { SymbolTable, computeParentPath } from '../ir/symbolTable.js';
 
 export class CSharpEmitter {
   private tempCounter = 0;
   private currentProcName = '';
+
+  // ==== W-N roundflow ====
+  // Declared /global/var names (lowercased). Bare reads/writes of these
+  // names inside proc bodies route through the generated GlobalVars
+  // registry, matching BYOND's resolution order — locals > datum vars
+  // (incl. ancestors) > globals. Without this, an unshadowed global write
+  // like NEW_SS_GLOBAL's `SSticker = src` landed on a stray datum var and
+  // the declared global stayed Null forever.
+  private declaredGlobalNames = new Set<string>();
+  private currentProcLocals = new Set<string>();
+  private typeVarNameCache = new Map<string, Set<string>>();
+  private currentIrMap: Map<string, DMIRType> | null = null;
   /** Corpus-wide symbol table (item 64): bare/method calls are resolved
    *  against declared procs and unknowns warn once. Runtime registry stays
    *  the fallback. */
@@ -285,6 +297,11 @@ ${part.members}    }
                       sinks: { head: (chunk: string) => void; pair: (reg: string | null, member: string | null) => void; close: () => void; tail: (chunk: string) => void }): void {
     this.pathClassNameMap.clear();
     this.usedClassNames.clear();
+    // W-N roundflow: remember the corpus's declared /global/var names and
+    // the IR map so bare-identifier reads/writes can resolve globals.
+    this.declaredGlobalNames = new Set((globals || []).map(g => String(g.name).toLowerCase()));
+    this.currentIrMap = irMap;
+    this.typeVarNameCache.clear();
     sinks.head(`using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -375,6 +392,10 @@ namespace Content.Server.DM
       this.currentTypePath = pathKey;
 
       for (const [procName, procNode] of irType.procs.entries()) {
+        // W-N: collect the proc's local names up front (args + every
+        // hoisted `var/` decl + loop vars) so global-vs-local resolution
+        // in transpileVariable sees locals even before their decl line.
+        this.currentProcLocals = this.collectProcLocals(procNode);
         const csharpProcName = this.nextProcMemberName(procName, usedProcMembers);
         let member = `        public static async Task<DMValue> Proc_${className}_${csharpProcName}(DMRuntime comp, DMValue[] args)\n        {\n`;
 
@@ -574,6 +595,15 @@ ${initStatements.join('')}            return DMValue.Null;
     for (const [k, v] of irType.customVars) {
       const init = this.scalarVarInit(k, v);
       if (init) sets.push(`DMRuntimeHelpers.SeedVar(c, "${this.escapeString(k)}", ${init});`);
+    }
+    // ==== W-N roundflow ====
+    // scalarVarInit skips expression inits; `var/list/x = list()` is a real
+    // DM initializer, not an expression to defer — seed an empty DM list so
+    // assoc writes (`x[k]=v`) and `+=` work on first use instead of indexing
+    // null (which silently stores null and loses every dict entry).
+    for (const [k, v] of irType.customVars) {
+      const s = v === null || v === undefined ? '' : String(v).trim();
+      if (/^(new)?list\s*\(\s*\)$/i.test(s)) sets.push(`DMRuntimeHelpers.SeedVar(c, "${this.escapeString(k)}", DMRuntimeHelpers.MakeList());`);
     }
     if (sets.length === 0) return null;
     return `            DMRuntimeHelpers.TypeVarInits["${this.escapeString(pathKey)}"] = c => { ${sets.join(' ')} };`;
@@ -965,6 +995,15 @@ namespace Content.Server.DM
                 {
                     var datum = await DMRuntimeHelpers.DMNew(worldDatum, typePath);
                     if (datum.DatumRef is not DMRuntime subsystem) continue;
+                    // ==== W-N roundflow ====
+                    // BYOND's MC calls subsystem Initialize() after
+                    // construction (distinct from New — where SS13 puts
+                    // SetupOccupations/ticker boot). Fire it here when the
+                    // type declares one; a no-op for types that don't.
+                    // Runs for every instantiated subsystem — NO_FIRE only
+                    // gates fire(), not Initialize().
+                    if (subsystem.CanCallProc("initialize"))
+                        await subsystem.CallProc("initialize");
                     if (procName.Length == 0)
                     {
                         // Instantiated like every other subtype (its New()/
@@ -1133,6 +1172,31 @@ namespace Content.Server.DM
             // B-4 (item 72): bind a DM /client datum to the session so
             // mob.client / client.mob / 'client << x' resolve for corpus code.
             BindClientDatum(session, uid);
+
+            // W-N roundflow: when the corpus defines
+            // /world/proc/on_player_join the engine hands the join to DM
+            // code — on converted paradise this runs the real
+            // AttemptLateSpawn pipeline (job assignment -> landmark
+            // forceMove -> EquipRank). Scheduled on the next tick pump so
+            // it executes serialized with subsystem fire() calls; when no
+            // hook is registered the B-1 attach above is the whole join
+            // (same behavior as before).
+            if (EntityManager.TryGetComponent(uid, out DMRuntimeComponent? joinComp)
+                && DMRuntimeHelpers.WorldValue.DatumRef is DMRuntime worldDatum
+                && DMVerbRuntime.HasProc(worldDatum, "on_player_join"))
+            {
+                var mobDatum = joinComp.Runtime;
+                var clientVal = mobDatum.GetVar("client");
+                // SpawnExpr (DMValue delay + Func<Task<DMValue>>) — the pump
+                // awaits the whole DM call inside the serialized gate.
+                DMTickScheduler.SpawnExpr(DMValue.FromNumber(0), async () =>
+                {
+                    await DMVerbRuntime.CallVerbAsUsr(worldDatum, mobDatum, "on_player_join",
+                        DMValue.FromDatum(mobDatum), clientVal);
+                    return DMValue.Null;
+                });
+                Logger.InfoS("dm", "Join hook on_player_join scheduled for {Name}", session.Name);
+            }
         }
 
         /// <summary>
@@ -1440,6 +1504,7 @@ namespace Content.Server.DM
             try
             {
                 if (!EntityManager.TryGetComponent(uid, out DMRuntimeComponent? comp)) return;
+                // W-N: GLOB.clients bookkeeping lives in the corpus hook.
                 var client = new DMRuntime { DMTypePath = "/client" };
                 client.SetVar("mob", DMValue.FromDatum(comp.Runtime));
                 client.SetVar("key", DMValue.FromString(session.Name));
@@ -1979,6 +2044,10 @@ namespace Content.Server.DM
       case 'AssignmentStatement':
         if (CSharpEmitter.MOVE_VARS.has(stmt.assignmentTarget))
           return `${pad}await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
+        // W-N roundflow: bare writes to declared /global/var names bind
+        // the global (locals > datum vars > globals), not a datum var.
+        if (this.isBareGlobalName(stmt.assignmentTarget))
+          return `${pad}await GlobalVars.Set("${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
         return `${pad}comp.SetVar("${stmt.assignmentTarget}", ${this.transpileExpression(stmt.assignmentValue)});\n`;
 
       case 'VarDeclStatement':
@@ -2389,6 +2458,11 @@ namespace Content.Server.DM
         }
         if (CSharpEmitter.MOVE_VARS.has((node as any).target))
           return `(await DMRuntimeHelpers.DMSetProperty(DMValue.FromDatum(comp), "${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
+        // W-N roundflow: bare writes to declared /global/var names bind
+        // the global, not a same-named datum var (SUBSYSTEM_DEF's
+        // NEW_SS_GLOBAL depends on this to bind SSticker/SSjobs/...).
+        if (this.isBareGlobalName((node as any).target))
+          return `(await GlobalVars.Set("${(node as any).target}", ${this.transpileExpression((node as any).value)}))`;
         return `comp.SetVar("${(node as any).target}", ${this.transpileExpression((node as any).value)})`;
       case 'property_assignment': {
         // GLOB.x = v writes through the generated GlobalVars registry.
@@ -2409,6 +2483,9 @@ namespace Content.Server.DM
           if (this.globalsMode) {
             return `(await GlobalVars.Set("${ia.target.name}", DMListSet(await GlobalVars.Get("${ia.target.name}"), ${indexCode}, ${valueCode})))`;
           }
+          // W-N roundflow: same global routing for list index write-back.
+          if (this.isBareGlobalName(ia.target.name))
+            return `(await GlobalVars.Set("${ia.target.name}", DMListSet(await GlobalVars.Get("${ia.target.name}"), ${indexCode}, ${valueCode})))`;
           return `comp.SetVar("${ia.target.name}", DMListSet(comp.GetVar("${ia.target.name}"), ${indexCode}, ${valueCode}))`;
         }
         // GLOB.registry["k"] = v writes through the generated GlobalVars registry.
@@ -2480,11 +2557,76 @@ namespace Content.Server.DM
     // .contents yields live membership (item 69, B-1).
     if (node.name === 'loc' || node.name === 'contents')
       return `DMRuntimeHelpers.DMGetProperty(DMValue.FromDatum(comp), "${node.name}")`;
+    // W-N roundflow: an unshadowed declared /global/var resolves through
+    // the generated GlobalVars registry (locals > datum vars > globals).
+    if (this.isBareGlobalName(node.name))
+      return `(await GlobalVars.Get("${node.name}"))`;
     return `comp.GetVar("${node.name}")`;
   }
 
   private normalizeTypePath(p: string): string {
     return (p || '').replace(/\/+$/, '');
+  }
+
+  // ==== W-N roundflow ====
+  /** All local names visible inside a proc body: declared args plus every
+   *  `var/` declaration, for-loop variable and catch var anywhere in the
+   *  AST (BYOND hoists `var/` decls to proc scope). */
+  private collectProcLocals(procNode: any): Set<string> {
+    const locals = new Set<string>();
+    for (const arg of procNode.args || []) locals.add(String(arg.name).toLowerCase());
+    const visit = (n: any) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { for (const e of n) visit(e); return; }
+      if (typeof n.varName === 'string') locals.add(n.varName.toLowerCase());
+      if (typeof n.loopVariable === 'string') locals.add(n.loopVariable.toLowerCase());
+      if (typeof n.catchVar === 'string') locals.add(n.catchVar.toLowerCase());
+      for (const key of Object.keys(n)) {
+        const v = n[key];
+        if (v && typeof v === 'object') visit(v);
+      }
+    };
+    visit(procNode.statements || []);
+    return locals;
+  }
+
+  /** Does `typePath` (or any ancestor per the DM type tree) declare a var
+   *  named `name`? Consults the IR's merged decl list + customVars so an
+   *  inherited field correctly shadows a same-named /global/var. */
+  private typeDeclaresVar(typePath: string, name: string): boolean {
+    const lower = name.toLowerCase();
+    let cur: string | null = this.normalizeTypePath(typePath);
+    const seen = new Set<string>();
+    while (cur && cur !== '/' && !seen.has(cur)) {
+      seen.add(cur);
+      let names = this.typeVarNameCache.get(cur);
+      if (!names) {
+        names = new Set<string>();
+        const irType = this.currentIrMap?.get(cur);
+        // customVars holds every declared var that carries an initializer
+        // (the IR drops bare `var/x` decls). A bare field that collides
+        // with a global name is a documented edge — BYOND would prefer
+        // the field, we resolve the global (docs/plans/34-round-flow.md).
+        if (irType?.customVars) for (const k of irType.customVars.keys()) names.add(String(k).toLowerCase());
+        this.typeVarNameCache.set(cur, names);
+      }
+      if (names.has(lower)) return true;
+      cur = computeParentPath(cur);
+    }
+    return false;
+  }
+
+  /** BYOND identifier resolution: a bare name that is a declared
+   *  /global/var, is NOT a proc local, and is NOT a var on the current
+   *  type (incl. ancestors) is a global access — emit through the
+   *  generated GlobalVars registry. */
+  private isBareGlobalName(name: string): boolean {
+    if (this.globalsMode) return true;
+    const lower = name.toLowerCase();
+    if (!this.declaredGlobalNames.has(lower)) return false;
+    if (this.currentProcLocals.has(lower)) return false;
+    if (this.currentTypePath && this.typeDeclaresVar(this.currentTypePath, name)) return false;
+    return true;
   }
 
   // ==== W-F new ====

@@ -1,0 +1,20 @@
+//MAP CONVERTED BY dmm2tgm.py THIS HEADER COMMENT PREVENTS RECONVERSION, DO NOT REMOVE
+"a" = (/turf/wall,/area/m2r)
+"b" = (/turf/floor,/area/m2r)
+"c" = (/obj/effect/landmark/spawner/late/crew,/turf/floor,/area/m2r)
+"d" = (/obj/effect/landmark/start/assistant,/turf/floor,/area/m2r)
+"e" = (/obj/effect/landmark/start/chef,/turf/floor,/area/m2r)
+"f" = (/obj/effect/landmark/newplayer_start,/turf/floor,/area/m2r)
+(1,1,1) = {"
+aaaaaaaaaaa
+abbbbbbbbba
+abbbbcbbbba
+abbbbbbbbba
+abbbdbbebba
+abbbbbbbbba
+abbbbfbbbba
+abbbbbbbbba
+abbbbbbbbba
+abbbbbbbbba
+aaaaaaaaaaa
+"}
